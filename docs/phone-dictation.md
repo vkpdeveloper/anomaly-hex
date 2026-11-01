@@ -20,6 +20,10 @@ Each dictation -> the route picked when the Hex button appeared (cached 2 min,
     └── Wi-Fi     -> LAN routes only
     None answer -> browse the LAN for the computer by name for 2 s, then fail
 A send to a cached route that fails to connect -> pick again once and resend
+Any later failure (a read timeout, a reset after the upload) -> no resend: the
+    computer may still be transcribing the first one
+A recording that reaches the 16 MiB upload limit (about 8.7 minutes) -> stops
+    and sends by itself
 ```
 
 ## API

@@ -9,9 +9,11 @@ import kotlin.math.abs
 
 /**
  * Records 16 kHz mono 16-bit PCM, the rate Hex's models take, so the
- * computer never resamples. Reports the peak of each 20 ms chunk.
+ * computer never resamples. Reports the peak of each 20 ms chunk, and
+ * stops by itself at the most the computer accepts (about 8.7 minutes),
+ * calling [onFull] from the recording thread so the caller can send it.
  */
-class Recorder(private val onLevel: (Float) -> Unit) {
+class Recorder(private val onLevel: (Float) -> Unit, private val onFull: () -> Unit) {
     private var record: AudioRecord? = null
     private var thread: Thread? = null
     private val pcm = ByteArrayOutputStream(SAMPLE_RATE * 2 * 30)
@@ -62,8 +64,15 @@ class Recorder(private val onLevel: (Float) -> Unit) {
                 bytes[i * 2] = (sample and 0xFF).toByte()
                 bytes[i * 2 + 1] = (sample shr 8 and 0xFF).toByte()
             }
-            synchronized(pcm) { pcm.write(bytes, 0, read * 2) }
+            val full = synchronized(pcm) {
+                pcm.write(bytes, 0, minOf(read * 2, MAX_PCM_BYTES - pcm.size()))
+                pcm.size() >= MAX_PCM_BYTES
+            }
             onLevel(peak / 32768f)
+            if (full) {
+                running = false
+                onFull()
+            }
         }
     }
 
@@ -92,6 +101,8 @@ class Recorder(private val onLevel: (Float) -> Unit) {
     companion object {
         const val SAMPLE_RATE = 16_000
         const val MIN_MS = 300
+        /** The computer's 16 MiB upload limit, less the WAV header. */
+        const val MAX_PCM_BYTES = 16 * 1024 * 1024 - 44
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
     }

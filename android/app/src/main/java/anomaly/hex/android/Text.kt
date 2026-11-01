@@ -50,3 +50,15 @@ fun joinAtCursor(before: CharSequence, transcript: String): String {
         !first.isWhitespace() && first !in ".,;:!?)]}"
     return if (needsSpace) " $transcript" else transcript
 }
+
+/**
+ * What a field really holds. An empty field reports its placeholder
+ * ("Message") as its text; most apps flag that, but some don't, so text
+ * equal to the hint with no cursor past the start counts as empty too.
+ */
+fun fieldText(text: CharSequence?, hint: CharSequence?, showingHint: Boolean, cursor: Int): String {
+    val current = text?.toString().orEmpty()
+    if (showingHint) return ""
+    val placeholder = !hint.isNullOrEmpty() && current == hint.toString() && cursor <= 0
+    return if (placeholder) "" else current
+}

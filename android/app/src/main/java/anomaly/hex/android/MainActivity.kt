@@ -63,9 +63,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -235,7 +237,8 @@ private fun Pairing(store: Store, onChange: (Computer?) -> Unit) {
     var target by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var typingAddress by remember { mutableStateOf(false) }
     var address by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
+    var codeField by remember { mutableStateOf(TextFieldValue("")) }
+    val code = codeField.text
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -287,8 +290,13 @@ private fun Pairing(store: Store, onChange: (Computer?) -> Unit) {
     }
     if (target != null) {
         OutlinedTextField(
-            value = code,
-            onValueChange = { code = displayCode(it) },
+            value = codeField,
+            onValueChange = { typed ->
+                // Adding a dash shifts the text under the cursor, so put the
+                // cursor after the code rather than before the last letter.
+                val formatted = displayCode(typed.text)
+                codeField = if (formatted == typed.text) typed else TextFieldValue(formatted, TextRange(formatted.length))
+            },
             label = { Text("Pairing code") },
             placeholder = { Text("XXXX-XXXX-XXXX") },
             singleLine = true,

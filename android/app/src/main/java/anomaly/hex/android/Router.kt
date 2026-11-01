@@ -39,9 +39,12 @@ class Router(context: Context, private val store: Store) {
         io.launch { runCatching { resolve() } }
     }
 
-    suspend fun resolve(): Pair<Computer, Route> = mutex.withLock {
+    /** The computer and the route to it; `cached` when no probe just confirmed it. */
+    data class Resolved(val computer: Computer, val route: Route, val cached: Boolean)
+
+    suspend fun resolve(): Resolved = mutex.withLock {
         val computer = store.computer ?: throw HexError.NotPaired
-        pick?.takeIf { it.computer == computer && fresh(it) }?.let { return it.computer to it.route }
+        pick?.takeIf { it.computer == computer && fresh(it) }?.let { return Resolved(it.computer, it.route, cached = true) }
         val preference = store.preference
         val answered = probe(computer, preference)
             ?: discovery.find(computer.name, DISCOVERY_TIMEOUT_MS)?.let { found ->
@@ -60,7 +63,7 @@ class Router(context: Context, private val store: Store) {
         )
         if (updated != computer) store.computer = updated
         pick = Pick(updated, route, SystemClock.elapsedRealtime())
-        updated to route
+        Resolved(updated, route, cached = false)
     }
 
     private suspend fun probe(computer: Computer, preference: RoutePreference): Pair<Route, Hello>? {

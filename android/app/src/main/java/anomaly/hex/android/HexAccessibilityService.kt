@@ -147,7 +147,12 @@ class HexAccessibilityService : AccessibilityService() {
             return message("Allow the microphone in Hex")
         }
         if (store.computer == null) return message("Connect a computer in Hex")
-        val next = Recorder { peak -> main.post { bubble.level(peak) } }
+        lateinit var next: Recorder
+        next = Recorder(
+            onLevel = { peak -> main.post { bubble.level(peak) } },
+            // At the computer's limit: send what there is rather than lose it.
+            onFull = { main.post { if (recorder === next) stopAndSend() } },
+        )
         if (!next.start()) return message("Microphone is busy")
         recorder = next
         bubble.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -178,11 +183,14 @@ class HexAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun send(wav: ByteArray): String {
-        val (computer, route) = router.resolve()
+        val (computer, route, cached) = router.resolve()
         return try {
             HexClient.transcribe(route.host, computer.port, computer.code, wav)
-        } catch (_: HexError.Unreachable) {
-            // The cached route went away (Wi-Fi switch, Tailscale down): pick again once.
+        } catch (error: HexError.ConnectFailed) {
+            // A cached route that went away (Wi-Fi switch, Tailscale down):
+            // pick again once. Nothing reached the computer, so resending is
+            // safe; any later failure may mean it is still transcribing.
+            if (!cached) throw error
             router.invalidate()
             val (again, next) = router.resolve()
             HexClient.transcribe(next.host, again.port, again.code, wav)
@@ -195,10 +203,14 @@ class HexAccessibilityService : AccessibilityService() {
      */
     private fun insert(transcript: String): Boolean {
         val field = focusedField() ?: return copyInstead(transcript)
-        val current = if (field.isShowingHintText) "" else field.text?.toString().orEmpty()
         val a = field.textSelectionStart
         val b = field.textSelectionEnd
+        val current = fieldText(field.text, field.hintText, field.isShowingHintText, maxOf(a, b))
         val known = a in 0..current.length && b in 0..current.length
+        // Without a cursor, rebuilding the text is a guess (it may still be
+        // a placeholder Hex can't see as one), so let the app paste it where
+        // its own cursor is.
+        if (!known && paste(field, transcript)) return true
         val start = if (known) minOf(a, b) else current.length
         val end = if (known) maxOf(a, b) else current.length
         val text = joinAtCursor(current.substring(0, start), transcript)
@@ -220,11 +232,15 @@ class HexAccessibilityService : AccessibilityService() {
             )
             return true
         }
-        val clipboard = getSystemService(ClipboardManager::class.java)
-        clipboard.setPrimaryClip(ClipData.newPlainText("Hex", text))
-        if (field.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return true
+        if (known && paste(field, text)) return true
         message("Copied")
         return false
+    }
+
+    /** Copies the text and pastes it into the field; the copy stays either way. */
+    private fun paste(field: AccessibilityNodeInfo, text: String): Boolean {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Hex", text))
+        return field.performAction(AccessibilityNodeInfo.ACTION_PASTE)
     }
 
     private fun copyInstead(transcript: String): Boolean {

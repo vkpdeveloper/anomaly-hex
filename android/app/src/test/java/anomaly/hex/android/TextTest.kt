@@ -47,6 +47,16 @@ class TextTest {
     }
 
     @Test
+    fun placeholdersAreNotText() {
+        assertEquals("", fieldText("Message", "Message", showingHint = true, cursor = 0))
+        // WhatsApp-style: the hint as text, unflagged, with no cursor.
+        assertEquals("", fieldText("Message", "Message", showingHint = false, cursor = -1))
+        // Typed text that happens to match the hint keeps its cursor past the start.
+        assertEquals("Message", fieldText("Message", "Message", showingHint = false, cursor = 7))
+        assertEquals("hello", fieldText("hello", "Message", showingHint = false, cursor = -1))
+    }
+
+    @Test
     fun wavHeaderDescribes16kMonoPcm() {
         val out = wav(byteArrayOf(1, 2, 3, 4), 16_000)
         assertEquals(48, out.size)

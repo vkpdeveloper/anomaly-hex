@@ -547,16 +547,20 @@ Toggle on -> the app's supervisor (local_api::phone::PhoneDictation) serves  // 
 │   `_hex-phone._tcp` (mdns-sd, IPv4 only, never on the Tailscale interface)
 ├── A peer outside loopback, link-local, RFC 1918, or Tailscale -> closed at accept
 ├── A request without the code -> 401 after 400 ms
-└── A clip -> the raw transcript (like Dictate without processing): on the
-    dictation engine's loaded model when it holds the selected one (clips up
-    to 30 s), no modes, no History, no paste
+├── A clip -> the raw transcript (like Dictate without processing): on the
+│   dictation engine's loaded model when it holds the selected one (clips up
+│   to 30 s), no modes, no History, no paste
+└── A saved import that can't run -> the model the listener runs in its place
+    (custom_models::runnable), not model-not-ready
 ```
 
 The phone records 16 kHz mono PCM16, so the computer never resamples, and
 resolves its route (Tailscale first, then Wi-Fi, or one the user pins)
 when the Hex button appears, so a dictation goes straight to an address that
 answered. Plain HTTP on the LAN is visible to that network; Tailscale's
-route is WireGuard-encrypted.
+route is WireGuard-encrypted. The transcript goes in at the field's cursor;
+an empty field's placeholder ("Message") is not text, and a field that
+reports no cursor gets the transcript pasted where its own cursor is.
 Checks: `serves_a_paired_phone_only`, `answers_only_private_networks`,
 `tailscale_routes_sort_first`, and `codes_read_the_way_people_type_them` in
 [local_api/phone.rs](../../src/local_api/phone.rs);

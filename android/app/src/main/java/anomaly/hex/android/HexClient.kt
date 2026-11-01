@@ -9,6 +9,8 @@ import java.net.URL
 sealed class HexError(message: String) : Exception(message) {
     data object NotPaired : HexError("Connect a computer in Hex")
     data object Unreachable : HexError("Can't reach Hex")
+    /** The route refused or timed out before anything was sent, so resending is safe. */
+    data object ConnectFailed : HexError("Can't reach Hex")
     data object WrongCode : HexError("Pairing code changed")
     data object ModelNotReady : HexError("Model isn't ready")
     data object Busy : HexError("Hex is busy")
@@ -73,8 +75,15 @@ object HexClient {
                 connection.setRequestProperty("Content-Type", "audio/wav")
                 // Streams straight to the socket instead of buffering a copy.
                 connection.setFixedLengthStreamingMode(wav.size)
-                connection.outputStream.use { it.write(wav) }
             }
+            // Kept apart from later failures: a read timeout or a reset after
+            // the upload may mean the computer is still transcribing.
+            try {
+                connection.connect()
+            } catch (_: IOException) {
+                throw HexError.ConnectFailed
+            }
+            if (wav != null) connection.outputStream.use { it.write(wav) }
             val status = connection.responseCode
             val body = (if (status in 200..299) connection.inputStream else connection.errorStream)
                 ?.use { it.readBytes().decodeToString() }
