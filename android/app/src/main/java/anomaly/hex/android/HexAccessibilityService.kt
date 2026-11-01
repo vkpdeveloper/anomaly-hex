@@ -9,6 +9,7 @@ import android.graphics.PixelFormat
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -37,14 +38,17 @@ class HexAccessibilityService : AccessibilityService() {
     private lateinit var params: WindowManager.LayoutParams
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var shown = false
+    /** Whether the button's window is attached (it may be popping out). */
+    private var attached = false
     private var recorder: Recorder? = null
     private var settling = false
     private val settle = Runnable {
         settling = false
         refresh()
     }
-    private val clearMessage = Runnable { if (bubble.mode == BubbleView.Mode.MESSAGE) idle() }
+    private val clearMessage = Runnable {
+        if (bubble.mode == BubbleView.Mode.MESSAGE || bubble.mode == BubbleView.Mode.DONE) idle()
+    }
 
     private val network = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = router.invalidate()
@@ -89,7 +93,7 @@ class HexAccessibilityService : AccessibilityService() {
         recorder?.cancel()
         scope.cancel()
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network) }
-        if (shown) runCatching { windows.removeView(bubble) }
+        if (attached) runCatching { windows.removeViewImmediate(bubble) }
         super.onDestroy()
     }
 
@@ -111,23 +115,27 @@ class HexAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /** Shows the button over a focused field; keeps it while it's working. */
+    /** Pops the button in over a focused field; keeps it while it's working. */
     private fun refresh() {
         val busy = bubble.mode != BubbleView.Mode.IDLE
-        val want = busy || focusedField() != null
-        if (want == shown) return
-        if (want) {
-            windows.addView(bubble, params)
-            router.prewarm()
-        } else {
-            windows.removeView(bubble)
+        if (busy || focusedField() != null) {
+            if (!attached) {
+                windows.addView(bubble, params)
+                attached = true
+                router.prewarm()
+            }
+            bubble.appear()
+        } else if (attached) {
+            bubble.disappear {
+                windows.removeView(bubble)
+                attached = false
+            }
         }
-        shown = want
     }
 
     private fun tap() {
         when (bubble.mode) {
-            BubbleView.Mode.IDLE, BubbleView.Mode.MESSAGE -> startRecording()
+            BubbleView.Mode.IDLE, BubbleView.Mode.MESSAGE, BubbleView.Mode.DONE -> startRecording()
             BubbleView.Mode.RECORDING -> stopAndSend()
             BubbleView.Mode.THINKING -> Unit
         }
@@ -160,9 +168,8 @@ class HexAccessibilityService : AccessibilityService() {
                 onSuccess = { transcript ->
                     if (transcript.isEmpty()) {
                         message("No speech")
-                    } else {
-                        idle()
-                        insert(transcript)
+                    } else if (insert(transcript)) {
+                        done()
                     }
                 },
                 onFailure = { error -> message((error as? HexError)?.message ?: "Can't reach Hex") },
@@ -182,8 +189,11 @@ class HexAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** Puts the text at the cursor, replacing a selection; else pastes it. */
-    private fun insert(transcript: String) {
+    /**
+     * Puts the text at the cursor, replacing a selection; else pastes it.
+     * False when it could only be copied (and says so).
+     */
+    private fun insert(transcript: String): Boolean {
         val field = focusedField() ?: return copyInstead(transcript)
         val current = if (field.isShowingHintText) "" else field.text?.toString().orEmpty()
         val a = field.textSelectionStart
@@ -208,16 +218,32 @@ class HexAccessibilityService : AccessibilityService() {
                     putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
                 },
             )
-            return
+            return true
         }
         val clipboard = getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("Hex", text))
-        if (!field.performAction(AccessibilityNodeInfo.ACTION_PASTE)) message("Copied")
+        if (field.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return true
+        message("Copied")
+        return false
     }
 
-    private fun copyInstead(transcript: String) {
+    private fun copyInstead(transcript: String): Boolean {
         getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Hex", transcript))
         message("Copied")
+        return false
+    }
+
+    /** A check for a moment, then back to the mark. */
+    private fun done() {
+        bubble.show(BubbleView.Mode.DONE)
+        val feel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            HapticFeedbackConstants.CONFIRM
+        } else {
+            HapticFeedbackConstants.VIRTUAL_KEY
+        }
+        bubble.performHapticFeedback(feel)
+        main.removeCallbacks(clearMessage)
+        main.postDelayed(clearMessage, 900)
     }
 
     private fun idle() {
@@ -227,7 +253,7 @@ class HexAccessibilityService : AccessibilityService() {
 
     private fun message(text: String) {
         bubble.show(BubbleView.Mode.MESSAGE, text)
-        if (!shown) refresh()
+        refresh()
         main.removeCallbacks(clearMessage)
         main.postDelayed(clearMessage, 2_200)
     }
@@ -235,7 +261,7 @@ class HexAccessibilityService : AccessibilityService() {
     private fun drag(dy: Float) {
         val height = resources.displayMetrics.heightPixels
         params.y = (params.y + dy.toInt()).coerceIn(0, (height - bubble.height).coerceAtLeast(0))
-        if (shown) windows.updateViewLayout(bubble, params)
+        if (attached) windows.updateViewLayout(bubble, params)
     }
 
     private fun saveY() {

@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -111,11 +112,13 @@ private fun SetupScreen() {
     val store = remember { Store(context) }
     var microphone by remember { mutableStateOf(micAllowed(context)) }
     var accessibility by remember { mutableStateOf(accessibilityOn(context)) }
+    var background by remember { mutableStateOf(runsInBackground(context)) }
     var computer by remember { mutableStateOf(store.computer) }
 
     LifecycleResumeEffect(Unit) {
         microphone = micAllowed(context)
         accessibility = accessibilityOn(context)
+        background = runsInBackground(context)
         computer = store.computer
         onPauseOrDispose {}
     }
@@ -136,6 +139,7 @@ private fun SetupScreen() {
         }
         MicrophoneStep(microphone) { microphone = it }
         AccessibilityStep(accessibility)
+        BackgroundStep(background)
         ComputerStep(store, computer) { computer = it }
         if (computer != null && accessibility) TryIt()
     }
@@ -206,8 +210,19 @@ private fun AccessibilityStep(on: Boolean) {
 }
 
 @Composable
+private fun BackgroundStep(allowed: Boolean) {
+    val context = LocalContext.current
+    Step(3, "Run in background", allowed) {
+        if (!allowed) {
+            Note("Battery saving can stop the Hex button when you aren't looking. Let Hex run without limits.")
+            Button(onClick = { allowBackground(context) }) { Text("Allow") }
+        }
+    }
+}
+
+@Composable
 private fun ComputerStep(store: Store, computer: Computer?, onChange: (Computer?) -> Unit) {
-    Step(3, "Computer", computer != null) {
+    Step(4, "Computer", computer != null) {
         if (computer == null) Pairing(store, onChange) else Paired(store, computer, onChange)
     }
 }
@@ -435,6 +450,18 @@ private fun openAccessibility(context: Context) {
         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     } catch (_: SecurityException) {
         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    }
+}
+
+private fun runsInBackground(context: Context) =
+    context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
+
+private fun allowBackground(context: Context) {
+    val ask = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
+    try {
+        context.startActivity(ask)
+    } catch (_: ActivityNotFoundException) {
+        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
     }
 }
 
