@@ -119,7 +119,9 @@ pub(crate) fn apply(settings: &AppSettings) {
     let feature = crate::labs::Feature::PhoneDictation;
     let wanted = (feature.on(settings) && feature.shipped()).then(|| Wanted {
         port: settings.labs.phone_dictation_port,
-        selection: settings.transcription.clone(),
+        // An import that can't run stays saved; the phone gets the model
+        // the listener runs in its place.
+        selection: crate::transcription::custom_models::runnable(&settings.transcription),
     });
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
