@@ -16,9 +16,26 @@ android {
         versionName = "0.1.0"
     }
 
+    // Release signing comes from Gradle properties outside the repo
+    // (~/.gradle/gradle.properties), so no key or password is checked in.
+    val releaseStore = providers.gradleProperty("hexReleaseStoreFile").orNull
+    signingConfigs {
+        if (releaseStore != null) {
+            create("release") {
+                storeFile = file(releaseStore)
+                storePassword = providers.gradleProperty("hexReleaseStorePassword").get()
+                keyAlias = providers.gradleProperty("hexReleaseKeyAlias").get()
+                keyPassword = providers.gradleProperty("hexReleaseKeyPassword").get()
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            if (releaseStore != null) signingConfig = signingConfigs.getByName("release")
         }
     }
 
