@@ -1403,6 +1403,11 @@ pub struct LabsSettings {
     pub parakeet_ultra: bool,
     /// Menu, Pause, and Scroll Lock may be shortcut keys (Linux, issue 767).
     pub standalone_special_keys: bool,
+    /// Hex for Android dictates through this computer's model
+    /// (`local_api::phone`).
+    pub phone_dictation: bool,
+    /// The port phone dictation listens on; 0 picks one automatically.
+    pub phone_dictation_port: u16,
 }
 
 /// The idle times Labs › Unload model when idle offers, in minutes.
@@ -1434,6 +1439,8 @@ impl Default for LabsSettings {
             custom_models: false,
             parakeet_ultra: false,
             standalone_special_keys: false,
+            phone_dictation: false,
+            phone_dictation_port: 0,
         }
     }
 }
@@ -2264,6 +2271,7 @@ impl AppSettings {
             Ordering::Release,
         );
         crate::labs::apply(&self.labs);
+        crate::local_api::phone::apply(self);
         #[cfg(hex_capture)]
         {
             *CAPTURE_SETTINGS

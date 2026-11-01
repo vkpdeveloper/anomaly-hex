@@ -8,7 +8,7 @@ use rune::{El, Icon, Tx, row, text};
 use super::controls::{
     self, CardRow, Paint, card, icon_row, icon_row_tagged, pressable_row, row_switch,
 };
-use super::icons::{BOOK, GLOBE, HINTS, KEYBOARD, MOUSE, SPARKLES, TERMINAL, TIMER, WAVE};
+use super::icons::{BOOK, GLOBE, HINTS, KEYBOARD, MOUSE, PHONE, SPARKLES, TERMINAL, TIMER, WAVE};
 use super::lists::{Tone, tone_tag};
 use super::{NAV_ROW_GAP, NAV_ROW_HEIGHT, Pane, Ui, VOICE_FILTER_ICON};
 use crate::desktop::i18n::{tr, tr_fill};
@@ -344,6 +344,12 @@ fn rows(ui: &Ui) -> Vec<Row> {
         },
         ..row(Feature::ParakeetUltra, &HINTS, tr("Parakeet Ultra"), "")
     });
+    rows.push(row(
+        Feature::PhoneDictation,
+        &PHONE,
+        tr("Phone dictation"),
+        tr("Dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi"),
+    ));
     if caps.share_shortcut {
         rows.push(row(
             Feature::ShareShortcut,
@@ -393,6 +399,7 @@ fn row_key(feature: Feature) -> &'static str {
         Feature::CustomModels => "lab-custom-models",
         Feature::ParakeetUltra => "lab-parakeet-ultra",
         Feature::StandaloneSpecialKeys => "lab-special-keys",
+        Feature::PhoneDictation => "lab-phone-dictation",
     }
 }
 
@@ -449,12 +456,16 @@ pub(super) fn page(ui: &Ui, p: Paint) -> El {
     let mut cards: Vec<CardRow> = Vec::new();
     for row in rows(ui).into_iter().filter(|row| row.feature.shipped()) {
         let unload_idle = row.feature == Feature::UnloadIdle && row.on;
+        let phone = row.feature == Feature::PhoneDictation && row.on;
         let flashing = ui
             .lab_flash
             .is_some_and(|(feature, _)| feature == row.feature);
         cards.push(feature_row(p, row, flashing));
         if unload_idle {
             cards.push(unload_after_row(ui, p));
+        }
+        if phone {
+            cards.extend(super::phone_dictation::rows(ui, p));
         }
     }
     let rows = cards;

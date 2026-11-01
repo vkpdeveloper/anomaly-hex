@@ -47,6 +47,8 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Benchmark details no  labs.benchmark_details        picker cards show raw WER/CER (lower is better), language, dataset, source, and conditions; incomparable "Most accurate" badges drop (#647)
 ├── Use your own speech model no labs.custom_models     the picker's "Add model file…" and `hex model import` copy in a GGUF checked from its header (#648, #743)
 ├── Parakeet Ultra  no    labs.parakeet_ultra          the picker offers Moondream's Parakeet Ultra (pinned Q8_0, CC BY 4.0) with a details view; stays on while it dictates (#648)
+├── Phone dictation no   labs.phone_dictation + labs.phone_dictation_port (0 = automatic)
+│                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi (docs/phone-dictation.md)
 ├── Special keys alone no labs.standalone_special_keys (Linux) Menu, Pause, Scroll Lock may be a shortcut's key, alone or with modifiers (#767)
 └── Terminal paste  no    paste_with_shift             (Windows) paste with Ctrl+Shift+V (#477/#478; Linux keeps it in General)
 
@@ -527,6 +529,41 @@ in [app_settings/shortcut_repair.rs](../../src/app_settings/shortcut_repair.rs).
 Not yet observed: a real GNOME Wayland session granting Menu through the
 portal, or an X11 grab of it; the Labs page goldens need regenerating on Linux
 with the new row.
+
+Phone dictation (`phone-dictation`, every OS): this computer transcribes for
+Hex for Android (`android/`), a thin client that never runs a model. The
+contract is [`docs/phone-dictation.md`](../phone-dictation.md).
+
+```ts
+Toggle on -> the app's supervisor (local_api::phone::PhoneDictation) serves  // labs.phone-dictation
+│   the phone API; a CLI process never serves
+├── Port -> labs.phone_dictation_port; 0 (the field blank) is automatic:
+│   the port it got last time, else 47213, else a random free one in
+│   47300..48900, remembered in <support>/phone-dictation.json (0600)
+├── Pairing code -> 12 Crockford base32 characters, shown XXXX-XXXX-XXXX,
+│   kept beside the port; New code replaces it and every phone pairs again
+├── Addresses -> this computer's Tailscale (100.64.0.0/10) then LAN (RFC 1918)
+│   IPv4 addresses, reread every 5 s; the LAN gets a DNS-SD advert
+│   `_hex-phone._tcp` (mdns-sd, IPv4 only, never on the Tailscale interface)
+├── A peer outside loopback, link-local, RFC 1918, or Tailscale -> closed at accept
+├── A request without the code -> 401 after 400 ms
+└── A clip -> the raw transcript (like Dictate without processing): on the
+    dictation engine's loaded model when it holds the selected one (clips up
+    to 30 s), no modes, no History, no paste
+```
+
+The phone records 16 kHz mono PCM16, so the computer never resamples, and
+resolves its route (Tailscale first, then Wi-Fi, or one the user pins)
+when the Hex button appears, so a dictation goes straight to an address that
+answered. Plain HTTP on the LAN is visible to that network; Tailscale's
+route is WireGuard-encrypted.
+Checks: `serves_a_paired_phone_only`, `answers_only_private_networks`,
+`tailscale_routes_sort_first`, and `codes_read_the_way_people_type_them` in
+[local_api/phone.rs](../../src/local_api/phone.rs);
+`blank_is_automatic_and_low_ports_are_refused` in
+[rune_ui/phone_dictation.rs](../../src/rune_ui/phone_dictation.rs); the Android
+unit tests in `android/app/src/test`. The Labs page goldens need
+regenerating on Linux with the new row.
 
 Normal features, not Labs: dictation, Annotate (every build; its own pane
 and switch), lowering audio while dictating (#210), Dot scope, chord shortcuts, QuickJS transformations, clipboard

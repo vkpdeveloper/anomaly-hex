@@ -325,6 +325,8 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
             ..Default::default()
         },
     )?;
+    // Labs › Phone dictation: idle until its setting asks for it.
+    let phone_dictation = crate::local_api::phone::PhoneDictation::start();
     let (controller_events_sender, controller_events) = mpsc::sync_channel(32);
     let (controller_commands, controller_command_receiver) = mpsc::sync_channel(8);
     let (meeting_requests, meeting_request_receiver) = mpsc::sync_channel(8);
@@ -505,6 +507,7 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
             updater.install_on_quit();
         }
         drop(requests);
+        drop(phone_dictation);
         local_api.shutdown();
         // The listener owns the transcription engine; joining it frees the
         // model after its last use.

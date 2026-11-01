@@ -42,7 +42,7 @@ Meetings (beta), Voice Filter (locked on while its macOS driver is
 installed), Playground, Live text, Live chapters, Vocabulary biasing, Switch
 model with keyboard language (#216), Mouse shortcuts (#209, macOS), Also
 pause the browser (#301, macOS), Share dictation shortcut (#176, Windows),
-Unload model when idle (#442), and Terminal paste (Windows). Externally contributed features land there too.
+Unload model when idle (#442), Phone dictation, and Terminal paste (Windows). Externally contributed features land there too.
 Annotate is a normal feature in every build, stable included, on macOS,
 Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 `DEVELOPER_FEATURES_ENABLED`) stay gated to dev builds.
@@ -200,6 +200,16 @@ substitute for source inspection or a second roadmap.
   adapter (`linux::app::LinuxControl`, `windows::rune::WindowsControl`);
   `macos_rune::control` is macOS's host. What an OS can't do answers
   `unsupported` at runtime. Contract: `docs/cli.md`.
+- `local_api/phone`, `android/`: Labs › Phone dictation. The app's
+  supervisor (`PhoneDictation`, held by each OS's app, never a CLI) serves
+  `/phone/v1/hello` and `/phone/v1/transcriptions` on its own port (saved,
+  else 47213, else a free one in 47300..48900) to private and Tailscale
+  peers holding the pairing code, advertises `_hex-phone._tcp` on the LAN,
+  and transcribes through `transcription/service` like the local API.
+  `android/` is Hex for Android in Kotlin: an accessibility-service button
+  over focused text fields that records 16 kHz audio, sends it on a
+  pre-picked route (Tailscale first), and inserts the raw transcript.
+  Contract: [`docs/phone-dictation.md`](docs/phone-dictation.md).
 - `sdk/typescript`: Promise and Effect v4 host wrappers for direct-child
   lifecycle, authenticated model preparation, and host-audio transcription.
 - `control/developer_control`: the typed debug-only command/reply protocol the local

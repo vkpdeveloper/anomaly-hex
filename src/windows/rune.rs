@@ -219,6 +219,8 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
         .map_err(|_| eyre!("the Hex runtime already started"))?;
     let (control_calls, control_receiver) = mpsc::sync_channel(8);
     let local_api = crate::local_api::LocalApi::start_for_app(&event_path, control_calls);
+    // Labs › Phone dictation: idle until its setting asks for it.
+    let phone_dictation = crate::local_api::phone::PhoneDictation::start();
     let quit = window.clone();
     let runtime_tray = tray.clone();
     let runtime_shared = shared.clone();
@@ -261,6 +263,7 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     if let Some(meetings) = meetings {
         meetings.join();
     }
+    drop(phone_dictation);
     drop(local_api);
     drop(tray);
     Ok(())

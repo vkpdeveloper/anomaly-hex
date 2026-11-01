@@ -35,15 +35,8 @@ fn available() -> bool {
 #[derive(Clone, Copy, Debug)]
 enum Kind {
     Bool,
-    Number {
-        min: f64,
-        max: f64,
-    },
-    #[cfg_attr(not(hex_capture), allow(dead_code))]
-    Integer {
-        min: u64,
-        max: u64,
-    },
+    Number { min: f64, max: f64 },
+    Integer { min: u64, max: u64 },
     Choice(&'static [&'static str]),
     Text,
     Shortcut(HotkeySlot),
@@ -371,6 +364,16 @@ const KEYS: &[Key] = &[
         "labs.standalone_special_keys",
         Kind::Bool,
         "Labs: shortcuts may use Menu, Pause, or Scroll Lock, alone or with modifiers (Linux); off puts such a shortcut back to its default",
+    ),
+    key(
+        "labs.phone_dictation",
+        Kind::Bool,
+        "Labs: dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi",
+    ),
+    key(
+        "labs.phone_dictation_port",
+        Kind::Integer { min: 0, max: 65535 },
+        "The port Labs › Phone dictation listens on; 0 picks one automatically",
     ),
     key(
         "meetings.enabled",
@@ -867,6 +870,15 @@ pub fn apply(
             ));
         }
         "labs.standalone_special_keys" => candidate.repair_special_keys(),
+        "labs.phone_dictation_port"
+            if (1..crate::local_api::phone::MIN_PORT)
+                .contains(&candidate.labs.phone_dictation_port) =>
+        {
+            return Err(invalid(
+                name,
+                "use 0 to pick one automatically, or a port from 1024 to 65535",
+            ));
+        }
         "labs.parakeet_ultra" if !candidate.labs.parakeet_ultra => {
             if let Some(why) = crate::labs::Feature::ParakeetUltra.off_refusal(settings) {
                 return Err(invalid(name, why));

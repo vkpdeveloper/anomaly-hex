@@ -32,6 +32,14 @@ line_icon!(
     ]
 );
 line_icon!(
+    PHONE,
+    "hex-row-phone",
+    [
+        "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z",
+        "M12 18h.01",
+    ]
+);
+line_icon!(
     BLUETOOTH,
     "hex-row-bluetooth",
     ["m7 7 10 10-5 5V2l5 5L7 17"]

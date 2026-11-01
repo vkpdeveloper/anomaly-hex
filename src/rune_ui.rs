@@ -43,6 +43,7 @@ mod modes;
 mod onboarding;
 mod onboarding_kit;
 mod output;
+mod phone_dictation;
 mod picker;
 mod platform;
 mod platform_settings;
@@ -777,6 +778,8 @@ pub(crate) struct Ui {
     labs_open: bool,
     /// The Labs row a link just opened, pulsing until it is cleared.
     lab_flash: Option<(crate::labs::Feature, Instant)>,
+    /// Labs › Phone dictation's status and port field.
+    phone: phone_dictation::PhoneView,
     /// A scene previewing the badge of a build kind this binary is not.
     build_preview: Option<BuildKind>,
     capture: Capture,
@@ -878,6 +881,7 @@ impl Ui {
             advanced: Vec::new(),
             labs_open: false,
             lab_flash: None,
+            phone: phone_dictation::PhoneView::default(),
             build_preview: None,
             capture: Capture::Idle,
             vocabulary,
@@ -1308,6 +1312,7 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     let now = Instant::now();
     let mut changed = ui.save_drafts(now);
     changed |= labs::poll_flash(ui, now);
+    changed |= phone_dictation::poll(ui, now);
     // The OpenCode catalog is read only while the pane that uses it shows.
     changed |= ui.models.poll(
         ui.live()

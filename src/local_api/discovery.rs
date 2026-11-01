@@ -225,6 +225,11 @@ pub(super) fn discovery_is_live(document: &DiscoveryDocument) -> bool {
 }
 
 pub(super) fn write_discovery(path: &Path, document: &DiscoveryDocument) -> Result<()> {
+    write_private_json(path, document)
+}
+
+/// Atomically replaces `path` with `value` as JSON only its owner can read.
+pub(super) fn write_private_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| eyre!("local API discovery path has no parent"))?;
@@ -236,13 +241,13 @@ pub(super) fn write_discovery(path: &Path, document: &DiscoveryDocument) -> Resu
     }
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    // The token lets any reader drive Hex, so only the owner may read it. On
+    // A token lets any reader drive Hex, so only the owner may read it. On
     // Windows the file inherits the per-user Application Support folder's
     // ACL (the user, SYSTEM and Administrators).
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(&temporary)?;
-    let mut data = serde_json::to_vec(document)?;
+    let mut data = serde_json::to_vec(value)?;
     data.push(b'\n');
     file.write_all(&data)?;
     file.sync_all()?;

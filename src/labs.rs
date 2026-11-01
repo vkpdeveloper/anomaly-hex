@@ -86,10 +86,11 @@ pub enum Feature {
     CustomModels,
     ParakeetUltra,
     StandaloneSpecialKeys,
+    PhoneDictation,
 }
 
 impl Feature {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -118,6 +119,7 @@ impl Feature {
         Self::CustomModels,
         Self::ParakeetUltra,
         Self::StandaloneSpecialKeys,
+        Self::PhoneDictation,
     ];
 
     /// The features this OS and build have.
@@ -168,7 +170,8 @@ impl Feature {
             | Self::BenchmarkDetails
             | Self::CustomModels
             | Self::ParakeetUltra
-            | Self::StandaloneSpecialKeys => Audience::Everyone,
+            | Self::StandaloneSpecialKeys
+            | Self::PhoneDictation => Audience::Everyone,
         }
     }
 
@@ -188,6 +191,9 @@ impl Feature {
     pub fn for_settings_key(key: &str) -> Option<Self> {
         if key == "labs.unload_idle_minutes" {
             return Some(Self::UnloadIdle);
+        }
+        if key == "labs.phone_dictation_port" {
+            return Some(Self::PhoneDictation);
         }
         Self::ALL
             .into_iter()
@@ -222,6 +228,7 @@ impl Feature {
             | Self::BenchmarkDetails
             | Self::CustomModels
             | Self::ParakeetUltra
+            | Self::PhoneDictation
             | Self::FillerWords => true,
         }
     }
@@ -257,6 +264,7 @@ impl Feature {
             Self::CustomModels => "custom-models",
             Self::ParakeetUltra => "parakeet-ultra",
             Self::StandaloneSpecialKeys => "special-keys",
+            Self::PhoneDictation => "phone-dictation",
         }
     }
 
@@ -291,6 +299,7 @@ impl Feature {
             Self::CustomModels => "labs.custom_models",
             Self::ParakeetUltra => "labs.parakeet_ultra",
             Self::StandaloneSpecialKeys => "labs.standalone_special_keys",
+            Self::PhoneDictation => "labs.phone_dictation",
         }
     }
 
@@ -362,6 +371,9 @@ impl Feature {
             Self::StandaloneSpecialKeys => {
                 "Use Menu, Pause, or Scroll Lock alone as a shortcut, such as Caps Lock remapped to Menu"
             }
+            Self::PhoneDictation => {
+                "Dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi (labs.phone_dictation_port)"
+            }
         }
     }
 
@@ -400,6 +412,7 @@ impl Feature {
             Self::CustomModels => settings.labs.custom_models,
             Self::ParakeetUltra => settings.labs.parakeet_ultra,
             Self::StandaloneSpecialKeys => settings.labs.standalone_special_keys,
+            Self::PhoneDictation => settings.labs.phone_dictation,
         }
     }
 
@@ -437,6 +450,7 @@ impl Feature {
                 settings.labs.standalone_special_keys = on;
                 settings.repair_special_keys();
             }
+            Self::PhoneDictation => settings.labs.phone_dictation = on,
         }
     }
 }

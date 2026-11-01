@@ -340,6 +340,8 @@ pub(crate) fn run(
     crate::transcription::local_transcriber::initialize_backends();
     let (control_calls, control_receiver) = mpsc::sync_channel(8);
     let local_api = crate::local_api::LocalApi::start_for_app(&event_path, control_calls);
+    // Labs › Phone dictation: idle until its setting asks for it.
+    let phone_dictation = crate::local_api::phone::PhoneDictation::start();
     let enable_on_launch = settings.enable_on_launch;
     let mut host = LinuxDesktopHost::new(
         event_path,
@@ -392,6 +394,7 @@ pub(crate) fn run(
     run_window(&host, requests, first, shutdown);
     shutdown.store(true, Ordering::Release);
     let _ = worker.join();
+    drop(phone_dictation);
     drop(local_api);
     drop(tray);
     Ok(())

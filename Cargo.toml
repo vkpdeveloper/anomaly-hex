@@ -114,6 +114,10 @@ anyhow = "1.0.104"
 rune-motion = { git = "https://github.com/anomalyco/rune.git", rev = "2d882f76b95563093eae12498e9990927c91d66b" }
 scrawl-capture = { path = "crates/capture", default-features = false, features = ["screen", "helper"] }
 pollster = "1.0.1"
+# Labs › Phone dictation: its LAN advertisement (DNS-SD) and the
+# Tailscale and LAN addresses it reports to the phone.
+if-addrs = "0.15.0"
+mdns-sd = "0.21.6"
 # The local API's `/profile/vitals`; it reports nothing off macOS.
 procwatch = { git = "https://github.com/anomalyco/rune.git", rev = "2d882f76b95563093eae12498e9990927c91d66b" }
 rune = { git = "https://github.com/anomalyco/rune.git", rev = "2d882f76b95563093eae12498e9990927c91d66b", features = ["native-file-dialog"] }
