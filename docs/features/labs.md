@@ -566,8 +566,8 @@ Checks: `serves_a_paired_phone_only`, `answers_only_private_networks`,
 [local_api/phone.rs](../../src/local_api/phone.rs);
 `blank_is_automatic_and_low_ports_are_refused` in
 [rune_ui/phone_dictation.rs](../../src/rune_ui/phone_dictation.rs); the Android
-unit tests in `android/app/src/test`. The Labs page goldens need
-regenerating on Linux with the new row.
+unit tests in `android/app/src/test`. The row sits below what the
+`mac-labs-link` golden shows, so no golden changes (checked on Linux).
 
 Normal features, not Labs: dictation, Annotate (every build; its own pane
 and switch), lowering audio while dictating (#210), Dot scope, chord shortcuts, QuickJS transformations, clipboard
