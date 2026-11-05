@@ -1,14 +1,14 @@
-//! The rows under Labs › Phone dictation while it is on: where the phone
+//! Labs › Phone dictation's card while it is on: where the phone
 //! reaches this computer, the pairing code, and the port
 //! (`crate::local_api::phone`).
 
 use std::time::{Duration, Instant};
 
-use rune::{El, TextEdit, Tx, row, text};
+use rune::{El, TextEdit, Tx, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, TextInput};
 
 use super::Ui;
-use super::controls::{CardRow, Paint, setting_row};
+use super::controls::{DESCRIPTION, Paint};
 use crate::desktop::i18n::{tr, tr_fill};
 use crate::local_api::phone::{self, RouteKind, Status};
 
@@ -93,16 +93,20 @@ fn parse_port(typed: &str) -> Option<u16> {
         .filter(|port| *port >= phone::MIN_PORT)
 }
 
-pub(super) fn rows(ui: &Ui, p: Paint) -> Vec<CardRow> {
-    let mut rows = vec![status_row(&ui.phone.status, p)];
+/// The card's body while on: where a phone reaches this computer, the
+/// pairing code, and the port.
+pub(super) fn body(ui: &Ui, p: Paint) -> El {
+    let mut body = col()
+        .key("phone")
+        .gap(12.0)
+        .child(status(&ui.phone.status, p));
     if let Status::Listening(listening) = &ui.phone.status {
-        rows.push(code_row(&phone::display_code(&listening.code), p));
+        body = body.child(code(&phone::display_code(&listening.code), p));
     }
-    rows.push(port_row(ui, p));
-    rows
+    body.child(port(ui, p))
 }
 
-fn status_row(status: &Status, p: Paint) -> CardRow {
+fn status(status: &Status, p: Paint) -> El {
     let (title, about) = match status {
         Status::Off => (tr("Starting…"), None),
         Status::Failed(why) => (tr("Not listening"), Some(why.clone())),
@@ -128,10 +132,23 @@ fn status_row(status: &Status, p: Paint) -> CardRow {
             (tr("Addresses"), Some(addresses.join(" · ")))
         }
     };
-    setting_row(p, "lab-phone-status", title, about.as_deref(), row()).into()
+    let mut block = col()
+        .key("phone-status")
+        .gap(2.0)
+        .child(text(title).key("label").font(DESCRIPTION).color(p.muted()));
+    if let Some(about) = about {
+        block = block.child(
+            text(about)
+                .key("value")
+                .font(DESCRIPTION)
+                .color(p.text())
+                .wrap(),
+        );
+    }
+    block
 }
 
-fn code_row(code: &str, p: Paint) -> CardRow {
+fn code(code: &str, p: Paint) -> El {
     let copy_code = code.to_owned();
     let copy = Button::new(tr("Copy"))
         .variant(ButtonVariant::Ghost)
@@ -151,30 +168,58 @@ fn code_row(code: &str, p: Paint) -> CardRow {
         })
         .build(p.k)
         .key("phone-code-new");
-    let control: El = row()
+    // Stacked like the addresses: the card is too narrow for the label,
+    // the code, and both buttons on one line.
+    col()
         .key("phone-code")
-        .gap(4.0)
-        .center_y()
+        .gap(2.0)
         .child(
-            text(code.to_owned())
-                .key("phone-code-text")
-                .font(p.k.ty.mono)
-                .color(p.text())
-                .mr(4.0),
+            text(tr("Pairing code"))
+                .key("label")
+                .font(DESCRIPTION)
+                .color(p.muted()),
         )
-        .child(copy)
-        .child(renew);
-    setting_row(p, "lab-phone-code", tr("Pairing code"), None, control).into()
+        .child(
+            row()
+                .key("phone-code-actions")
+                .gap(4.0)
+                .center_y()
+                .flex_wrap()
+                .child(
+                    text(code.to_owned())
+                        .key("phone-code-text")
+                        .font(p.k.ty.mono)
+                        .color(p.text())
+                        .mr(4.0),
+                )
+                .child(copy)
+                .child(renew),
+        )
 }
 
-fn port_row(ui: &Ui, p: Paint) -> CardRow {
+fn port(ui: &Ui, p: Paint) -> El {
     let field = TextInput::new(&ui.phone.port)
         .placeholder(tr("Automatic"))
         .width(Some(96.0))
         .on_edit(|ui: &mut Ui| &mut ui.phone.port)
         .build(p.k)
         .key("phone-port-field");
-    setting_row(p, "lab-phone-port", tr("Port"), None, field).into()
+    fact(p, "phone-port", tr("Port"), field)
+}
+
+fn fact(p: Paint, key: &str, label: &str, value: El) -> El {
+    row()
+        .key(key)
+        .gap(8.0)
+        .center_y()
+        .child(
+            text(label)
+                .key("label")
+                .font(DESCRIPTION)
+                .color(p.muted())
+                .grow(1.0),
+        )
+        .child(value)
 }
 
 #[cfg(test)]

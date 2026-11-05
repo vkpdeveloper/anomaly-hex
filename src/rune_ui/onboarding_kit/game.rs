@@ -11,6 +11,7 @@
 //! answer. The first run's `"Your turn"` feeds it Hex's own dictation; the
 //! playground story feeds it scripted answers.
 
+use crate::desktop::i18n::tr;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -799,6 +800,7 @@ pub(super) fn page(p: Paint, s: &Onboard) -> Option<El> {
             keep: Rc::new(live::on_ui(keep)),
         };
         let field = TextInput::new(&s.practice)
+            .label(tr("Your answer"))
             .on_edit(live::practice)
             .on_change(live::practice_changed)
             .on_submit(|ui: &mut Ui, _: &mut Tx| live::on_ui(answer)(ui));
@@ -815,6 +817,7 @@ pub(super) fn page(p: Paint, s: &Onboard) -> Option<El> {
             keep: Rc::new(keep),
         };
         let field = TextInput::new(&s.practice)
+            .label(tr("Your answer"))
             .on_edit(|s: &mut Onboard| &mut s.practice)
             .on_change(Onboard::on_practice_change)
             .on_submit(|s: &mut Onboard, _: &mut Tx| answer(s));
@@ -1097,7 +1100,7 @@ fn header<S: 'static>(
         .border(p.hair, k.c.border_weak)
         .child(number)
         .child(
-            text("destroyed")
+            text(tr("destroyed"))
                 .key("label")
                 .font(k.ty.small)
                 .color(p.muted()),
@@ -1112,7 +1115,7 @@ fn header<S: 'static>(
         .gap(6.0)
         .items_center()
         .child(
-            text("Clear your messages")
+            text(tr("Clear your messages"))
                 .key("t")
                 .font(title_font(p))
                 .color(p.text()),
@@ -1122,10 +1125,10 @@ fn header<S: 'static>(
                 .key("lead")
                 .gap(8.0)
                 .center_y()
-                .child(text("Hold").key("hold").font(LEAD).color(p.muted()))
+                .child(text(tr("Hold")).key("hold").font(LEAD).color(p.muted()))
                 .child(keys(p, "keys", look.caps, g.holding))
                 .child(
-                    text("and answer the one that's lit")
+                    text(tr("and answer the one that's lit"))
                         .key("rest")
                         .font(LEAD)
                         .color(p.muted()),
@@ -1142,7 +1145,7 @@ fn header<S: 'static>(
             .opacity(chrome)
             .opacity_motion(Anim::INSTANT)
             .child(
-                Button::new("Done")
+                Button::new(tr("Done"))
                     .variant(ButtonVariant::Neutral)
                     .on_press(act(&look.done))
                     .build_push(k)
@@ -1401,7 +1404,7 @@ fn certificate(p: Paint, targeted: bool, signed: bool) -> El {
             k.c.border_base
         });
     let hint = (!signed).then(|| {
-        text("Sign by saying your name")
+        text(tr("Sign by saying your name"))
             .key("hint")
             .font(k.ty.ui)
             .color(p.faint())
@@ -1426,13 +1429,13 @@ fn certificate(p: Paint, targeted: bool, signed: bool) -> El {
                 .gap(2.0)
                 .child(text("Hex").key("app").font(k.ty.small).color(p.muted()))
                 .child(
-                    text("Certificate of completion")
+                    text(tr("Certificate of completion"))
                         .key("title")
                         .font(k.ty.ui_medium)
                         .color(p.text()),
                 )
                 .child(
-                    text("I hereby have completed Hex onboarding.")
+                    text(tr("I hereby have completed Hex onboarding."))
                         .key("body")
                         .font(k.ty.ui)
                         .color(p.text()),
@@ -2002,7 +2005,7 @@ fn share<S: 'static>(
                 )
                 .child(el().key("space").grow(1.0))
                 .child(
-                    text("Onboarding complete")
+                    text(tr("Onboarding complete"))
                         .key("when")
                         .font(k.ty.small)
                         .color(p.muted()),
@@ -2025,13 +2028,13 @@ fn share<S: 'static>(
                         .pb(14.0)
                         .gap(2.0)
                         .child(
-                            text("messages destroyed")
+                            text(tr("messages destroyed"))
                                 .key("a")
                                 .font(LEAD)
                                 .color(p.text()),
                         )
                         .child(
-                            text("by voice, no typing")
+                            text(tr("by voice, no typing"))
                                 .key("b")
                                 .font(k.ty.small)
                                 .color(p.muted()),
@@ -2056,7 +2059,7 @@ fn share<S: 'static>(
                 .gap(10.0)
                 .items_end()
                 .child(
-                    text("Signed")
+                    text(tr("Signed"))
                         .key("s")
                         .font(k.ty.small)
                         .color(p.muted())
@@ -2087,14 +2090,14 @@ fn share<S: 'static>(
                 .center_y()
                 .child(el().key("space").grow(1.0))
                 .child(
-                    Button::new("Keep playing")
+                    Button::new(tr("Keep playing"))
                         .variant(ButtonVariant::Ghost)
                         .on_press(act(&look.keep))
                         .build_push(k)
                         .key("keep"),
                 )
                 .child(
-                    Button::new("Continue")
+                    Button::new(tr("Continue"))
                         .variant(ButtonVariant::Contrast)
                         .on_press(act(&look.done))
                         .build_push(k)

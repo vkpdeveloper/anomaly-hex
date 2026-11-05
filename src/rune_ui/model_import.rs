@@ -1,9 +1,11 @@
-//! Labs › Use your own speech model in the Local transcription picker: "Add
-//! model file…" opens the native dialog for a GGUF file, which is checked
+//! Your own speech models in the Local transcription picker: "Add model
+//! file…" opens the native dialog for a GGUF file, which is checked
 //! and copied on a worker (`custom_models::import`) while the picker stays
 //! responsive. Imported cards say what the file declared, can be renamed,
-//! and can be removed; one that is missing, changed, or behind its toggle
-//! says so instead of offering Use.
+//! and can be removed; one that is missing or changed says so instead of
+//! offering Use, with Check again (the selected one too). A file found on
+//! this computer (`found`), or one added with Labs › Use model files where
+//! they are, is used in place, and Remove only forgets it.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -25,18 +27,21 @@ pub(super) struct ImportState {
     pub(super) error: Option<String>,
     /// The import being renamed, with its name field.
     renaming: Option<(CustomModelId, TextEdit)>,
+    /// The file being chosen becomes the selected model once imported
+    /// ([`use_file`]): onboarding's way past a download that can't finish.
+    use_after: bool,
+    /// The file being chosen is used where it is, not copied (Labs › Use
+    /// model files where they are).
+    in_place: bool,
+    /// The selected import being checked again: once it matches, the
+    /// listener goes back to it from the model it ran in its place.
+    reselect: bool,
 }
 
 impl ImportState {
     fn busy(&self) -> bool {
         self.chooser.is_some() || self.worker.is_some()
     }
-}
-
-/// Whether Labs › Use your own speech model is on.
-pub(super) fn on(ui: &Ui) -> bool {
-    let feature = crate::labs::Feature::CustomModels;
-    feature.shipped() && feature.on(&ui.settings)
 }
 
 fn wake(waker: Option<Waker>) -> impl Fn() + Send + 'static {
@@ -47,21 +52,96 @@ fn wake(waker: Option<Waker>) -> impl Fn() + Send + 'static {
     }
 }
 
-/// The header's "Add model file…" button while the Lab is on.
-pub(super) fn add_button(ui: &Ui, p: Paint) -> Option<El> {
-    on(ui).then(|| {
+/// The header's "Add model file…" button.
+pub(super) fn add_button(ui: &Ui, p: Paint) -> El {
+    button(
+        p,
+        "add-model-file",
+        if ui.picker.import.busy() {
+            tr("Adding model…")
+        } else {
+            tr("Add model file…")
+        },
+        ButtonKind::Secondary,
+        |ui: &mut Ui, _| choose(ui),
+    )
+}
+
+/// Whether Labs › Use model files where they are is on.
+pub(super) fn in_place_on(ui: &Ui) -> bool {
+    let feature = crate::labs::Feature::ModelInPlace;
+    feature.shipped() && feature.managed().is_none() && feature.on(&ui.settings)
+}
+
+/// The header's "Use model file where it is…" while its Labs toggle is on.
+pub(super) fn in_place_button(ui: &Ui, p: Paint) -> Option<El> {
+    in_place_on(ui).then(|| {
         button(
             p,
-            "add-model-file",
-            if ui.picker.import.busy() {
-                tr("Adding model…")
-            } else {
-                tr("Add model file…")
-            },
+            "add-model-in-place",
+            tr("Use model file where it is…"),
             ButtonKind::Secondary,
-            |ui: &mut Ui, _| choose(ui),
+            |ui: &mut Ui, _| choose_in_place(ui),
         )
     })
+}
+
+/// Chooses a GGUF file to use where it is; the Labs toggle is checked here
+/// and again when the dialog answers.
+fn choose_in_place(ui: &mut Ui) {
+    if !in_place_on(ui) || !ui.live() || ui.picker.import.busy() {
+        return;
+    }
+    choose(ui);
+    ui.picker.import.in_place = ui.picker.import.chooser.is_some();
+}
+
+/// Settings' "Add model file…" while no model is installed: the file
+/// becomes the selected model ([`use_file`]).
+pub(super) fn use_file_button(ui: &Ui, p: Paint) -> El {
+    button(
+        p,
+        "transcription-add-file",
+        if ui.picker.import.busy() {
+            tr("Adding model…")
+        } else {
+            tr("Add model file…")
+        },
+        ButtonKind::Secondary,
+        |ui: &mut Ui, _| use_file(ui),
+    )
+}
+
+/// "Use a model file…": chooses a GGUF file, imports it, and makes it the
+/// selected model, for when the model can't be downloaded (#894). Errors land
+/// in `ui.picker.import.error`.
+pub(super) fn use_file(ui: &mut Ui) {
+    if !ui.live() || ui.picker.import.busy() {
+        return;
+    }
+    choose(ui);
+    ui.picker.import.use_after = ui.picker.import.chooser.is_some();
+}
+
+/// Why the model couldn't be prepared, in one line: the first line of the
+/// service's error ("Couldn't reach huggingface.co: …"), or the import's.
+pub(super) fn download_failure(ui: &Ui) -> Option<String> {
+    ui.picker
+        .import
+        .error
+        .clone()
+        .or_else(|| {
+            ui.view
+                .as_ref()
+                .and_then(|view| view.transcription.error.clone())
+        })
+        .and_then(|error| error.lines().next().map(str::to_owned))
+        .filter(|line| !line.trim().is_empty())
+}
+
+/// Whether a file chosen with [`use_file`] is being checked and copied.
+pub(super) fn using_file(ui: &Ui) -> bool {
+    ui.picker.import.use_after && ui.picker.import.busy()
 }
 
 fn choose(ui: &mut Ui) {
@@ -69,6 +149,9 @@ fn choose(ui: &mut Ui) {
         return;
     }
     ui.picker.import.error = None;
+    ui.picker.import.use_after = false;
+    ui.picker.import.in_place = false;
+    ui.picker.import.reselect = false;
     ui.picker.import.chooser = Some(crate::desktop::file_dialog::open(
         Dialog {
             title: tr("Add model file").into(),
@@ -95,15 +178,24 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     if let Some(choice) = ui.picker.import.chooser.as_ref().and_then(Pending::poll) {
         ui.picker.import.chooser = None;
         changed = true;
+        // Used where it is only while its Labs toggle is still on.
+        let in_place = std::mem::take(&mut ui.picker.import.in_place);
+        let refused = in_place && !in_place_on(ui);
         match choice {
+            Ok(Some(_)) if refused => ui.picker.import.use_after = false,
             Ok(Some(path)) => {
                 let (sender, receiver) = channel();
                 let wake = wake(ui.modes.waker.clone());
                 let started = std::thread::Builder::new()
                     .name("hex-model-import".into())
                     .spawn(move || {
-                        let result = custom_models::import(&path, None, &AtomicBool::new(false))
-                            .map_err(|error| format!("{error:#}"));
+                        let canceled = AtomicBool::new(false);
+                        let result = if in_place {
+                            custom_models::add_in_place(&path, &canceled)
+                        } else {
+                            custom_models::import(&path, None, &canceled)
+                        }
+                        .map_err(|error| format!("{error:#}"));
                         let _ = sender.send(result);
                         wake();
                     });
@@ -112,8 +204,11 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
                     Err(error) => ui.picker.import.error = Some(error.to_string()),
                 }
             }
-            Ok(None) => {}
-            Err(error) => ui.picker.import.error = Some(error),
+            Ok(None) => ui.picker.import.use_after = false,
+            Err(error) => {
+                ui.picker.import.use_after = false;
+                ui.picker.import.error = Some(error);
+            }
         }
     }
     let result = match ui.picker.import.worker.as_ref().map(Receiver::try_recv) {
@@ -124,8 +219,22 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     if let Some(result) = result {
         ui.picker.import.worker = None;
         changed = true;
+        let use_it = std::mem::take(&mut ui.picker.import.use_after);
+        // A checked selected import: the listener runs another model in its
+        // place until it is prepared again.
+        let reselect = std::mem::take(&mut ui.picker.import.reselect);
         match result {
-            Ok(id) => tracing::info!(id = id.as_str(), "an imported speech model is ready"),
+            Ok(id) => {
+                tracing::info!(id = id.as_str(), "an imported speech model is ready");
+                let selected = ui.settings.transcription.model == TranscriptionModelId::Custom(id);
+                if use_it || (reselect && selected) {
+                    let model = TranscriptionModelId::Custom(id);
+                    let language = crate::transcription::models::definition(model)
+                        .language_for(&ui.settings.transcription.language)
+                        .to_owned();
+                    ui.send(super::Request::ChooseModel { model, language });
+                }
+            }
             Err(error) => ui.picker.import.error = Some(error),
         }
     }
@@ -143,7 +252,6 @@ pub(super) fn status_note(model: &ModelDefinition) -> Option<String> {
         Status::Changed => Some(
             tr("Its file changed since it was imported. Check it again, import it again, or remove it.").into(),
         ),
-        Status::Off => Some(tr("Turn on Labs › Use your own speech model to use it.").into()),
     }
 }
 
@@ -172,10 +280,7 @@ pub(super) fn selection_notice(ui: &Ui) -> Option<String> {
             "{model} is missing, so Hex uses {fallback} until you import it again or choose another model"
         }
         Status::Changed => {
-            "{model} changed since it was imported, so Hex uses {fallback} until you import it again or choose another model"
-        }
-        Status::Off => {
-            "{model} needs Labs › Use your own speech model, so Hex uses {fallback} until you turn it on or choose another model"
+            "{model} changed since it was added, so Hex uses {fallback} until you check it again in the speech model picker or choose another model"
         }
     };
     Some(tr_named(notice, &[("model", name), ("fallback", fallback)]))
@@ -190,20 +295,35 @@ pub(super) fn metadata(model: &ModelDefinition) -> String {
         [only] => crate::transcription::models::language_name(only).to_owned(),
         languages => crate::desktop::i18n::tr_fill("{} languages", &languages.len().to_string()),
     };
+    let origin = import.as_ref().and_then(|import| import.origin.clone());
+    let in_place = import.as_ref().is_some_and(|import| import.in_place);
     let mut parts = vec![
-        tr("Imported").to_owned(),
+        match (&origin, in_place) {
+            (Some(_), _) => tr("Found on this computer"),
+            (None, true) => tr("Used where it is"),
+            (None, false) => tr("Imported"),
+        }
+        .to_owned(),
         custom_models::family(import.as_ref().map_or("", |import| import.architecture)).to_owned(),
         languages,
         tr("Not benchmarked").to_owned(),
     ];
     if let Some(import) = import {
-        parts.push(import.source);
+        parts.push(origin.unwrap_or(import.source));
         if let Some(license) = import.license {
             parts.push(license);
         }
         parts.push(format!("SHA-256 {}…", &import.sha256[..12]));
     }
     parts.join(" · ")
+}
+
+/// Whether `id` is a file used where it is (found, or added in place),
+/// which Remove only forgets.
+fn in_place(id: CustomModelId) -> bool {
+    custom_models::imported()
+        .into_iter()
+        .any(|import| import.definition.id == TranscriptionModelId::Custom(id) && import.in_place)
 }
 
 /// Rename and Remove for an imported card, or its name field while renaming.
@@ -246,6 +366,7 @@ pub(super) fn actions(
     let mut actions = Vec::new();
     // Missing or changed: check Hex's copy again, or import the file again.
     let status = custom_models::status(id);
+    let in_place = in_place(id);
     if status == Status::Changed {
         actions.push(button(
             p,
@@ -259,14 +380,22 @@ pub(super) fn actions(
             move |ui: &mut Ui, _| repair(ui, id),
         ));
     }
-    if matches!(status, Status::Missing | Status::Changed) {
+    if !in_place && matches!(status, Status::Missing | Status::Changed) {
         actions.push(button(
             p,
             "reimport-model",
             tr("Import again…"),
             ButtonKind::Secondary,
-            |ui: &mut Ui, _| choose(ui),
+            move |ui: &mut Ui, _| {
+                choose(ui);
+                ui.picker.import.reselect = ui.picker.import.chooser.is_some()
+                    && ui.settings.transcription.model == model.id;
+            },
         ));
+    }
+    // The selected import shows only how to fix it.
+    if ui.settings.transcription.model == model.id {
+        return actions;
     }
     actions.push(button(
         p,
@@ -282,10 +411,11 @@ pub(super) fn actions(
         let remove_button = button(
             p,
             "remove-model",
-            &if confirming {
-                crate::desktop::i18n::tr_fill("Remove {}?", &model.size_label())
-            } else {
-                tr("Remove").to_owned()
+            &match (in_place, confirming) {
+                (true, true) => tr("Forget it?").to_owned(),
+                (true, false) => tr("Forget").to_owned(),
+                (false, true) => crate::desktop::i18n::tr_fill("Remove {}?", &model.size_label()),
+                (false, false) => tr("Remove").to_owned(),
             },
             if confirming {
                 ButtonKind::Danger
@@ -309,6 +439,8 @@ fn repair(ui: &mut Ui, id: CustomModelId) {
         return;
     }
     ui.picker.import.error = None;
+    ui.picker.import.use_after = false;
+    ui.picker.import.reselect = ui.settings.transcription.model == TranscriptionModelId::Custom(id);
     let (sender, receiver) = channel();
     let wake = wake(ui.modes.waker.clone());
     let started = std::thread::Builder::new()

@@ -16,9 +16,10 @@ mod controls;
 #[cfg(target_os = "macos")]
 pub(crate) mod deep_link;
 mod explainer;
+mod found;
+mod found_choice;
 mod fun;
 mod general;
-mod hero;
 mod history;
 #[cfg_attr(target_os = "linux", path = "rune_ui/linux_host.rs")]
 #[cfg_attr(target_os = "windows", path = "rune_ui/windows_host.rs")]
@@ -43,15 +44,21 @@ mod modes;
 mod onboarding;
 mod onboarding_kit;
 mod output;
+mod paste_access;
 mod phone_dictation;
 mod picker;
 mod platform;
 mod platform_settings;
 pub(crate) mod playground;
 mod practice;
+mod scenes;
 #[cfg(hex_capture)]
 mod scrawl;
+#[cfg(hex_capture)]
+pub(crate) mod screenshot_thumbnail;
 mod settings;
+mod shortcut_mode;
+mod sidebar;
 mod sidebar_update;
 mod sound_sets;
 mod spark;
@@ -75,60 +82,16 @@ use crate::desktop::i18n::{tr, tr_fill};
 use crate::transcription::models::TranscriptionModelId;
 use controls::{METRICS, Paint};
 use host::{Backend, Request, ShortcutTarget};
+use onboarding_kit::live::Page;
+use scenes::{SCENES, Scene, fixture, mac_fixture, portal_fixture};
 use settings::Capture;
+use sidebar::{BuildKind, Pane, pane_header, sidebar};
 
 /// How long typing pauses before a text field's edit is saved.
 const DRAFT_DELAY: Duration = Duration::from_millis(250);
 /// How often timed state (draft saves, "Saved" badges, the OpenCode retry,
 /// the setup beat, permission polling) is checked while the window shows.
 const WINDOW_TICK: Duration = Duration::from_millis(250);
-
-static SETTINGS_ICON: Icon = Icon {
-    name: "hex-settings",
-    view: 24.0,
-    body: include_str!("../assets/icons/settings.svg"),
-};
-static MODES_ICON: Icon = Icon {
-    name: "hex-modes",
-    view: 24.0,
-    body: include_str!("../assets/icons/modes.svg"),
-};
-static OUTPUT_ICON: Icon = Icon {
-    name: "hex-output",
-    view: 24.0,
-    body: include_str!("../assets/icons/output.svg"),
-};
-static HISTORY_ICON: Icon = Icon {
-    name: "hex-history",
-    view: 24.0,
-    body: include_str!("../assets/icons/history.svg"),
-};
-static ACTIVITY_ICON: Icon = Icon {
-    name: "hex-activity",
-    view: 24.0,
-    body: include_str!("../assets/icons/activity.svg"),
-};
-static HUD_LAB_ICON: Icon = Icon {
-    name: "hex-hud-lab",
-    view: 24.0,
-    body: include_str!("../assets/icons/hud-lab.svg"),
-};
-static VOICE_FILTER_ICON: Icon = Icon {
-    name: "hex-voice-filter",
-    view: 24.0,
-    body: include_str!("../assets/icons/voice-filter.svg"),
-};
-static MEETINGS_ICON: Icon = Icon {
-    name: "hex-meetings",
-    view: 24.0,
-    body: include_str!("../assets/icons/meetings.svg"),
-};
-#[cfg(hex_capture)]
-static SCRAWL_ICON: Icon = Icon {
-    name: "hex-scrawl",
-    view: 24.0,
-    body: include_str!("../assets/icons/scrawl.svg"),
-};
 
 /// Runs the Linux window's app on the main thread until Hex quits: the
 /// window side of `linux_app`'s seam. It starts without a window; each
@@ -143,7 +106,9 @@ pub(crate) fn run_app(
 ) {
     use crate::linux::service::{Activation, Control};
     rune::set_app_id(crate::linux::portal::APP_ID);
-    let mut app = self::app(Some(host.clone())).args(Vec::new()).windowless();
+    let mut app = self::app(Some(host.clone()))
+        .args(window_args())
+        .windowless();
     // Tiling window managers float a window that maps at a fixed size.
     // Desktops that float every window need no such map, and KWin on X11
     // keeps a fixed-size window from fitting a small screen, its title bar
@@ -191,6 +156,7 @@ pub(crate) fn run_app(
                         });
                     }
                     Control::Quit => {
+                        self::host::close_before_quit(&window);
                         quit.quit();
                         break;
                     }
@@ -215,6 +181,20 @@ pub(crate) fn app(connect: host::Connect) -> rune::App<Ui> {
     #[cfg(target_os = "macos")]
     let app = app.on_open_url(on_open_url);
     app
+}
+
+/// Rune's flags for the window on Linux and Windows: scroll bars show
+/// whenever there's more to scroll, as those platforms do, so a pointer
+/// without a wheel can reach them (#1209). macOS follows its own "Show scroll
+/// bars" setting.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) fn window_args() -> Vec<String> {
+    vec!["--scroll-bars".into(), "always".into()]
+}
+
+/// Beside a setting an organization locked (`crate::policy`).
+fn managed_note() -> &'static str {
+    tr("Managed by your organization")
 }
 
 /// A `hex://` link the system opened with Hex: a story link opens the window
@@ -273,30 +253,56 @@ pub(crate) fn render_app(rune_args: Vec<String>) -> rune::App<Ui> {
     app
 }
 
-/// The window's compositor: the UI, then the welcome hero over the tour's
-/// stage and the Sounds sheet's HUD over its stage.
+/// The window's compositor: the UI (through the first run's GPU stage or
+/// the practice game's strike and burn while they show), then the Sounds
+/// sheet's HUD over its stage.
 #[derive(Default)]
 pub(crate) struct WindowCompositor {
-    hero: hero::HeroCompositor,
+    onboarding: Option<onboarding_kit::gpu_stage::OnboardingGpu>,
+    game: Option<onboarding_kit::game_fx::GameFx>,
     sounds: sound_sets::Preview,
+    /// The device whose backend `process.log` names.
+    logged: Option<rune::compose::DeviceKey>,
 }
 
 impl rune::compose::Compositor<Ui> for WindowCompositor {
     fn features(&self) -> wgpu::Features {
         // The Sounds sheet's HUD, and one device shared with the HUD overlay.
-        self.hero.features() | crate::rune_hud::Painter::FEATURES
-    }
-
-    fn animating(&self) -> bool {
-        self.hero.animating()
-    }
-
-    fn summary(&mut self, device: &wgpu::Device) -> Option<String> {
-        self.hero.summary(device)
+        crate::rune_hud::Painter::FEATURES
     }
 
     fn render(&mut self, f: &mut rune::compose::Frame<'_, Ui>) {
-        self.hero.render(f);
+        if self.logged != Some(f.device_key()) {
+            self.logged = Some(f.device_key());
+            tracing::info!(gpu = %rune::describe_gpu(f.device), "window draws");
+        }
+        if f.rt
+            .marks
+            .iter()
+            .any(|&m| onboarding_kit::game_fx::is_game_mark(m))
+        {
+            self.game
+                .get_or_insert_with(|| onboarding_kit::game_fx::GameFx::new(f.device))
+                .render(f);
+        } else if self.onboarding.is_some()
+            || f.rt
+                .marks
+                .iter()
+                .any(|&m| onboarding_kit::gpu_stage::is_onboard_mark(m))
+        {
+            if self
+                .onboarding
+                .as_ref()
+                .is_none_or(|g| !g.matches(f.format))
+            {
+                self.onboarding = Some(onboarding_kit::gpu_stage::OnboardingGpu::new(
+                    f.device, f.format,
+                ));
+            }
+            self.onboarding.as_mut().expect("created above").render(f);
+        } else {
+            f.draw_ui();
+        }
         self.sounds.render(f);
     }
 }
@@ -465,14 +471,21 @@ pub(crate) fn shortcut_rule(
         HotkeySlot::Dictation => ShortcutTarget::Dictation,
         HotkeySlot::PasteLast => ShortcutTarget::PasteLast,
         HotkeySlot::RawDictation => ShortcutTarget::RawDictation,
+        HotkeySlot::Cancel => ShortcutTarget::Cancel,
         #[cfg(hex_capture)]
         HotkeySlot::Capture => ShortcutTarget::Capture,
+        #[cfg(all(hex_capture, target_os = "macos"))]
+        HotkeySlot::CaptureReplay => ShortcutTarget::CaptureReplay,
+        #[cfg(all(hex_capture, not(target_os = "macos")))]
+        HotkeySlot::CaptureReplay => ShortcutTarget::Capture,
         #[cfg(target_os = "macos")]
         HotkeySlot::SecondDictation => ShortcutTarget::SecondDictation,
-        // Labs › Second dictation shortcut is macOS's; elsewhere a saved one
-        // meets the dictation shortcut's rules.
+        #[cfg(target_os = "macos")]
+        HotkeySlot::Screenshot => ShortcutTarget::Screenshot,
+        // Labs › Second dictation shortcut and Screenshots are macOS's;
+        // elsewhere a saved one meets the dictation shortcut's rules.
         #[cfg(not(target_os = "macos"))]
-        HotkeySlot::SecondDictation => ShortcutTarget::Dictation,
+        HotkeySlot::SecondDictation | HotkeySlot::Screenshot => ShortcutTarget::Dictation,
     };
     host::validate_hotkey(target, binding)
 }
@@ -521,6 +534,12 @@ pub(crate) fn meeting_corner_moved(
 #[cfg(target_os = "macos")]
 pub(crate) fn show_error(ui: &mut Ui, error: String) {
     ui.error = Some(error);
+}
+
+/// The menu bar asked for an update check: the footer says how it went.
+#[cfg(target_os = "macos")]
+pub(crate) fn update_check_asked(ui: &mut Ui) {
+    ui.update_asked = true;
 }
 
 /// A meeting recording could not start or finish; the Meetings pane says why.
@@ -604,111 +623,10 @@ struct ServiceView {
     transcription: DesktopTranscriptionSnapshot,
     update_status: DesktopUpdateStatus,
     update_notes: Option<crate::desktop::host::UpdateNotes>,
+    /// Why this Hex can't update itself, beside Download update (Windows).
+    update_blocked: Option<&'static str>,
     /// The service is recording or saving a shortcut.
     editing: bool,
-}
-
-/// Every pane, in navigation order. Which ones show depends on the OS's
-/// [`platform::Capabilities`] and opt-ins ([`Pane::shown`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum Pane {
-    /// Dictation, output, and application basics.
-    #[default]
-    General,
-    /// What Hex does to every dictation and in some apps, read-only: the
-    /// person's agent edits it.
-    Output,
-    /// The old per-app editor, kept for its scenes until it is removed.
-    Modes,
-    /// Recorded calls and their settings, or the opt-in (macOS beta).
-    Meetings,
-    History,
-    /// Annotate (Scrawl's captures inside Hex): the switch, shortcuts,
-    /// permission, transcriber, folder, retention, and Scrawl's own app.
-    /// Dev builds, macOS and Linux only.
-    #[cfg(hex_capture)]
-    Annotate,
-    /// The Hex Microphone's driver, tuning, and try-it demo (macOS, while
-    /// its Labs toggle is on).
-    VoiceFilter,
-    /// The dictation indicator's tuning scene (Playground only).
-    HudLab,
-    /// Legacy event-log inspector scene (Playground only).
-    Activity,
-}
-
-impl Pane {
-    #[cfg(all(test, target_os = "linux"))]
-    const ALL: &[Pane] = &[
-        Pane::General,
-        Pane::Output,
-        Pane::Modes,
-        Pane::Meetings,
-        Pane::History,
-        #[cfg(hex_capture)]
-        Pane::Annotate,
-        Pane::VoiceFilter,
-        Pane::HudLab,
-        Pane::Activity,
-    ];
-
-    fn shown(self, ui: &Ui) -> bool {
-        let caps = ui.platform.caps;
-        match self {
-            Pane::Modes | Pane::HudLab | Pane::Activity => false,
-            Pane::Meetings => caps.meetings && meetings::available(ui),
-            // On from Labs, or kept by a driver apps already use.
-            Pane::VoiceFilter => caps.fun && fun::running(ui),
-            #[cfg(hex_capture)]
-            Pane::Annotate => ui.platform.scrawl.is_some(),
-            _ => true,
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Pane::General => tr("General"),
-            Pane::Output => tr("Output"),
-            Pane::Modes => tr("Modes"),
-            Pane::History => tr("History"),
-            Pane::Meetings => tr("Meetings"),
-            #[cfg(hex_capture)]
-            Pane::Annotate => tr("Annotate"),
-            Pane::VoiceFilter => tr("Voice Filter"),
-            Pane::HudLab => "HUD Lab",
-            Pane::Activity => tr("Activity"),
-        }
-    }
-
-    fn key(self) -> &'static str {
-        match self {
-            Pane::General => "nav-general",
-            Pane::Output => "nav-output",
-            Pane::Modes => "nav-modes",
-            Pane::History => "nav-history",
-            Pane::Meetings => "nav-meetings",
-            #[cfg(hex_capture)]
-            Pane::Annotate => "nav-annotate",
-            Pane::VoiceFilter => "nav-voice-filter",
-            Pane::HudLab => "nav-hud-lab",
-            Pane::Activity => "nav-activity",
-        }
-    }
-
-    fn icon(self) -> &'static Icon {
-        match self {
-            Pane::General => &SETTINGS_ICON,
-            Pane::Output => &OUTPUT_ICON,
-            Pane::Modes => &MODES_ICON,
-            Pane::History => &HISTORY_ICON,
-            Pane::Meetings => &MEETINGS_ICON,
-            #[cfg(hex_capture)]
-            Pane::Annotate => &SCRAWL_ICON,
-            Pane::VoiceFilter => &VOICE_FILTER_ICON,
-            Pane::HudLab => &HUD_LAB_ICON,
-            Pane::Activity => &ACTIVITY_ICON,
-        }
-    }
 }
 
 /// The one anchored menu or popover that is open.
@@ -719,10 +637,12 @@ enum Menu {
     InputSourceModel(usize),
     /// An input source's language in keyboard model switching.
     InputSourceLanguage(usize),
-    /// The microphone under the tour's practice field.
-    TourMicrophone,
     /// How long History keeps dictations.
     HistoryRetention,
+    /// The installed models History's Transcribe again offers.
+    HistoryAgain,
+    /// The language of Transcribe again's chosen model, for that run.
+    HistoryAgainLanguage,
     /// The OpenCode thinking variant.
     Variant,
     /// The selected meeting's overflow menu.
@@ -770,14 +690,13 @@ pub(crate) struct Ui {
     /// properties, which can block, so it runs off the UI thread.
     microphones_listing:
         Option<std::sync::mpsc::Receiver<Result<crate::audio::InputDevices, String>>>,
-    confirm_release: bool,
     mic_level: general::MicLevel,
     /// The panes whose Advanced fold is open.
     advanced: Vec<Pane>,
     /// The Labs page shows in place of a pane.
     labs_open: bool,
-    /// The Labs row a link just opened, pulsing until it is cleared.
-    lab_flash: Option<(crate::labs::Feature, Instant)>,
+    /// The Labs store's search, tab, and chip.
+    lab_store: labs::Store,
     /// Labs › Phone dictation's status and port field.
     phone: phone_dictation::PhoneView,
     /// A scene previewing the badge of a build kind this binary is not.
@@ -794,6 +713,8 @@ pub(crate) struct Ui {
     modes: modes::ModesPane,
     output: output::OutputPane,
     picker: picker::Picker,
+    /// Speech models already on this computer, and choosing one.
+    found: found::FoundState,
     explainer: explainer::Explainer,
     sound_sets: sound_sets::SoundSets,
     tour: Option<onboarding::Tour>,
@@ -812,6 +733,9 @@ pub(crate) struct Ui {
     /// Settings saves and Quit Hex a fixture recorded.
     saved: usize,
     quit_requested: bool,
+    /// The person asked for an update check (the footer or the menu bar),
+    /// so the footer says how it went.
+    update_asked: bool,
 }
 
 /// Which of the window's text editors hold unsaved typing.
@@ -836,8 +760,18 @@ impl Ui {
         };
         crate::desktop::i18n::apply(settings.ui_language.as_deref());
         let store = host::history(&connect, settings.history_retention);
+        #[cfg(target_os = "linux")]
+        let paste = connect.is_some().then(paste_access::detect).flatten();
+        #[cfg(target_os = "linux")]
+        let clipboard_unrestorable =
+            connect.is_some() && crate::linux::clipboard::wayland_without_data_control();
         let mut ui = Self::with(settings, Service::Pending(connect));
         ui.error = error;
+        #[cfg(target_os = "linux")]
+        {
+            ui.platform.paste = paste;
+            ui.platform.clipboard_unrestorable = clipboard_unrestorable;
+        }
         // A mouse-button shortcut went back to its default: say so once.
         if ui.settings.mouse_shortcut_notice {
             ui.settings.mouse_shortcut_notice = false;
@@ -855,6 +789,7 @@ impl Ui {
             crate::dev_build::is_dev_build() && crate::DEVELOPER_FEATURES_ENABLED;
         ui.platform.hud.tuning = crate::rune_hud::dot_scope::lab();
         ui.tour = onboarding::Tour::start(&ui.settings, &ui.platform);
+        onboarding_kit::live::open(&mut ui);
         ui.platform.set_login_item(host::launch_at_login());
         ui
     }
@@ -876,11 +811,10 @@ impl Ui {
             microphones_listed_at: 0.0,
             input_sources_listed_at: f64::NEG_INFINITY,
             microphones_listing: None,
-            confirm_release: false,
             mic_level: general::MicLevel::default(),
             advanced: Vec::new(),
             labs_open: false,
-            lab_flash: None,
+            lab_store: labs::Store::default(),
             phone: phone_dictation::PhoneView::default(),
             build_preview: None,
             capture: Capture::Idle,
@@ -893,6 +827,7 @@ impl Ui {
             modes,
             output: output::OutputPane::default(),
             picker: picker::Picker::default(),
+            found: found::FoundState::default(),
             explainer: explainer::Explainer::default(),
             sound_sets: sound_sets::SoundSets::default(),
             tour: None,
@@ -906,6 +841,7 @@ impl Ui {
             hud_saved: false,
             saved: 0,
             quit_requested: false,
+            update_asked: false,
             window: None,
             tick_at: 0.0,
         }
@@ -913,6 +849,11 @@ impl Ui {
 
     fn live(&self) -> bool {
         matches!(self.service, Service::Live(_))
+    }
+
+    /// A scene or test: nothing here runs on real time.
+    fn is_fixture(&self) -> bool {
+        matches!(self.service, Service::Fixture(_))
     }
 
     fn send(&mut self, request: Request) {
@@ -1203,7 +1144,7 @@ impl Ui {
 }
 
 /// Shortcut recording takes every key; Command-1 through 9 open the
-/// sidebar's panes in order; otherwise Escape closes the shortcut explainer,
+/// sidebar's panes in order; otherwise Escape closes Shortcut mode,
 /// the sound sets sheet, the picker, or the open menu.
 fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     if settings::on_key(ui, event, tx) {
@@ -1212,6 +1153,18 @@ fn on_key(ui: &mut Ui, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     // Labs › Playground: ⇧⌘D (Ctrl+Shift+D off macOS) opens the playground.
     if event.key == rune::Key::Command('d') && event.mods.shift && playground::enabled() {
         tx.toggle_playground();
+        return true;
+    }
+    // Ctrl+Q quits Hex on Linux, as Quit Hex in the sidebar does (#808).
+    // macOS's menu bar owns ⌘Q; Windows quits from its tray.
+    #[cfg(target_os = "linux")]
+    if event.key == rune::Key::Command('q') && !event.mods.shift && !event.mods.alt {
+        ui.quit();
+        return true;
+    }
+    // ⌘F (Ctrl+F off macOS) searches Labs.
+    if event.key == rune::Key::Command('f') && ui.labs_open && !event.mods.shift {
+        labs::focus_search(ui);
         return true;
     }
     if let rune::Key::Command(digit @ '1'..='9') = event.key
@@ -1311,12 +1264,13 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     }
     let now = Instant::now();
     let mut changed = ui.save_drafts(now);
-    changed |= labs::poll_flash(ui, now);
+    changed |= paste_access::poll(ui);
     changed |= phone_dictation::poll(ui, now);
-    // The OpenCode catalog is read only while the pane that uses it shows.
+    // The OpenCode catalog is read only while a pane that uses it shows:
+    // Modes, or Labs › Choose meeting summary model's picker.
     changed |= ui.models.poll(
         ui.live()
-            && ui.pane == Pane::Modes
+            && (ui.pane == Pane::Modes || platform_settings::summary_model_shown(ui))
             && ui.window.as_ref().is_some_and(rune::AppHandle::is_visible),
     );
     changed |= ui.history.poll(ui.pane == Pane::History);
@@ -1337,12 +1291,13 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
     changed |= ui.modes.poll(ui.live());
     changed |= modes::poll_chooser(ui);
     changed |= model_import::poll(ui);
+    changed |= found::poll(ui);
     let login_unknown = ui.platform.login_item.is_none();
     changed |= settings::poll_microphones(ui);
     // General names the input in use; list again when the OS reports an
     // input change. Windows reports a default change only to an open
     // default stream, so there the list is also refreshed every few seconds.
-    if (ui.pane == Pane::General || onboarding::shows_microphone(ui))
+    if ui.pane == Pane::General
         && ui.live()
         && ui.window.as_ref().is_some_and(rune::AppHandle::is_visible)
         && (ui.microphones_route != Some(crate::audio::input_route_generation())
@@ -1431,7 +1386,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     // Menus and popovers mount above the page (rune-kit overlays).
     let mut layer = Vec::new();
     let (actions, body) = match ui.pane {
-        _ if ui.labs_open => (Vec::new(), labs::page(ui, p)),
+        _ if ui.labs_open => (vec![labs::tabs(ui, p)], labs::page(ui, p)),
         Pane::General => (Vec::new(), general::pane(ui, p, &mut layer)),
         Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
         Pane::Modes => modes::pane(ui, p, &mut layer),
@@ -1445,6 +1400,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     };
     let panel = col()
         .key("panel")
+        .role("main")
         .grow(1.0)
         .shrink()
         .mt(8.0)
@@ -1463,15 +1419,21 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
             } else {
                 ui.pane.title()
             },
-            (ui.pane == Pane::Meetings && !ui.labs_open)
-                .then(|| meetings::view_switch(ui, p))
-                .flatten(),
+            if ui.labs_open {
+                Some(labs::search_field(ui, p))
+            } else {
+                (ui.pane == Pane::Meetings)
+                    .then(|| meetings::view_switch(ui, p))
+                    .flatten()
+            },
             actions,
         ))
         .child(body);
+    // The OS window is the accessibility tree's root; this box adds nothing
+    // to it.
     let window = row()
         .key("window")
-        .role("window")
+        .role("none")
         .fill(p.k.c.bg_deep)
         .hover_motion_within(Anim::INSTANT, Anim::INSTANT)
         .child(sidebar(ui, p))
@@ -1488,12 +1450,8 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     if let Some(modal) = vocabulary::modal(ui, p) {
         layer.extend(modal);
     }
-    let mut tour_layer = Vec::new();
     if let Some(first_run) = onboarding_kit::live::overlay(ui, p, cx.is_reduced_motion()) {
         layer.push(first_run);
-    } else if let Some(tour) = onboarding::overlay(ui, p, &mut tour_layer) {
-        layer.push(tour);
-        layer.extend(tour_layer);
     }
     rune_kit::root(window, layer).on_window_focus(window_focused)
 }
@@ -1513,343 +1471,6 @@ fn window_focused(ui: &mut Ui, focused: bool, tx: &mut Tx) {
     }
 }
 
-/// macOS draws the traffic lights over the sidebar (Rune's window has a
-/// transparent, full-size title bar), so the navigation starts below them.
-const SIDEBAR_TOP: f32 = if cfg!(target_os = "macos") {
-    40.0
-} else {
-    12.0
-};
-
-/// Sidebar rows follow OpenCode Desktop's settings navigation: 28 pt rows
-/// with a 4 pt gap, so each row's highlight stays its own.
-const NAV_ROW_HEIGHT: f32 = 28.0;
-const NAV_ROW_GAP: f32 = 4.0;
-
-/// On macOS the sidebar and the pane header stand in for the title bar the
-/// window draws none of: pressing their background moves the window.
-fn title_bar(element: El) -> El {
-    if cfg!(target_os = "macos") {
-        element.window_drag()
-    } else {
-        element
-    }
-}
-
-fn sidebar(ui: &Ui, p: Paint) -> El {
-    let mut nav = lists::source_list(col().key("nav"));
-    for pane in labs::main_panes(ui) {
-        nav = nav.child(nav_slot(
-            p,
-            pane,
-            ui.pane == pane && !ui.labs_open,
-            NAV_ROW_GAP / 2.0,
-            NAV_ROW_GAP / 2.0,
-        ));
-    }
-    nav = nav.children(labs::playground_nav(ui, p));
-    nav = nav.child(labs::nav(ui, p));
-    title_bar(col())
-        .key("sidebar")
-        .role("navigation")
-        .w(220.0)
-        .h_full()
-        .pt(SIDEBAR_TOP - NAV_ROW_GAP / 2.0)
-        .pb(12.0)
-        .pl(10.0)
-        .pr(6.0)
-        .child(nav)
-        .child(el().key("spacer").grow(1.0))
-        .children(sidebar_update::control(ui, p))
-        .children(sidebar_update::notes(ui, p))
-        .children(host::QUIT_IN_WINDOW.then(|| quit_item(p)))
-        .child(footer(ui, p))
-}
-
-/// The version and, under it, a manual check or what the updater is doing.
-/// Both lines keep their place in every state, so a check never moves the
-/// version, and the status line is one element whose words change in place
-/// rather than two that cross-fade over each other. An available update is
-/// the Update button above.
-fn footer(ui: &Ui, p: Paint) -> El {
-    let c = &p.k.c;
-    let line = |key: &str, words: &str, color| {
-        row()
-            .key(key)
-            .h(FOOTER_LINE)
-            .px(6.0)
-            .center_y()
-            .self_start()
-            .radius(p.k.radius.sm)
-            .child(
-                text(words)
-                    .key("label")
-                    .font(p.k.ty.small)
-                    .color(color)
-                    .truncate(),
-            )
-    };
-    let status = ui.view.as_ref().map(|view| &view.update_status);
-    let status = match status {
-        None
-        | Some(
-            DesktopUpdateStatus::Unavailable
-            | DesktopUpdateStatus::Available
-            | DesktopUpdateStatus::ReadyToRestart
-            | DesktopUpdateStatus::SwitchAvailable { .. },
-        ) => None,
-        Some(DesktopUpdateStatus::Current | DesktopUpdateStatus::Failed) => Some(
-            line("update-status", tr("Check for updates"), c.text_muted)
-                .role("button")
-                .label(tr("Check for updates"))
-                .hover(c.hover)
-                .press(c.pressed)
-                .focusable(true)
-                .focus_ring(2.0, -2.0, c.border_focus)
-                .on_press(|ui: &mut Ui| ui.send(Request::Desktop(DesktopAction::CheckForUpdates))),
-        ),
-        // The same words, quieter, while it checks: the hourly check and a
-        // pressed one read the same and never swap the line's words.
-        Some(DesktopUpdateStatus::Checking) => Some(
-            line("update-status", tr("Check for updates"), p.faint())
-                .label(tr("Checking for updates…")),
-        ),
-        Some(DesktopUpdateStatus::Managed) => Some(line(
-            "update-status",
-            tr("Managed by your organization"),
-            p.faint(),
-        )),
-        Some(DesktopUpdateStatus::Downloading) => {
-            Some(line("update-status", tr("Downloading update"), p.faint()))
-        }
-        Some(DesktopUpdateStatus::SourceBuild) => Some(line(
-            "update-status",
-            if ui.build_preview.unwrap_or_else(build_kind) == BuildKind::Local {
-                tr("Local build · updates off")
-            } else {
-                tr("Updated from your source checkout")
-            },
-            p.faint(),
-        )),
-        Some(DesktopUpdateStatus::PackageManager) => Some(line(
-            "update-status",
-            tr("Updated by your package manager"),
-            p.faint(),
-        )),
-        Some(DesktopUpdateStatus::PackageUpdate { command }) => Some(
-            text(command.clone())
-                .key("update-command")
-                .font(p.k.ty.small)
-                .color(p.faint())
-                .wrap()
-                .px(6.0)
-                .py(2.0),
-        ),
-    };
-    col()
-        .key("footer")
-        .mt(8.0)
-        .child(version_line(
-            ui,
-            p,
-            line("version", &version_label(), p.faint()),
-        ))
-        .children(status)
-}
-
-/// A local or test build marks itself beside the version, quietly: an outline
-/// pill with a dot, in muted theme tokens.
-fn version_line(ui: &Ui, p: Paint, version: El) -> El {
-    let badge = match ui.build_preview.unwrap_or_else(build_kind) {
-        BuildKind::Release => return version,
-        BuildKind::Local => tr("Local"),
-        BuildKind::Test => tr("Test"),
-    };
-    let c = &p.k.c;
-    row()
-        .key("version-row")
-        .gap(2.0)
-        .center_y()
-        .child(version.key("version"))
-        .child(
-            row()
-                .key("build-badge")
-                .h(16.0)
-                .px(6.0)
-                .gap(4.0)
-                .center_y()
-                .radius(8.0)
-                .border(p.hair.max(0.5), c.border_muted)
-                .child(
-                    controls::status_dot(c.text_faint)
-                        .size(5.0, 5.0)
-                        .radius(2.5),
-                )
-                .child(
-                    text(badge)
-                        .key("label")
-                        .font(p.k.ty.small)
-                        .color(c.text_muted),
-                ),
-        )
-}
-
-/// What kind of build this is, for the footer's badge. The scenes preview
-/// the others on a release build.
-#[derive(Clone, Copy, PartialEq)]
-enum BuildKind {
-    Release,
-    Local,
-    Test,
-}
-
-fn build_kind() -> BuildKind {
-    if crate::app_paths::is_local_build() {
-        BuildKind::Local
-    } else if option_env!("HEX_TEST_BUILD") == Some("1") {
-        BuildKind::Test
-    } else {
-        BuildKind::Release
-    }
-}
-
-/// The footer's lines: as tall as each other, so a check moves nothing.
-const FOOTER_LINE: f32 = 20.0;
-
-/// Test and local builds also name their commit: main moves past a release without
-/// changing the version.
-fn version_label() -> String {
-    // Goldens render a fixed version: a local build's names its commit.
-    let version = if cfg!(test) { "0.0.0" } else { crate::VERSION };
-    match option_env!("HEX_COMMIT") {
-        Some(commit) => {
-            let kind = if crate::app_paths::is_local_build() {
-                "local"
-            } else {
-                "test"
-            };
-            tr_fill("Version {}", &format!("{version} ({kind} {commit})"))
-        }
-        None => tr_fill("Version {}", version),
-    }
-}
-
-/// A sidebar item inside its slot. Slots tile the item column, each
-/// reaching halfway into the gaps around its item, so wherever the pointer
-/// is in the column, the nearest item shows its hover, and a press there
-/// selects it.
-fn nav_slot(p: Paint, pane: Pane, on: bool, above: f32, below: f32) -> El {
-    col()
-        .key(format!("{}-slot", pane.key()))
-        .pt(above)
-        .pb(below)
-        .hover_group()
-        .on_drag(move |ui: &mut Ui, d: &mut rune::Drag, tx: &mut Tx| {
-            select_on_down(ui, d, tx, pane)
-        })
-        .on_press_tx(move |ui: &mut Ui, tx: &mut Tx| ui.select_pane(pane, tx))
-        .child(nav_item(p, pane, on))
-}
-
-/// Switch on pointer down, like a native sidebar; the press keeps keyboard
-/// activation.
-fn select_on_down(ui: &mut Ui, d: &mut rune::Drag, tx: &mut Tx, pane: Pane) {
-    if d.phase == rune::Phase::Down {
-        ui.select_pane(pane, tx);
-    }
-}
-
-fn nav_item(p: Paint, pane: Pane, on: bool) -> El {
-    let c = &p.k.c;
-    let mut item = row()
-        .key(pane.key())
-        .role("button")
-        .label(pane.title())
-        .h(NAV_ROW_HEIGHT)
-        .px(6.0)
-        .gap(8.0)
-        .center_y()
-        .radius(p.k.radius.sm)
-        .press(c.pressed)
-        .on_drag(move |ui: &mut Ui, d: &mut rune::Drag, tx: &mut Tx| {
-            select_on_down(ui, d, tx, pane)
-        })
-        .on_press_tx(move |ui: &mut Ui, tx: &mut Tx| ui.select_pane(pane, tx))
-        // The slot's hover, drawn on the item.
-        .child(
-            el().key("hover")
-                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                .radius(p.k.radius.sm)
-                .fill(c.hover)
-                .group_opacity(0.0, 1.0),
-        )
-        .child(icon(pane.icon(), 16.0).key("icon").color(if on {
-            c.icon_base
-        } else {
-            c.icon_muted
-        }))
-        .child(
-            text(pane.title())
-                .key("label")
-                .font(p.k.ty.ui)
-                .color(if on { c.text_base } else { c.text_muted })
-                .truncate(),
-        );
-    if on {
-        item = item.fill(c.layer_02);
-    }
-    lists::source_item(item, on)
-}
-
-/// Linux has no tray: the window's way to stop Hex. Closing the window
-/// keeps Hex dictating.
-fn quit_item(p: Paint) -> El {
-    let c = &p.k.c;
-    row()
-        .key("quit")
-        .role("button")
-        .label(tr("Quit Hex"))
-        .h(NAV_ROW_HEIGHT)
-        .px(6.0)
-        .mt(NAV_ROW_GAP)
-        .center_y()
-        .radius(p.k.radius.sm)
-        .hover(c.hover)
-        .press(c.pressed)
-        .on_press(|ui: &mut Ui| ui.quit())
-        .focusable(true)
-        .focus_ring(2.0, -2.0, c.border_focus)
-        .child(
-            text(tr("Quit Hex"))
-                .key("label")
-                .font(p.k.ty.ui)
-                .color(c.text_muted)
-                .truncate(),
-        )
-}
-
-/// The title bar of the content panel: the title, a view switch that stays
-/// beside it, and the pane's actions on the right.
-fn pane_header(p: Paint, title: &str, switch: Option<El>, actions: Vec<El>) -> El {
-    title_bar(row())
-        .key("pane-header")
-        .h(52.0)
-        .px(METRICS.gutter)
-        .gap(8.0)
-        .center_y()
-        .child(
-            text(title)
-                .key("pane-title")
-                .font(p.k.ty.body_medium)
-                .color(p.text())
-                .shrink()
-                .truncate(),
-        )
-        .children(switch.map(|switch| switch.ml(8.0)))
-        .child(el().key("header-spacer").grow(1.0))
-        .children(actions)
-}
-
 /// How far a scroll body's top and bottom edges fade out.
 const SCROLL_FADE: (f32, f32) = (4.0, 24.0);
 
@@ -1857,874 +1478,24 @@ const SCROLL_FADE: (f32, f32) = (4.0, 24.0);
 /// sits clear of the fades, so the first and last borders, rings, and fills
 /// are never cut; content needing room beside the edges (bordered cards)
 /// pads itself horizontally.
-fn scroll_body(key: &str, content: El) -> El {
-    faded_body(key, content, SCROLL_FADE)
+fn scroll_body(k: &rune_kit::Kit, key: &str, content: El) -> El {
+    faded_body(k, key, content, SCROLL_FADE)
 }
 
-/// A [`scroll_body`] with its own top and bottom fades.
-fn faded_body(key: &str, content: El, (top, bottom): (f32, f32)) -> El {
-    col()
-        .key(key)
-        .grow(1.0)
-        .shrink()
-        .clip_fade(0.0, top, 0.0, bottom)
-        .scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(col().key("inset").pt(top).pb(bottom).child(content))
-}
-
-// ---------------------------------------------------------------------------
-// Fixtures for snapshots and tests
-
-/// A named starting state for `--scene`.
-type Scene = (&'static str, fn(&mut Ui));
-
-const SCENES: &[Scene] = &[
-    // The running service's real state, for headless snapshots and scripts
-    // (`--snap`): waits for its first snapshot instead of drawing
-    // "Connecting…" at virtual time zero.
-    ("live", |ui| {
-        // Reads the saved settings and the running Hex; writes neither.
-        let settings = AppSettings::read().unwrap_or_default();
-        crate::desktop::i18n::apply(settings.ui_language.as_deref());
-        *ui = Ui::with(settings, Service::Fixture(Vec::new()));
-        let mut backend = Backend::connect(Default::default(), Arc::new(|| {}));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while backend.state().is_none() && backend.error().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-            backend.refresh();
-        }
-        ui.service = Service::Live(Box::new(backend));
-        poll(ui, 0.0, &mut Tx::default());
-    }),
-    ("portal", |ui| *ui = portal_fixture()),
-    ("portal-mouse", |ui| {
-        *ui = portal_fixture();
-        ui.settings.dictation_hotkey = HotkeyBinding {
-            modifiers: Default::default(),
-            key: crate::app_settings::HotkeyKey::mouse(3),
-        };
-        if let Some(view) = &mut ui.view {
-            view.listener.shortcuts =
-                DesktopShortcuts::Portal(vec![crate::desktop::host::DesktopGrantedShortcut {
-                    name: "Dictation".into(),
-                    trigger: None,
-                    unconfirmed: false,
-                }]);
-        }
-    }),
-    ("commands", |ui| *ui = fixture(DesktopShortcuts::Commands)),
-    ("disabled", |ui| {
-        *ui = portal_fixture();
-        if let Some(view) = &mut ui.view {
-            view.listener.running = false;
-            view.listener.status = "Disabled".into();
-        }
-    }),
-    ("capturing", |ui| {
-        *ui = portal_fixture();
-        ui.capture = Capture::Listening {
-            target: ShortcutTarget::Dictation,
-            message: None,
-            held: Default::default(),
-        };
-    }),
-    ("chinese", |ui| {
-        *ui = portal_fixture();
-        ui.settings.ui_language = Some("zh".into());
-        crate::desktop::i18n::apply(Some("zh"));
-    }),
-    ("menus", |ui| {
-        *ui = portal_fixture();
-        ui.open = Some(Menu::Microphone);
-        ui.microphones = Ok(crate::audio::InputDevices {
-            names: vec!["Built-in Audio Analog Stereo".into(), "Shure MV7".into()],
-            system_default: Some("Shure MV7".into()),
-            default_is_hex_microphone: false,
-            ..Default::default()
-        });
-        ui.confirm_release = true;
-    }),
-    ("history", |ui| {
-        *ui = portal_fixture();
-        ui.history = history::HistoryPane::fixture();
-        ui.pane = Pane::History;
-    }),
-    ("history-empty", |ui| {
-        *ui = portal_fixture();
-        ui.history = history::HistoryPane::fixture_empty();
-        ui.pane = Pane::History;
-    }),
-    ("output", |ui| {
-        *ui = portal_fixture();
-        output::fixture(ui);
-        ui.pane = Pane::Output;
-    }),
-    ("output-open", |ui| {
-        *ui = portal_fixture();
-        output::fixture(ui);
-        ui.output.expanded = Some(0);
-        ui.output.prompt_copied = true;
-        ui.pane = Pane::Output;
-    }),
-    ("output-empty", |ui| {
-        *ui = portal_fixture();
-        ui.pane = Pane::Output;
-    }),
-    ("modes", |ui| {
-        *ui = portal_fixture();
-        modes::fixture(ui);
-        ui.pane = Pane::Modes;
-    }),
-    ("modes-opencode-not-running", |ui| {
-        *ui = portal_fixture();
-        modes::fixture(ui);
-        ui.models = models::Models::fixture_not_running();
-        ui.settings.dictation_processing.modes[0]
-            .post_processing
-            .enabled = false;
-        ui.pane = Pane::Modes;
-    }),
-    ("modes-global", |ui| {
-        *ui = portal_fixture();
-        modes::fixture(ui);
-        ui.modes.select(modes::Selection::Default);
-        ui.pane = Pane::Modes;
-    }),
-    ("modes-picker", |ui| {
-        *ui = portal_fixture();
-        modes::fixture(ui);
-        ui.modes.application_picker_open = true;
-        ui.pane = Pane::Modes;
-    }),
-    ("modes-transformation-menu", |ui| {
-        *ui = portal_fixture();
-        modes::fixture(ui);
-        ui.open = Some(Menu::Transformations);
-        ui.pane = Pane::Modes;
-    }),
-    ("picker", |ui| {
-        *ui = portal_fixture();
-        picker::fixture(ui, None);
-    }),
-    ("picker-downloading", |ui| {
-        *ui = portal_fixture();
-        picker::fixture(ui, Some(TranscriptionModelId::CohereTranscribe));
-    }),
-    // Labs › Parakeet Ultra: its card's details, credit, and published
-    // benchmarks (lists Ultra only where the saved settings turn it on).
-    ("picker-parakeet-ultra", |ui| {
-        *ui = portal_fixture();
-        picker::parakeet_ultra_fixture(ui);
-    }),
-    // Labs › Use your own speech model: the picker's Add model file….
-    ("picker-custom-models", |ui| {
-        *ui = portal_fixture();
-        ui.settings.labs.custom_models = true;
-        picker::fixture(ui, None);
-    }),
-    // Japanese saved: the English-only models say they switch the language.
-    ("picker-japanese", |ui| {
-        *ui = portal_fixture();
-        ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
-        ui.settings.transcription.language = "ja".into();
-        ui.picker.installed = Some(vec![TranscriptionModelId::WhisperLargeV3Turbo]);
-        picker::fixture(ui, None);
-    }),
-    // Parakeet chosen over Japanese: Settings names the language change.
-    ("language-fallback", |ui| {
-        *ui = portal_fixture();
-        ui.picker.fallback = Some(picker::LanguageFallback {
-            model: TranscriptionModelId::ParakeetUnifiedEnglish,
-            from: "ja".into(),
-        });
-    }),
-    // Whisper's languages open below the model.
-    ("language-menu", |ui| {
-        *ui = portal_fixture();
-        ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
-        ui.picker.installed = Some(vec![TranscriptionModelId::WhisperLargeV3Turbo]);
-        ui.open = Some(Menu::Pick("transcription-language"));
-    }),
-    ("shortcut-explainer", |ui| {
-        *ui = mac_fixture();
-        ui.settings.double_tap_lock = true;
-        explainer::fixture(ui, Some(explainer::SNAPSHOT_MS));
-    }),
-    ("shortcut-explainer-toggle", |ui| {
-        *ui = mac_fixture();
-        ui.settings.shortcut_mode = crate::dictation::ShortcutMode::Toggle;
-        explainer::fixture(ui, Some(explainer::SNAPSHOT_MS));
-    }),
-    // The Shortcut row with a modifier-only shortcut, Left Option, beside
-    // its side picker (macOS), in each face of the recorder.
-    ("shortcut-row", |ui| shortcut_row(ui, Capture::Idle)),
-    ("shortcut-row-right", |ui| {
-        shortcut_row(ui, Capture::Idle);
-        ui.settings.dictation_hotkey.modifiers.option = Some(ModifierSide::Right);
-    }),
-    // Two sided modifiers have no side picker, so their keycaps name the side.
-    ("shortcut-row-sided-chord", |ui| {
-        shortcut_row(ui, Capture::Idle);
-        ui.settings.dictation_hotkey.modifiers.command = Some(ModifierSide::Right);
-    }),
-    ("shortcut-row-recording", |ui| {
-        shortcut_row(ui, listening(None, HotkeyModifiers::default()));
-    }),
-    ("shortcut-row-held", |ui| {
-        shortcut_row(ui, listening(None, HotkeyModifiers::option_command()));
-    }),
-    ("shortcut-row-rejected", |ui| {
-        let message = crate::desktop::i18n::tr("Add a modifier");
-        shortcut_row(ui, listening(Some(message), HotkeyModifiers::default()));
-    }),
-    ("shortcut-row-saved", |ui| {
-        shortcut_row(
-            ui,
-            Capture::Saved {
-                target: ShortcutTarget::Dictation,
-                until: None,
-            },
-        );
-    }),
-    // A three-key chord: Control-Option-Space.
-    ("shortcut-explainer-chord", |ui| {
-        *ui = mac_fixture();
-        ui.settings.double_tap_lock = true;
-        let modifiers = &mut ui.settings.dictation_hotkey.modifiers;
-        modifiers.control = modifiers.option;
-        explainer::fixture(ui, Some(explainer::SNAPSHOT_MS));
-    }),
-    // Loops, for `--frames` clips.
-    ("shortcut-explainer-motion", |ui| {
-        *ui = mac_fixture();
-        ui.settings.double_tap_lock = true;
-        explainer::fixture(ui, None);
-    }),
-    ("onboarding", |ui| {
-        *ui = portal_fixture();
-        onboarding::fixture(ui, crate::desktop::onboarding::Step::Welcome, false);
-    }),
-    ("onboarding-setup", |ui| {
-        *ui = portal_fixture();
-        onboarding::fixture(ui, crate::desktop::onboarding::Step::Setup, true);
-    }),
-    // macOS and Windows surfaces, from preview data (see `platform`).
-    ("mac-settings", |ui| *ui = mac_fixture()),
-    // The microphone row following a recorded voice (`--video`), and with
-    // the microphone released while idle, when no audio arrives.
-    ("mac-settings-mic-level", |ui| {
-        *ui = mac_fixture();
-        ui.mic_level = general::MicLevel::playing(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/vocabulary/audio/term-opencode-2.wav"
-        )));
-    }),
-    ("mac-settings-mic-released", |ui| {
-        *ui = mac_fixture();
-        ui.settings.release_microphone_while_idle = true;
-        ui.mic_level = general::MicLevel::closed();
-    }),
-    ("mac-settings-ducking", |ui| {
-        *ui = mac_fixture();
-        ui.settings.recording_audio_behavior = crate::app_settings::RecordingAudioBehavior::Duck;
-    }),
-    ("mac-input-source-models", |ui| {
-        use crate::app_settings::KeyboardModelChoice;
-        *ui = mac_fixture();
-        ui.advanced = vec![Pane::General];
-        ui.settings.keyboard_model_switching.enabled = true;
-        ui.settings.keyboard_model_switching.mappings = [
-            (
-                "com.apple.keylayout.ABC",
-                TranscriptionModelId::ParakeetUnifiedEnglish,
-                "en",
-            ),
-            (
-                "com.apple.keylayout.RussianWin",
-                TranscriptionModelId::ParakeetV3,
-                "ru",
-            ),
-        ]
-        .into_iter()
-        .map(|(id, model, language)| {
-            (
-                id.into(),
-                KeyboardModelChoice {
-                    model,
-                    language: language.into(),
-                },
-            )
-        })
-        .collect();
-        ui.platform.input_sources = [
-            ("com.apple.keylayout.ABC", "ABC", "en"),
-            ("com.apple.keylayout.RussianWin", "Russian - PC", "ru"),
-            ("com.apple.keylayout.Spanish", "Spanish", "es"),
-        ]
-        .into_iter()
-        .map(
-            |(id, name, language)| crate::transcription::keyboard_model_switching::InputSource {
-                id: id.into(),
-                name: name.into(),
-                languages: vec![language.into()],
-            },
-        )
-        .collect();
-        ui.picker.installed = Some(vec![
-            TranscriptionModelId::ParakeetUnifiedEnglish,
-            TranscriptionModelId::ParakeetV3,
-        ]);
-    }),
-    // The sound sets sheet at rest, then Wood's dictation recording.
-    ("sound-sets", |ui| {
-        *ui = mac_fixture();
-        sound_sets::fixture(ui, None);
-    }),
-    ("sound-sets-playing", |ui| {
-        *ui = mac_fixture();
-        sound_sets::fixture(
-            ui,
-            Some((
-                crate::feedback::SoundSet::Wood,
-                crate::feedback::Audition::Dictation,
-                900.0,
-            )),
-        );
-    }),
-    ("mac-microphone-missing", |ui| {
-        *ui = mac_fixture();
-        ui.settings.microphone = Some("Shure MV7".into());
-        ui.open = Some(Menu::Microphone);
-    }),
-    ("mac-microphone-lid-closed", |ui| {
-        *ui = mac_fixture();
-        if let Ok(devices) = &mut ui.microphones {
-            devices.system_default = Some("Studio Display Microphone".into());
-            devices.off_with_lid_closed = Some("MacBook Pro Microphone".into());
-            devices.default_is_off_with_lid_closed = true;
-        }
-        ui.open = Some(Menu::Microphone);
-    }),
-    // System default passes over the Bluetooth default for the built-in mic.
-    ("mac-microphone-bluetooth", |ui| {
-        *ui = mac_fixture();
-        if let Ok(devices) = &mut ui.microphones {
-            devices.system_default = Some("MacBook Pro Microphone".into());
-            devices.bluetooth_default_passed_over = Some("Kit Pods".into());
-        }
-        ui.advanced = vec![Pane::General];
-    }),
-    ("mac-settings-vocabulary", |ui| {
-        *ui = mac_fixture();
-        vocabulary::fixture(ui, true);
-    }),
-    ("mac-settings-vocabulary-empty", |ui| {
-        *ui = mac_fixture();
-        vocabulary::fixture(ui, false);
-    }),
-    // Cohere ignores the list: the row and the sheet say so.
-    ("vocabulary-unused", |ui| {
-        *ui = portal_fixture();
-        ui.settings.transcription.model = TranscriptionModelId::CohereTranscribe;
-        ui.picker.installed = Some(vec![TranscriptionModelId::CohereTranscribe]);
-        vocabulary::fixture(ui, true);
-    }),
-    ("mac-settings-recording", |ui| {
-        *ui = mac_fixture();
-        let held = crate::app_settings::HotkeyModifiers {
-            option: Some(crate::app_settings::ModifierSide::Either),
-            command: Some(crate::app_settings::ModifierSide::Either),
-            ..Default::default()
-        };
-        ui.capture = Capture::Listening {
-            target: ShortcutTarget::Dictation,
-            message: None,
-            held,
-        };
-    }),
-    ("mac-settings-permissions", |ui| {
-        platform_settings::mac_permissions_fixture(ui, false)
-    }),
-    ("mac-settings-permissions-stale", |ui| {
-        platform_settings::mac_permissions_fixture(ui, true)
-    }),
-    ("mac-settings-pause-browser", |ui| {
-        *ui = mac_fixture();
-        ui.settings.recording_audio_behavior =
-            crate::app_settings::RecordingAudioBehavior::PauseMedia;
-        ui.settings.pause_browser_media = true;
-        ui.platform.system_audio = false;
-    }),
-    ("mac-settings-advanced", |ui| {
-        *ui = mac_fixture();
-        ui.advanced = vec![Pane::General];
-    }),
-    ("mac-settings-dev-channel", |ui| {
-        *ui = mac_fixture();
-        ui.settings.updates.channel = Some(crate::app_settings::UpdateChannel::Dev);
-    }),
-    // A local build: the badge, the quiet status line, no channel row.
-    ("mac-local-build", |ui| {
-        *ui = mac_fixture();
-        ui.build_preview = Some(BuildKind::Local);
-        if let Some(view) = &mut ui.view {
-            view.update_status = DesktopUpdateStatus::SourceBuild;
-        }
-    }),
-    ("mac-test-build", |ui| {
-        *ui = mac_fixture();
-        ui.build_preview = Some(BuildKind::Test);
-    }),
-    ("mac-update-ready", |ui| {
-        *ui = mac_fixture();
-        if let Some(view) = &mut ui.view {
-            view.update_status = DesktopUpdateStatus::ReadyToRestart;
-        }
-    }),
-    ("mac-update-checking", |ui| {
-        *ui = mac_fixture();
-        if let Some(view) = &mut ui.view {
-            view.update_status = DesktopUpdateStatus::Checking;
-        }
-    }),
-    ("mac-update-downloading", |ui| {
-        *ui = mac_fixture();
-        if let Some(view) = &mut ui.view {
-            view.update_status = DesktopUpdateStatus::Downloading;
-        }
-    }),
-    ("windows-settings", |ui| {
-        *ui = fixture(DesktopShortcuts::Registered);
-        ui.platform = platform::PlatformState::preview(platform::Capabilities::WINDOWS);
-        ui.host = platform::PlatformHost::Fixture(Vec::new());
-        ui.settings.paste_with_shift = false;
-    }),
-    ("meetings", |ui| {
-        *ui = mac_fixture();
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-settings", |ui| {
-        *ui = mac_fixture();
-        ui.meetings.view = meetings::View::Settings;
-        ui.pane = Pane::Meetings;
-    }),
-    // System Audio not yet allowed: tap Allow to wait, again to grant.
-    ("meetings-allow", |ui| {
-        *ui = mac_fixture();
-        ui.platform.system_audio = false;
-        ui.meetings.view = meetings::View::Settings;
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-calendar", |ui| {
-        *ui = mac_fixture();
-        ui.settings.meetings.calendar.connected = true;
-        ui.settings.meetings.calendar.excluded_calendars = vec!["birthdays".into()];
-        ui.platform.calendar = platform::CalendarView::preview();
-        ui.meetings.view = meetings::View::Settings;
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-calendar-denied", |ui| {
-        *ui = mac_fixture();
-        ui.platform.calendar.access = crate::calendar::CalendarAccess::Denied;
-        ui.meetings.view = meetings::View::Settings;
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-off", |ui| {
-        *ui = mac_fixture();
-        ui.settings.meetings.enabled = false;
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-recording", |ui| {
-        *ui = mac_fixture();
-        ui.meetings.select("preview-live".into());
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-actions", |ui| {
-        *ui = mac_fixture();
-        ui.open = Some(Menu::MeetingActions);
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-delete", |ui| {
-        *ui = mac_fixture();
-        ui.meetings.delete_armed = Some("preview-notes".into());
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-rename", |ui| {
-        *ui = mac_fixture();
-        ui.meetings.renaming = Some("preview-notes".into());
-        ui.meetings.rename = TextEdit::new("Arcade launch plan");
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-failed", |ui| {
-        *ui = mac_fixture();
-        ui.meetings.select("preview-failed".into());
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-chapters", |ui| {
-        *ui = mac_fixture();
-        ui.meetings = meetings::MeetingsPane::chapters_fixture();
-        ui.pane = Pane::Meetings;
-    }),
-    ("meetings-empty", |ui| {
-        *ui = mac_fixture();
-        ui.meetings = meetings::MeetingsPane::default();
-        ui.pane = Pane::Meetings;
-    }),
-    #[cfg(hex_capture)]
-    ("mac-scrawl-off", |ui| scrawl_fixture(ui, false, |_| {})),
-    #[cfg(hex_capture)]
-    ("mac-scrawl", |ui| scrawl_fixture(ui, true, |_| {})),
-    #[cfg(hex_capture)]
-    ("mac-scrawl-running", |ui| {
-        scrawl_fixture(ui, true, |view| view.scrawl_running = true)
-    }),
-    #[cfg(hex_capture)]
-    ("mac-scrawl-permission", |ui| {
-        scrawl_fixture(ui, true, |view| view.screen_recording = false)
-    }),
-    #[cfg(hex_capture)]
-    ("mac-scrawl-restart", |ui| {
-        scrawl_fixture(ui, true, |view| {
-            view.screen_recording = false;
-            view.screen_needs_restart = true;
-        })
-    }),
-    ("mac-voice-filter", |ui| {
-        *ui = mac_fixture();
-        ui.pane = Pane::VoiceFilter;
-    }),
-    ("mac-voice-filter-muted", |ui| {
-        *ui = mac_fixture();
-        ui.platform.tuning.mode = crate::audio::voice_filter::VoiceFilterMode::Muted;
-        ui.platform.demo = Some(fun::preview_demo(
-            false,
-            Some(crate::audio::hex_microphone::DemoPlaybackTrack::CallHears),
-        ));
-        ui.pane = Pane::VoiceFilter;
-    }),
-    ("mac-voice-filter-driver-missing", |ui| {
-        *ui = mac_fixture();
-        if let Some(driver) = &mut ui.platform.hex_microphone {
-            driver.driver_bundle_installed = false;
-            driver.driver_loaded = false;
-            driver.installed_version = None;
-            driver.active_apps.clear();
-        }
-        ui.platform.demo = Some(fun::preview_demo(true, None));
-        ui.pane = Pane::VoiceFilter;
-    }),
-    ("voice-filter", |ui| {
-        *ui = fixture(DesktopShortcuts::Commands);
-        ui.platform = platform::PlatformState::preview(platform::Capabilities::LINUX);
-        ui.host = platform::PlatformHost::Fixture(Vec::new());
-        ui.settings.experimental.hex_microphone = true;
-        ui.pane = Pane::VoiceFilter;
-    }),
-    ("voice-filter-unavailable", |ui| {
-        *ui = fixture(DesktopShortcuts::Commands);
-        ui.platform = platform::PlatformState::preview(platform::Capabilities::LINUX);
-        ui.host = platform::PlatformHost::Fixture(Vec::new());
-        if let Some(source) = &mut ui.platform.hex_microphone {
-            source.driver_loaded = false;
-            source.action_state = crate::audio::hex_microphone::DriverActionState::Failed(
-                "pw-cat was not found; Hex Microphone needs PipeWire".into(),
-            );
-        }
-        ui.settings.experimental.hex_microphone = true;
-        ui.pane = Pane::VoiceFilter;
-    }),
-    ("mac-hud-lab", |ui| {
-        *ui = mac_fixture();
-        ui.platform.developer = true;
-        ui.pane = Pane::HudLab;
-    }),
-    ("mac-labs", |ui| {
-        *ui = mac_fixture();
-        #[cfg(hex_capture)]
-        {
-            ui.platform.scrawl = Some(platform::ScrawlView::preview());
-        }
-        ui.labs_open = true;
-    }),
-    ("mac-labs-link", |ui| {
-        *ui = mac_fixture();
-        ui.labs_open = true;
-        // Far ahead, so the pulse holds for the render.
-        ui.lab_flash = Some((
-            crate::labs::Feature::VocabularyBiasing,
-            Instant::now() + Duration::from_secs(3600),
-        ));
-    }),
-    ("mac-production", |ui| {
-        *ui = mac_fixture();
-        ui.settings.meetings.enabled = false;
-    }),
-    ("mac-activity", |ui| {
-        *ui = mac_fixture();
-        ui.platform.developer = true;
-        ui.activity = activity::ActivityPane::fixture();
-        ui.pane = Pane::Activity;
-    }),
-    ("mac-settings-sides", |ui| {
-        *ui = mac_fixture();
-        ui.advanced = vec![Pane::General];
-        ui.settings.dictation_hotkey = HotkeyBinding {
-            modifiers: HotkeyModifiers {
-                option: Some(crate::app_settings::ModifierSide::Left),
-                ..HotkeyModifiers::default()
-            },
-            key: None,
-        };
-    }),
-    ("mac-onboarding", |ui| {
-        mac_tour(ui, onboarding::MacStep::Welcome)
-    }),
-    ("mac-onboarding-setup", |ui| {
-        mac_tour(ui, onboarding::MacStep::Setup)
-    }),
-    ("mac-onboarding-progress", |ui| {
-        mac_tour(ui, onboarding::MacStep::SetupProgress)
-    }),
-    ("mac-onboarding-stale", |ui| {
-        mac_tour(ui, onboarding::MacStep::SetupStale)
-    }),
-    ("mac-onboarding-denied", |ui| {
-        mac_tour(ui, onboarding::MacStep::SetupDenied)
-    }),
-    ("mac-onboarding-restart", |ui| {
-        mac_tour(ui, onboarding::MacStep::SetupRestart)
-    }),
-    ("mac-onboarding-download-failed", |ui| {
-        mac_tour(ui, onboarding::MacStep::SetupDownloadFailed)
-    }),
-    ("mac-onboarding-try", |ui| {
-        mac_tour(ui, onboarding::MacStep::TryIt)
-    }),
-    ("mac-onboarding-listening", |ui| {
-        mac_tour(ui, onboarding::MacStep::TryItListening)
-    }),
-    ("mac-onboarding-landed", |ui| {
-        mac_tour(ui, onboarding::MacStep::TryItLanded)
-    }),
-    ("mac-onboarding-reopen", |ui| {
-        mac_tour(ui, onboarding::MacStep::TryItReopen)
-    }),
-    ("mac-onboarding-done", |ui| {
-        mac_tour(ui, onboarding::MacStep::Done)
-    }),
-    ("mac-onboarding-mic", |ui| mic_tour(ui, MicScene::Hearing)),
-    ("mac-onboarding-mic-open", |ui| mic_tour(ui, MicScene::Open)),
-    ("mac-onboarding-mic-silent", |ui| {
-        mic_tour(ui, MicScene::Silent)
-    }),
-    ("mac-onboarding-mic-lid", |ui| {
-        mic_tour(ui, MicScene::LidClosed)
-    }),
-    // The welcome hero animating (`--video`, or a live window), and settled as
-    // Reduce Motion shows it.
-    ("onboarding-hero", |ui| hero_tour(ui, false)),
-    ("onboarding-hero-still", |ui| hero_tour(ui, true)),
-];
-
-fn hero_tour(ui: &mut Ui, still: bool) {
-    mac_tour(ui, onboarding::MacStep::Welcome);
-    if let Some(tour) = &mut ui.tour {
-        tour.hero_still = still;
-    }
-}
-
-/// The Annotate pane with captures `enabled`, a 3-day video retention, and
-/// `adjust` applied to what the host shows.
-#[cfg(hex_capture)]
-fn scrawl_fixture(ui: &mut Ui, enabled: bool, adjust: fn(&mut platform::ScrawlView)) {
-    *ui = mac_fixture();
-    ui.settings.capture.enabled = enabled;
-    ui.settings.capture.media_days = Some(3);
-    let mut view = platform::ScrawlView::preview();
-    adjust(&mut view);
-    ui.platform.scrawl = Some(view);
-    ui.pane = Pane::Annotate;
-}
-
-fn mac_fixture() -> Ui {
-    let mut ui = fixture(DesktopShortcuts::Registered);
-    ui.platform = platform::PlatformState::preview(platform::Capabilities::MACOS);
-    ui.host = platform::PlatformHost::Fixture(Vec::new());
-    ui.settings.dictation_hotkey = AppSettings::default().dictation_hotkey;
-    ui.settings.paste_with_shift = false;
-    ui.settings.meetings.enabled = true;
-    ui.settings.meetings.providers = vec![
-        crate::app_settings::MeetingProviderChoice {
-            key: "com.tinyspeck.slackmacgap".into(),
-            label: "Slack huddles".into(),
-            policy: crate::app_settings::MeetingPolicy::AlwaysRecord,
-        },
-        crate::app_settings::MeetingProviderChoice {
-            key: "problems.kitlangton.com".into(),
-            label: "problems.kitlangton.com".into(),
-            policy: crate::app_settings::MeetingPolicy::NeverOffer,
-        },
-    ];
-    ui.settings.experimental.hex_microphone = true;
-    ui.microphones = Ok(crate::audio::InputDevices {
-        names: vec![
-            "Kit Pods".into(),
-            "MacBook Pro Microphone".into(),
-            "Studio Display Microphone".into(),
-        ],
-        system_default: Some("Kit Pods".into()),
-        default_is_hex_microphone: false,
-        ..Default::default()
-    });
-    ui.meetings = meetings::MeetingsPane::fixture();
-    ui
-}
-
-fn shortcut_row(ui: &mut Ui, capture: Capture) {
-    *ui = mac_fixture();
-    ui.settings.dictation_hotkey = HotkeyBinding {
-        modifiers: HotkeyModifiers {
-            option: Some(ModifierSide::Left),
-            ..HotkeyModifiers::default()
-        },
-        key: None,
-    };
-    ui.capture = capture;
-}
-
-fn listening(message: Option<&'static str>, held: HotkeyModifiers) -> Capture {
-    Capture::Listening {
-        target: ShortcutTarget::Dictation,
-        message,
-        held,
-    }
-}
-
-fn mac_tour(ui: &mut Ui, step: onboarding::MacStep) {
-    *ui = mac_fixture();
-    onboarding::mac_fixture(ui, step);
-}
-
-/// What the tour's practice microphone shows in a scene.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MicScene {
-    /// Recording, and Hex hears the person.
-    Hearing,
-    /// Its menu of inputs open.
-    Open,
-    /// Recording, and Hex hears nothing.
-    Silent,
-    /// The lid closed and no other input.
-    LidClosed,
-}
-
-fn mic_tour(ui: &mut Ui, scene: MicScene) {
-    let recording = matches!(scene, MicScene::Hearing | MicScene::Silent);
-    mac_tour(
-        ui,
-        if recording {
-            onboarding::MacStep::TryItListening
-        } else {
-            onboarding::MacStep::TryIt
-        },
-    );
-    let built_in = "MacBook Pro Microphone".to_owned();
-    ui.microphones = Ok(if scene == MicScene::LidClosed {
-        crate::audio::InputDevices {
-            names: vec![built_in.clone()],
-            system_default: None,
-            off_with_lid_closed: Some(built_in),
-            default_is_off_with_lid_closed: true,
-            ..Default::default()
-        }
-    } else {
-        crate::audio::InputDevices {
-            names: vec![
-                "Kit Pods".into(),
-                built_in.clone(),
-                "Studio Display Microphone".into(),
-            ],
-            system_default: Some(built_in),
-            ..Default::default()
-        }
-    });
-    if scene == MicScene::Open {
-        ui.open = Some(Menu::TourMicrophone);
-    }
-    let microphone = ui.settings.microphone.clone();
-    if let Some(tour) = &mut ui.tour {
-        match scene {
-            MicScene::Hearing => tour.mic.level = 0.6,
-            MicScene::Silent => tour.mic.silent = Some(microphone),
-            _ => {}
-        }
-    }
-}
-
-fn portal_fixture() -> Ui {
-    fixture(DesktopShortcuts::Portal(vec![
-        DesktopGrantedShortcut {
-            name: "Dictation".into(),
-            trigger: Some("F12".into()),
-            unconfirmed: false,
-        },
-        DesktopGrantedShortcut {
-            name: "Paste last dictation".into(),
-            trigger: Some("Ctrl+Alt+V".into()),
-            unconfirmed: false,
-        },
-    ]))
-}
-
-/// Deterministic settings and service state matching a typical Wayland
-/// desktop with the shortcuts portal.
-fn fixture(shortcuts: DesktopShortcuts) -> Ui {
-    crate::desktop::i18n::apply(Some("en"));
-    let settings = AppSettings {
-        dictation_hotkey: HotkeyBinding {
-            modifiers: HotkeyModifiers::default(),
-            key: Some(HotkeyKey::named("f12")),
-        },
-        transcription: crate::transcription::models::TranscriptionSelection {
-            model: TranscriptionModelId::ParakeetUnifiedEnglish,
-            language: "en".into(),
-        },
-        paste_with_shift: true,
-        ..AppSettings::default()
-    };
-    let mut ui = Ui::with(settings, Service::Fixture(Vec::new()));
-    ui.models = models::Models::fixture();
-    ui.picker.installed = Some(vec![TranscriptionModelId::ParakeetUnifiedEnglish]);
-    ui.view = Some(ServiceView {
-        listener: DesktopListenerSnapshot {
-            running: true,
-            status: "Enabled".into(),
-            warning: None,
-            shortcuts,
-            shortcuts_configurable: false,
-        },
-        operation_error: None,
-        transcription: DesktopTranscriptionSnapshot {
-            downloaded_bytes: 0,
-            error: None,
-            preparation_stage: None,
-            selection: ui.settings.transcription.clone(),
-            preparing: None,
-        },
-        update_status: DesktopUpdateStatus::Current,
-        update_notes: None,
-        editing: false,
-    });
-    ui
+/// A [`scroll_body`] with its own top and bottom fades, and a scroll bar to
+/// drag while it overflows (#1209).
+fn faded_body(k: &rune_kit::Kit, key: &str, content: El, fades: (f32, f32)) -> El {
+    list_detail::faded_body_sticky(k, key, content, fades, false)
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
 
-#[cfg(test)]
+#[cfg(any(test, hex_capture))]
 mod offscreen;
+
+#[cfg(test)]
+mod accessibility_tests;
 
 #[cfg(test)]
 mod snap_isolation;

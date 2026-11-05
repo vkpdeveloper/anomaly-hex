@@ -7,13 +7,13 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rune::{El, Tx, col, row, text};
+use rune::{Color, El, Tx, col, el, row, text};
 use rune_kit::{Placement, Select, SelectAppearance};
 
 use super::controls::{
-    self, ButtonKind, CardRow, DEVICE_SELECT_WIDTH, KeySize, METRICS, Paint, button, card,
-    copy_row, folding, icon_button, icon_described_row, icon_row, icon_toggle_row, key_tray,
-    keycap, note, page, pressable_row, row_switch, section,
+    self, ButtonKind, CardRow, DEVICE_SELECT_WIDTH, KeySize, METRICS, Paint, button, card, folding,
+    icon_button, icon_described_row, icon_row, icon_toggle_row, key_tray, keycap, note, page,
+    pressable_row, row_switch, section, value_button, value_font,
 };
 use super::icons::*;
 use super::lists::{PermissionControl, permission_control, slider};
@@ -25,7 +25,6 @@ use crate::desktop::host::DesktopAction;
 use crate::desktop::i18n::{tr, tr_fill, tr_named};
 use crate::desktop::login_item::LoginItemStatus;
 use crate::desktop::onboarding::PermissionKind;
-use crate::dictation::ShortcutMode;
 use crate::transcription::models as transcription_models;
 
 /// The missing permissions, the listener (Windows and Linux), the basics,
@@ -60,7 +59,7 @@ pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
                 application(ui, p, layer),
             ));
     }
-    super::scroll_body("scroll", content)
+    super::scroll_body(p.k, "scroll", content)
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +78,11 @@ fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
             ShortcutTarget::Dictation,
             None,
         ));
+        rows.push(super::shortcut_mode::row(ui, p).into());
+        // Toggle has a cancel shortcut; Hold has none.
+        if ui.settings.shortcut_mode == crate::dictation::ShortcutMode::Toggle {
+            rows.extend(cancel_rows(ui, p));
+        }
         // Labs › Second dictation shortcut (macOS): another key that
         // dictates like the one above, such as on an external keyboard.
         #[cfg(target_os = "macos")]
@@ -101,67 +105,69 @@ fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
                 ui,
                 p,
                 "annotate-shortcut",
-                &super::SCRAWL_ICON,
+                &super::sidebar::SCRAWL_ICON,
                 tr("Annotate"),
                 ShortcutTarget::Capture,
                 None,
             ));
         }
         rows.extend(configure_shortcuts_row(ui, p).map(CardRow::from));
-        rows.extend(cancel_shortcut_row(ui, p).map(CardRow::from));
     }
     let picker_button = value_button(
         p,
         "transcription-control",
+        tr("Speech model"),
         model.name,
         &rune_theme_opencode::icons::CHEVRON_RIGHT,
         super::picker::open,
     );
     let (description, control) = match missing_model(ui) {
         // Hex can't listen without the selected model: say so, with the
-        // download's progress, or a Download button when none runs.
+        // download's progress, or Download and Add model file… when none
+        // runs, as after Continue without a model (#894).
         Some(progress) => {
-            let error = ui
-                .view
-                .as_ref()
-                .and_then(|view| view.transcription.error.clone())
-                .filter(|_| progress.downloading.is_none());
-            let description = match error {
-                Some(error) => (error, p.danger()),
-                None => (
+            let description = match (
+                progress.downloading,
+                super::model_import::download_failure(ui),
+            ) {
+                (Some(_), _) => (
                     tr("Hex can't listen until the speech model has downloaded").to_string(),
                     p.muted(),
                 ),
-            };
-            let action = match progress.downloading {
-                Some(fraction) => rune_kit::Progress::new(Some(fraction))
-                    .show_value()
-                    .build(p.k)
-                    .key("transcription-progress")
-                    .w(120.0),
-                None => button(
-                    p,
-                    "transcription-download",
-                    tr("Download"),
-                    ButtonKind::Secondary,
-                    |ui: &mut Ui, _| {
-                        let selection = ui.settings.transcription.clone();
-                        ui.send(Request::ChooseModel {
-                            model: selection.model,
-                            language: selection.language,
-                        });
-                    },
+                (None, Some(error)) => {
+                    (tr_fill("No speech model installed: {}", &error), p.danger())
+                }
+                (None, None) => (
+                    tr("No speech model installed. Download one or add a model file.").to_string(),
+                    p.danger(),
                 ),
             };
-            (
-                Some(description),
-                row()
-                    .key("transcription-controls")
-                    .gap(8.0)
-                    .center_y()
-                    .child(action)
-                    .child(picker_button),
-            )
+            let controls = row().key("transcription-controls").gap(8.0).center_y();
+            let controls = match progress.downloading {
+                Some(fraction) => controls.child(
+                    rune_kit::Progress::new(Some(fraction))
+                        .show_value()
+                        .build(p.k)
+                        .key("transcription-progress")
+                        .w(120.0),
+                ),
+                None => controls
+                    .child(button(
+                        p,
+                        "transcription-download",
+                        tr("Download"),
+                        ButtonKind::Secondary,
+                        |ui: &mut Ui, _| {
+                            let selection = ui.settings.transcription.clone();
+                            ui.send(Request::ChooseModel {
+                                model: selection.model,
+                                language: selection.language,
+                            });
+                        },
+                    ))
+                    .child(super::model_import::use_file_button(ui, p)),
+            };
+            (Some(description), controls.child(picker_button))
         }
         None => (s::transcription_status(ui, p), picker_button),
     };
@@ -188,6 +194,7 @@ fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
             value_button(
                 p,
                 "vocabulary-control",
+                tr("Vocabulary"),
                 &super::vocabulary::summary(ui),
                 &rune_theme_opencode::icons::CHEVRON_RIGHT,
                 super::vocabulary::open,
@@ -196,6 +203,7 @@ fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
         .into(),
     );
     rows.extend(microphone_rows(ui, p, layer));
+    rows.push(microphone_release_row(ui, p));
     rows.extend(launch_at_login_rows(ui, p));
     card(p, "basics", rows)
 }
@@ -203,9 +211,20 @@ fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
 /// The selected speech model's download, while it is not installed, so
 /// Hex can't listen yet. Fixtures that name no installed models say nothing,
 /// so their rows never depend on this machine's models.
-fn missing_model(ui: &Ui) -> Option<crate::desktop::onboarding::ModelProgress> {
+pub(super) fn missing_model(ui: &Ui) -> Option<crate::desktop::onboarding::ModelProgress> {
     if !ui.live() && ui.picker.installed.is_none() {
         return None;
+    }
+    // A saved import that is missing or changed: Hex listens with a
+    // downloaded model in its place, and the row's notice says how to fix it.
+    if ui.settings.transcription.model.is_labs_gated()
+        && super::model_import::selection_notice(ui).is_some()
+    {
+        let fallback = crate::transcription::custom_models::fallback();
+        let model = transcription_models::definition(fallback.model);
+        if ui.picker.installed(model, &fallback.language) {
+            return None;
+        }
     }
     let (installed, progress) = super::onboarding::progress(ui);
     (!installed).then_some(progress)
@@ -253,12 +272,20 @@ pub(super) fn shortcut_rows(
         ));
     }
     // Labs › Restore shortcut default: Paste last dictation's default,
-    // offered while the shortcut is something else or off.
+    // offered while the shortcut is something else or off. Cancel's
+    // default, Escape, can't be recorded (Escape ends the recorder), so its
+    // restore is always offered.
     let mut default_note = None;
-    if target == ShortcutTarget::PasteLast
-        && crate::labs::Feature::RestoreShortcutDefault.on(&ui.settings)
-    {
-        let default = crate::app_settings::HotkeyBinding::paste_last_default();
+    let default = match target {
+        ShortcutTarget::PasteLast
+            if crate::labs::Feature::RestoreShortcutDefault.on(&ui.settings) =>
+        {
+            Some(crate::app_settings::HotkeyBinding::paste_last_default())
+        }
+        ShortcutTarget::Cancel => Some(crate::app_settings::HotkeyBinding::cancel_default()),
+        _ => None,
+    };
+    if let Some(default) = default {
         let current = s::binding(&ui.settings, target);
         if current.is_none() {
             default_note = Some((
@@ -294,6 +321,39 @@ pub(super) fn shortcut_rows(
     rows
 }
 
+/// Toggle's cancel shortcut. A shortcuts portal would hold its key from
+/// every app for as long as Hex runs, so on Wayland it says to bind
+/// `hex dictation cancel` in the desktop instead.
+fn cancel_rows(ui: &Ui, p: Paint) -> Vec<CardRow> {
+    if matches!(
+        ui.shortcuts(),
+        Some(crate::desktop::host::DesktopShortcuts::Portal(_))
+    ) {
+        return vec![
+            icon_row(
+                p,
+                "cancel-shortcut",
+                &CIRCLE_X,
+                tr("Cancel"),
+                Some(tr(
+                    "Bind hex dictation cancel to a key in your desktop's keyboard shortcuts",
+                )),
+                row().key("cancel-shortcut-control"),
+            )
+            .into(),
+        ];
+    }
+    shortcut_rows(
+        ui,
+        p,
+        "cancel-shortcut",
+        &CIRCLE_X,
+        tr("Cancel"),
+        ShortcutTarget::Cancel,
+        Some(tr("Discards the recording")),
+    )
+}
+
 /// The desktop's own dialog for the shortcuts its portal bound, where the
 /// user changes a trigger the desktop kept from an earlier binding.
 fn configure_shortcuts_row(ui: &Ui, p: Paint) -> Option<El> {
@@ -318,19 +378,28 @@ fn configure_shortcuts_row(ui: &Ui, p: Paint) -> Option<El> {
         })
 }
 
-/// Cancel dictation, once the desktop gave it a key: Hex suggests none, so
-/// the key came from the desktop and is taken from every app (#624).
-/// Desktop shortcuts' Open changes it.
-fn cancel_shortcut_row(ui: &Ui, p: Paint) -> Option<El> {
-    let trigger = s::cancel_grant(ui)?;
-    Some(icon_described_row(
+/// Whether the microphone closes between dictations, beside the microphone
+/// picker: one switch, no confirmation, and a line saying what it means
+/// (issues 61 and #870's copy). The default keeps it ready.
+fn microphone_release_row(ui: &Ui, p: Paint) -> CardRow {
+    let release = ui.settings.release_microphone_while_idle;
+    icon_toggle_row(
         p,
-        "cancel-shortcut",
-        &KEYBOARD,
-        tr("Cancel dictation"),
-        Some((tr_fill("Your desktop granted {}", trigger), p.warning())),
-        row().key("cancel-shortcut-control"),
-    ))
+        "microphone-mode",
+        &ZAP,
+        tr("Turn off the mic when not dictating"),
+        if release {
+            tr("The mic opens only while you dictate; the first moment can be clipped")
+        } else {
+            tr("The mic stays ready so dictation starts instantly; your system shows it in use")
+        },
+        release,
+        |ui: &mut Ui| {
+            let release = !ui.settings.release_microphone_while_idle;
+            ui.update(|settings| settings.release_microphone_while_idle = release);
+        },
+    )
+    .into()
 }
 
 /// Labs › Also pause the browser's permission, under Pause media on macOS:
@@ -400,6 +469,7 @@ fn language_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
             ui,
             p,
             "transcription-language",
+            tr("Language"),
             labels,
             selected,
             |ui, index| {
@@ -508,10 +578,13 @@ fn mic_value(ui: &Ui, p: Paint, microphone: &str, detail: Option<&str>, layer: &
         Some(detail) => format!("{microphone}, {detail}"),
         None => microphone.to_owned(),
     };
+    // Read as the microphone choice with the input in use as its value. The
+    // level bars stay out of the tree: they change many times a second.
     let trigger = row()
         .key("microphone-control")
         .role("button")
-        .label(label)
+        .label(tr("Microphone"))
+        .a11y_value(label)
         .focusable(true)
         .focus_ring(2.0, 0.0, c.border_focus)
         .h(24.0)
@@ -523,18 +596,20 @@ fn mic_value(ui: &Ui, p: Paint, microphone: &str, detail: Option<&str>, layer: &
         .hover(c.hover)
         .press(c.pressed)
         .on_press(|ui: &mut Ui| s::toggle_menu(ui, Menu::Microphone))
-        .child(ui.mic_level.bars(p))
+        .child(ui.mic_level.bars(p).a11y_hidden())
         .child(
             text(detail.unwrap_or(microphone).to_string())
                 .key("value")
                 .font(value_font(p))
                 .color(c.text_base)
-                .truncate(),
+                .truncate()
+                .a11y_hidden(),
         )
         .child(
             rune::icon(p.k.glyph.chevron_down, 16.0)
                 .key("chevron")
-                .color(c.icon_muted),
+                .color(c.icon_muted)
+                .a11y_hidden(),
         );
     let mut menu = rune_kit::Menu::new("microphone-menu")
         .trigger(trigger)
@@ -554,6 +629,42 @@ fn mic_value(ui: &Ui, p: Paint, microphone: &str, detail: Option<&str>, layer: &
 }
 
 /// How often the microphone row follows the level while audio arrives.
+const LEVEL_STEPS: f32 = 6.0;
+/// A meter's next level for the latest `peak`: it rises at once and falls
+/// over a few polls.
+fn follow_level(level: f32, peak: f32) -> f32 {
+    (peak * 3.0).clamp(0.0, 1.0).max(level - 0.12)
+}
+/// `level` in the steps a meter shows, so it redraws only when they change.
+fn level_step(level: f32) -> u8 {
+    (level * LEVEL_STEPS).round() as u8
+}
+/// `level` rounded to the step a meter shows.
+fn shown_level(level: f32) -> f32 {
+    f32::from(level_step(level)) / LEVEL_STEPS
+}
+const MIC_LEVEL: f32 = 14.0;
+/// Three short bars, as tall as Hex hears it.
+fn mic_bars(p: Paint, level: f32, tint: Color) -> El {
+    const WEIGHTS: [f32; 3] = [0.6, 1.0, 0.75];
+    let mut bars = row()
+        .key("level")
+        .size(MIC_LEVEL, MIC_LEVEL)
+        .gap(2.0)
+        .center();
+    for (index, weight) in WEIGHTS.into_iter().enumerate() {
+        // Uneven at rest too, so the bars never read as an ellipsis.
+        let height = (2.0 + weight * 4.0 + level * weight * 8.0).round();
+        bars = bars.child(
+            el().key(format!("bar{index}"))
+                .size(2.0, height)
+                .radius(1.0)
+                .fill(if level > 0.0 { p.text() } else { tint }),
+        );
+    }
+    bars
+}
+
 const LEVEL_FRAME: Duration = Duration::from_millis(33);
 
 /// What the microphone row's level shows: the audio Hex receives from the
@@ -606,7 +717,7 @@ impl MicLevel {
         match peak {
             Some(peak) => {
                 self.receiving = true;
-                self.level = super::onboarding::follow_level(self.level, peak);
+                self.level = follow_level(self.level, peak);
             }
             None => {
                 self.receiving = false;
@@ -617,12 +728,12 @@ impl MicLevel {
     }
 
     fn shown(&self) -> (bool, u8) {
-        (self.receiving, super::onboarding::level_step(self.level))
+        (self.receiving, level_step(self.level))
     }
 
     /// Whether the bars show a level, so the next frames can move them.
     pub(super) fn moving(&self) -> bool {
-        self.receiving && super::onboarding::level_step(self.level) > 0
+        self.receiving && level_step(self.level) > 0
     }
 
     /// The recording's peak over the frame before `clock`, or `None` once
@@ -644,7 +755,7 @@ impl MicLevel {
         } else {
             p.k.c.border_strong
         };
-        super::onboarding::mic_bars(p, super::onboarding::shown_level(self.level), tint)
+        mic_bars(p, shown_level(self.level), tint)
     }
 }
 
@@ -716,7 +827,7 @@ fn launch_at_login_rows(ui: &Ui, p: Paint) -> Vec<CardRow> {
         status,
         Some(LoginItemStatus::Enabled | LoginItemStatus::Disabled)
     ) {
-        row = pressable_row(row).on_press(|ui: &mut Ui| {
+        row = pressable_row(row, ui.platform.login_item_on()).on_press(|ui: &mut Ui| {
             let enabled = !ui.platform.login_item_on();
             ui.ask(PlatformRequest::SetLaunchAtLogin(enabled));
         });
@@ -753,102 +864,6 @@ fn dictation(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<CardRow> {
             layer,
         ));
     }
-    let toggle_mode = settings.shortcut_mode == ShortcutMode::Toggle;
-    rows.push(
-        copy_row(
-            p,
-            "shortcut-mode",
-            Some(&HAND),
-            tr("Shortcut mode"),
-            Some(super::explainer::link(p)),
-            pick_select(
-                ui,
-                p,
-                "shortcut-mode",
-                vec![tr("Hold"), tr("Toggle")],
-                usize::from(toggle_mode),
-                |ui, index| {
-                    let mode = if index == 1 {
-                        ShortcutMode::Toggle
-                    } else {
-                        ShortcutMode::Hold
-                    };
-                    if ui.settings.shortcut_mode != mode {
-                        ui.update(|settings| settings.shortcut_mode = mode);
-                    }
-                },
-                layer,
-            ),
-            true,
-        )
-        .into(),
-    );
-    rows.push(folding(
-        "double-tap-fold",
-        (!toggle_mode).then(|| {
-            icon_toggle_row(
-                p,
-                "double-tap",
-                &LOCK,
-                tr("Double-tap to lock"),
-                None,
-                settings.double_tap_lock,
-                super::explainer::flip_lock,
-            )
-        }),
-    ));
-    rows.push(folding(
-        "double-tap-only-fold",
-        s::double_tap_only_applies(settings).then(|| {
-            icon_toggle_row(
-                p,
-                "double-tap-only",
-                &TIMER,
-                tr("Double-tap only"),
-                tr("Wait for two complete shortcut taps before recording"),
-                settings.double_tap_only,
-                |ui: &mut Ui| {
-                    let enabled = !ui.settings.double_tap_only;
-                    ui.update(|settings| settings.double_tap_only = enabled);
-                },
-            )
-        }),
-    ));
-    rows.push(
-        icon_row(
-            p,
-            "microphone-mode",
-            &ZAP,
-            tr("Microphone mode"),
-            settings
-                .release_microphone_while_idle
-                .then(|| tr("Opens only while holding the shortcut. Disables pre-roll.")),
-            pick_select(
-                ui,
-                p,
-                "microphone-mode",
-                vec![tr("Keep ready (fast)"), tr("Release when idle")],
-                usize::from(settings.release_microphone_while_idle),
-                |ui, index| {
-                    let release = index == 1;
-                    if release && !ui.settings.release_microphone_while_idle {
-                        ui.confirm_release = true;
-                        return;
-                    }
-                    ui.confirm_release = false;
-                    if ui.settings.release_microphone_while_idle != release {
-                        ui.update(|settings| settings.release_microphone_while_idle = release);
-                    }
-                },
-                layer,
-            ),
-        )
-        .into(),
-    );
-    rows.push(folding(
-        "release-confirmation-fold",
-        ui.confirm_release.then(|| s::release_confirmation(ui, p)),
-    ));
     // Labs › Switch model with keyboard language: its mappings, while on.
     if ui.platform.caps.keyboard_model_switching {
         rows.push(folding(
@@ -879,6 +894,11 @@ fn dictation(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<CardRow> {
         )
         .into(),
     );
+    // macOS runs its models on Metal or Apple's speech engine.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    if ui.platform.caps.os != super::platform::Os::Macos {
+        rows.push(speech_engine_row(ui, p, layer));
+    }
     rows
 }
 
@@ -997,7 +1017,24 @@ fn output(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<CardRow> {
             .into(),
         );
     }
+    if clipboard_note_shown(ui) {
+        rows.push(
+            note(
+                "clipboard-restore-note",
+                tr("This desktop doesn't let Hex put your clipboard back after a paste. Turn on Labs › Restore clipboard on GNOME to try it."),
+                p.muted(),
+            )
+            .into(),
+        );
+    }
     rows
+}
+
+/// Output's note on a Wayland desktop without data-control (GNOME) while
+/// Labs › Restore clipboard on GNOME is off.
+fn clipboard_note_shown(ui: &Ui) -> bool {
+    ui.platform.clipboard_unrestorable
+        && !crate::labs::Feature::GnomeClipboardRestore.on(&ui.settings)
 }
 
 /// Enable on launch (Linux and Windows), the Dock icon, sounds, the
@@ -1074,6 +1111,7 @@ fn application(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<CardRow> {
             value_button(
                 p,
                 "sound-set-control",
+                tr("Sounds"),
                 tr(settings.sound_theme.name()),
                 &rune_theme_opencode::icons::CHEVRON_RIGHT,
                 super::sound_sets::open,
@@ -1198,7 +1236,6 @@ pub(super) fn advanced_toggle(ui: &Ui, p: Paint, pane: Pane) -> El {
         .on_press(move |ui: &mut Ui| {
             if let Some(index) = ui.advanced.iter().position(|open| *open == pane) {
                 ui.advanced.remove(index);
-                ui.confirm_release = false;
             } else {
                 ui.advanced.push(pane);
             }
@@ -1223,6 +1260,72 @@ pub(super) fn advanced_toggle(ui: &Ui, p: Paint, pane: Pane) -> El {
         )
 }
 
+/// Where the speech model runs (#856): Auto, GPU or CPU, and why Auto
+/// stays on the CPU after a GPU failed.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn speech_engine_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> CardRow {
+    use crate::app_settings::TranscriptionDevice;
+    let device = ui.settings.transcription_device;
+    let control = pick_select(
+        ui,
+        p,
+        "speech-engine",
+        tr("Speech engine"),
+        vec![tr("Auto"), tr("GPU"), tr("CPU")],
+        match device {
+            TranscriptionDevice::Auto => 0,
+            TranscriptionDevice::Gpu => 1,
+            TranscriptionDevice::Cpu => 2,
+        },
+        |ui, index| {
+            let device = [
+                TranscriptionDevice::Auto,
+                TranscriptionDevice::Gpu,
+                TranscriptionDevice::Cpu,
+            ][index];
+            if ui.settings.transcription_device != device {
+                ui.update(|settings| settings.transcription_device = device);
+            }
+        },
+        layer,
+    );
+    // Fixtures never read this machine's GPU record.
+    let failed = (ui.live() && device == TranscriptionDevice::Auto)
+        .then(crate::transcription::gpu_health::current)
+        .flatten();
+    // Without a Vulkan 1.2 driver, every choice transcribes on the CPU (#1240).
+    #[cfg(target_os = "windows")]
+    let vulkan_missing = crate::windows::vulkan::missing();
+    #[cfg(target_os = "linux")]
+    let vulkan_missing = false;
+    let vulkan_note = (ui.live() && vulkan_missing).then(|| {
+        tr("Hex uses the CPU because the graphics driver's Vulkan is missing or too old. Update the GPU driver to use the GPU.")
+            .to_owned()
+    });
+    // Launched on CPU, Hex loaded no GPU driver (#1253).
+    let restart_note = (ui.live() && crate::transcription::local_transcriber::gpu_after_restart())
+        .then(|| tr("Turns on when Hex restarts").to_owned());
+    let note = vulkan_note.or(restart_note).or_else(|| failed.map(|failure| {
+        tr_named(
+            if failure.slow {
+                "Auto uses the CPU because it runs speech faster than {device}. Choose GPU to use it anyway."
+            } else {
+                "Auto uses the CPU because {device} stopped responding. Choose GPU to try it again."
+            },
+            &[("device", failure.device.as_str())],
+        )
+    }));
+    icon_row(
+        p,
+        "speech-engine",
+        &WAVE,
+        tr("Speech engine"),
+        note.as_deref(),
+        control,
+    )
+    .into()
+}
+
 /// An icon row choosing one of `labels` from a quiet select.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn pick_row(
@@ -1236,16 +1339,19 @@ pub(super) fn pick_row(
     pick: fn(&mut Ui, usize),
     layer: &mut Vec<El>,
 ) -> CardRow {
-    let control = pick_select(ui, p, key, labels, selected, pick, layer);
+    let control = pick_select(ui, p, key, title, labels, selected, pick, layer);
     icon_row(p, key, glyph, title, None, control).into()
 }
 
 /// The kit's borderless select, keyed `{key}-control`: the value and a
-/// chevron, no field.
+/// chevron, no field. Assistive technology reads it as `name`, with the
+/// chosen label as its value.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn pick_select(
     ui: &Ui,
     p: Paint,
     key: &'static str,
+    name: &str,
     labels: Vec<&'static str>,
     selected: usize,
     pick: fn(&mut Ui, usize),
@@ -1256,6 +1362,7 @@ pub(super) fn pick_select(
         p,
         Menu::Pick(key),
         format!("{key}-control"),
+        name,
         labels,
         selected,
         pick,
@@ -1270,6 +1377,7 @@ pub(super) fn quiet_select(
     p: Paint,
     menu: Menu,
     key: String,
+    name: &str,
     labels: Vec<&'static str>,
     selected: usize,
     pick: impl Fn(&mut Ui, usize) + 'static,
@@ -1277,6 +1385,7 @@ pub(super) fn quiet_select(
 ) -> El {
     let choices = labels.clone();
     let pick = std::rc::Rc::new(pick);
+    let current = labels.get(selected).copied().unwrap_or_default();
     Select::new(key, &labels)
         .appearance(SelectAppearance::Inline)
         .current(labels.get(selected).copied())
@@ -1291,46 +1400,9 @@ pub(super) fn quiet_select(
             }
         })
         .build(p.k, layer)
+        .label(name)
+        .a11y_value(current)
         .mr(-8.0)
-}
-
-fn value_font(p: Paint) -> rune::TextStyle {
-    p.k.ty.ui_medium.lh(16.0)
-}
-
-/// A value that opens something, drawn like the kit's borderless select.
-pub(super) fn value_button(
-    p: Paint,
-    key: &str,
-    label: &str,
-    glyph: &'static rune::Icon,
-    press: impl Fn(&mut Ui) + 'static,
-) -> El {
-    let c = &p.k.c;
-    row()
-        .key(key)
-        .role("button")
-        .label(label)
-        .focusable(true)
-        .focus_ring(2.0, 0.0, c.border_focus)
-        .h(24.0)
-        .pl(8.0)
-        .pr(4.0)
-        .mr(-9.0)
-        .gap(4.0)
-        .center_y()
-        .radius(p.k.radius.sm)
-        .hover(c.hover)
-        .press(c.pressed)
-        .on_press(press)
-        .child(
-            text(label.to_string())
-                .key("value")
-                .font(value_font(p))
-                .color(c.text_base)
-                .truncate(),
-        )
-        .child(rune::icon(glyph, 16.0).key("chevron").color(c.icon_muted))
 }
 
 /// A shortcut's keys, pressed to record a new one; while recording, the

@@ -32,14 +32,15 @@ pub const CONTROL_VERSION: u32 = 4;
 #[serde(rename_all = "kebab-case")]
 pub enum CaptureAction {
     /// Start recording, locked as after a double tap: the shortcut or
-    /// `stop` finishes it, Escape or `cancel` discards it.
+    /// `stop` finishes it.
     Start,
     /// Finish the recording and transcribe it.
     Stop,
-    /// Discard the recording, or the newest unfinished dictation.
-    Cancel,
     /// Start when idle, otherwise stop.
     Toggle,
+    /// Discard the recording: nothing is transcribed, pasted, or saved.
+    /// Dictations already transcribing finish.
+    Cancel,
 }
 
 /// What `hex capture` does (the `capture` experiment).
@@ -56,6 +57,9 @@ pub enum ScrawlCaptureAction {
     /// fire on the press only (GNOME's custom shortcuts, #781).
     Toggle,
     Status,
+    /// Export the last 15 s from the rolling clip buffer into a capture bundle
+    /// (`labs.annotate_replay`, macOS 27+).
+    Replay,
 }
 
 /// The window's panes, by the names `hex window show` takes.
@@ -94,6 +98,12 @@ pub enum ControlCommand {
         raw: bool,
     },
     PasteLast,
+    /// Labs › Screenshots (macOS): the display under the pointer, or with
+    /// `pick` the picker its shortcut opens.
+    Screenshot {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pick: bool,
+    },
     MeetingRecord {
         #[serde(default)]
         title: Option<String>,
@@ -468,8 +478,12 @@ pub fn await_printed(receiver: &Receiver<PrintedTranscript>, wait: Duration) -> 
     }
 }
 
-/// `print` applies only to `stop`.
-pub fn check_flags(action: CaptureAction, print: bool, raw: bool) -> Result<(), ControlError> {
+/// The action a request asks for; `print` applies only to `stop`.
+pub fn check_flags(
+    action: CaptureAction,
+    print: bool,
+    raw: bool,
+) -> Result<CaptureAction, ControlError> {
     if print && action != CaptureAction::Stop {
         return Err(ControlError::new(
             "invalid-value",
@@ -482,7 +496,7 @@ pub fn check_flags(action: CaptureAction, print: bool, raw: bool) -> Result<(), 
             "--raw works only with `hex dictation start` and `hex dictation toggle`",
         ));
     }
-    Ok(())
+    Ok(action)
 }
 
 /// One request from a transport to the app's control host.
@@ -680,17 +694,50 @@ pub struct ModelInfo {
     /// Deprecated: whether the model reads the vocabulary as its prompt,
     /// which is what recognition hints became. Use `vocabulary`.
     pub supports_recognition_hints: bool,
+    /// Where the file is or comes from: `download` (Hex downloads it),
+    /// `hex` (Hex's own download), `imported` (Hex's copy of a file you
+    /// added), or `found: owner/name@abcdef1` (another app's download in the
+    /// Hugging Face cache, used where it is).
+    #[serde(default)]
+    pub source: String,
+}
+
+/// Where `model`'s file is or comes from, as `hex model list` and the local
+/// API say it: `found: owner/name@abcdef1`, `imported`, `hex`, or `download`.
+pub fn model_source(
+    model: &crate::transcription::models::ModelDefinition,
+    language: &str,
+) -> String {
+    use crate::transcription::found_models::describe;
+    use crate::transcription::models::{is_installed, model_path};
+    let installed = is_installed(model, language);
+    let here = model_path(model)
+        .ok()
+        .filter(|_| installed)
+        .and_then(|path| describe(&path));
+    match (model.id.is_custom(), here) {
+        (true, Some(origin)) => format!("found: {origin} (not tested by Hex)"),
+        (false, Some(origin)) => format!("found: {origin}"),
+        (true, None) => "imported".into(),
+        (false, None) if installed => "hex".into(),
+        (false, None) => "download".into(),
+    }
 }
 
 /// Every model `hex model` can name, with what this Mac has installed.
 pub fn model_infos(
     selection: &crate::transcription::models::TranscriptionSelection,
 ) -> Vec<ModelInfo> {
+    use crate::transcription::found_models;
     use crate::transcription::models::VocabularyUse;
-    crate::transcription::models::all_models()
+    // Listing models looks for ones already on this computer: headers only.
+    let found = found_models::scan();
+    let source = |model| model_source(model, &selection.language);
+    let mut infos: Vec<ModelInfo> = crate::transcription::models::all_models()
         .into_iter()
         .filter(|model| model.available())
         .map(|model| ModelInfo {
+            source: source(model),
             id: model.id.as_str().into(),
             name: model.name.into(),
             languages: model.languages.iter().map(|&code| code.into()).collect(),
@@ -706,7 +753,39 @@ pub fn model_infos(
             .into(),
             supports_recognition_hints: model.vocabulary_use() == VocabularyUse::Prompt,
         })
-        .collect()
+        .collect();
+    // Compatible files that aren't catalog models and aren't in use yet:
+    // `hex model use` takes their id and checks them in full first.
+    for model in found.into_iter().filter(|found| {
+        found.catalog.is_none() && !crate::transcription::custom_models::uses_path(&found.path)
+    }) {
+        let Some(sha256) = &model.blob_sha256 else {
+            continue;
+        };
+        infos.push(ModelInfo {
+            id: format!("custom-{}", &sha256[..16]),
+            name: model.name.clone(),
+            languages: model.languages.clone(),
+            size: format!("{} MB", model.bytes / 1_000_000),
+            installed: true,
+            selected: false,
+            streams: false,
+            vocabulary: if matches!(model.architecture.as_str(), "whisper" | "qwen3_asr") {
+                "prompt"
+            } else if model.architecture == "parakeet" {
+                "bias"
+            } else {
+                "none"
+            }
+            .into(),
+            supports_recognition_hints: matches!(
+                model.architecture.as_str(),
+                "whisper" | "qwen3_asr"
+            ),
+            source: format!("found: {} (not tested by Hex)", model.source()),
+        });
+    }
+    infos
 }
 
 /// The selection `hex model use` or `install` asks for: a known, available
@@ -720,6 +799,28 @@ pub fn model_selection(
     use crate::transcription::custom_models::{self, Status};
     use crate::transcription::models::TranscriptionModelId;
     let parsed = model.parse::<TranscriptionModelId>().ok();
+    // A compatible file found on this computer becomes usable here: hashed
+    // in full once (against the hub's blob name) and recorded in place.
+    if let Some(TranscriptionModelId::Custom(id)) = parsed
+        && !custom_models::is_registered(id)
+        && let Some(found) = crate::transcription::found_models::scan()
+            .into_iter()
+            .find(|found| {
+                found.catalog.is_none()
+                    && found
+                        .blob_sha256
+                        .as_deref()
+                        .is_some_and(|sha256| id.as_str().ends_with(&sha256[..16]))
+            })
+    {
+        custom_models::adopt_in_place(
+            &found.path,
+            found.blob_sha256.as_deref(),
+            &found.source(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .map_err(|error| ControlError::new("model-unavailable", format!("{error:#}")))?;
+    }
     // A known import says why it can't be used rather than that it's unknown.
     if let Some(TranscriptionModelId::Custom(id)) = parsed
         && custom_models::is_registered(id)
@@ -729,9 +830,6 @@ pub fn model_selection(
             Status::Missing => Some("its file is missing; import it again or remove it"),
             Status::Changed => {
                 Some("its file changed since it was imported; import it again or remove it")
-            }
-            Status::Off => {
-                Some("turn on Labs › Use your own speech model: hex labs on custom-models")
             }
         };
         if let Some(why) = why {
@@ -926,6 +1024,22 @@ mod tests {
         );
     }
 
+    /// `cancel` discards the recording, and takes neither flag.
+    #[test]
+    fn cancel_parses_and_takes_no_flags() {
+        let cancel = serde_json::from_str::<ControlRequest>(
+            r#"{"version":4,"command":"dictation","action":"cancel"}"#,
+        )
+        .unwrap();
+        let ControlCommand::Dictation { action, .. } = cancel.command else {
+            panic!("a dictation command");
+        };
+        assert_eq!(action, CaptureAction::Cancel);
+        assert_eq!(check_flags(action, false, false), Ok(CaptureAction::Cancel));
+        assert!(check_flags(action, true, false).is_err());
+        assert!(check_flags(action, false, true).is_err());
+    }
+
     fn round_trip_request(command: ControlCommand) {
         let request = ControlRequest::new(command);
         let json = serde_json::to_string(&request).unwrap();
@@ -957,6 +1071,8 @@ mod tests {
                 raw: true,
             },
             ControlCommand::PasteLast,
+            ControlCommand::Screenshot { pick: false },
+            ControlCommand::Screenshot { pick: true },
             ControlCommand::MeetingRecord {
                 title: Some("Design sync".into()),
             },

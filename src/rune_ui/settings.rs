@@ -313,6 +313,13 @@ pub(super) fn recorded_binding(event: &KeyEvent) -> Result<HotkeyBinding, &'stat
         Key::Down => "down".into(),
         Key::Home => "home".into(),
         Key::End => "end".into(),
+        Key::PageUp => "pageup".into(),
+        Key::PageDown => "pagedown".into(),
+        Key::Insert => "insert".into(),
+        Key::PrintScreen => "print".into(),
+        Key::ContextMenu => "menu".into(),
+        Key::Pause => "pause".into(),
+        Key::ScrollLock => "scrolllock".into(),
         _ => return Err(tr("Unsupported key")),
     };
     let held = |down: bool| down.then_some(ModifierSide::Either);
@@ -323,7 +330,11 @@ pub(super) fn recorded_binding(event: &KeyEvent) -> Result<HotkeyBinding, &'stat
         command: held(event.mods.logo),
         function: false,
     };
-    if modifiers.is_empty() && !matches!(event.key, Key::Function(_)) {
+    // The § key alone, and Menu, Pause, or Scroll Lock, are checked against
+    // their Labs toggles in `validate` (Linux).
+    let lone_labs_key = cfg!(target_os = "linux")
+        && (HotkeyKey::section_name(&name) || HotkeyKey::special_name(&name));
+    if modifiers.is_empty() && !matches!(event.key, Key::Function(_)) && !lone_labs_key {
         return Err(tr("Add a modifier"));
     }
     Ok(HotkeyBinding {
@@ -352,6 +363,18 @@ pub(super) fn validate(
             tr("Unsupported key")
         });
     }
+    // The § key alone needs Labs › Section key alone (Linux).
+    if cfg!(target_os = "linux") && binding.is_lone_section_key() && !settings.section_key_allowed()
+    {
+        return Err(tr("Add a modifier"));
+    }
+    // A navigation key alone needs Labs › Special keys alone (Windows).
+    if cfg!(target_os = "windows")
+        && binding.is_lone_navigation_key()
+        && !settings.special_keys_allowed()
+    {
+        return Err(tr("Add a modifier"));
+    }
     host::validate_hotkey(target, binding)?;
     if conflicts(settings, target, binding) {
         return Err(tr("Already in use"));
@@ -371,10 +394,15 @@ pub(super) fn conflicts(
         ShortcutTarget::Dictation => HotkeySlot::Dictation,
         ShortcutTarget::PasteLast => HotkeySlot::PasteLast,
         ShortcutTarget::RawDictation => HotkeySlot::RawDictation,
+        ShortcutTarget::Cancel => HotkeySlot::Cancel,
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => HotkeySlot::Capture,
+        #[cfg(all(hex_capture, target_os = "macos"))]
+        ShortcutTarget::CaptureReplay => HotkeySlot::CaptureReplay,
         #[cfg(target_os = "macos")]
         ShortcutTarget::SecondDictation => HotkeySlot::SecondDictation,
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::Screenshot => HotkeySlot::Screenshot,
     };
     settings.hotkey_in_use(slot, binding)
 }
@@ -400,10 +428,15 @@ pub(super) fn binding(settings: &AppSettings, target: ShortcutTarget) -> Option<
         ShortcutTarget::Dictation => Some(&settings.dictation_hotkey),
         ShortcutTarget::PasteLast => settings.paste_last_hotkey.as_ref(),
         ShortcutTarget::RawDictation => settings.raw_dictation_hotkey.as_ref(),
+        ShortcutTarget::Cancel => Some(&settings.cancel_hotkey),
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => Some(&settings.capture.hotkey),
+        #[cfg(all(hex_capture, target_os = "macos"))]
+        ShortcutTarget::CaptureReplay => settings.capture.replay_hotkey.as_ref(),
         #[cfg(target_os = "macos")]
         ShortcutTarget::SecondDictation => settings.second_dictation_hotkey.as_ref(),
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::Screenshot => Some(&settings.screenshots.hotkey),
     }
 }
 
@@ -416,10 +449,15 @@ pub(super) fn set_binding(
         ShortcutTarget::Dictation => settings.dictation_hotkey = binding,
         ShortcutTarget::PasteLast => settings.paste_last_hotkey = Some(binding),
         ShortcutTarget::RawDictation => settings.raw_dictation_hotkey = Some(binding),
+        ShortcutTarget::Cancel => settings.cancel_hotkey = binding,
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => settings.capture.hotkey = binding,
+        #[cfg(all(hex_capture, target_os = "macos"))]
+        ShortcutTarget::CaptureReplay => settings.capture.replay_hotkey = Some(binding),
         #[cfg(target_os = "macos")]
         ShortcutTarget::SecondDictation => settings.second_dictation_hotkey = Some(binding),
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::Screenshot => settings.screenshots.hotkey = binding,
     }
 }
 
@@ -462,7 +500,7 @@ pub(super) fn sound_volume_index(settings: &AppSettings) -> usize {
 
 pub(super) fn toggle_menu(ui: &mut Ui, menu: Menu) {
     ui.open = (ui.open != Some(menu)).then_some(menu);
-    if matches!(ui.open, Some(Menu::Microphone | Menu::TourMicrophone)) {
+    if matches!(ui.open, Some(Menu::Microphone)) {
         refresh_microphones(ui);
     }
 }
@@ -588,7 +626,9 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
         }) => trigger.clone(),
         _ => ui.settings.dictation_hotkey.keycaps().join("+"),
     };
+    let no_model = super::general::missing_model(ui).is_some();
     let hint = match (running, ui.settings.shortcut_mode) {
+        _ if no_model => tr("Hex can't dictate until a speech model is installed").to_string(),
         _ if !ui.records_shortcuts() => {
             tr("Ready anywhere · Use your desktop's shortcuts to dictate").to_string()
         }
@@ -603,13 +643,7 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
         .view
         .as_ref()
         .and_then(|view| view.listener.warning.clone())
-        .map(|failure| tr_fill("Last dictation failed: {}", &failure))
-        // A dictation discarded for silence stays noted until one goes
-        // through (#782).
-        .or_else(|| {
-            crate::dictation::silence::last()
-                .map(|silence| tr_fill("Last dictation discarded: {}", silence.note()))
-        });
+        .map(|failure| tr_fill("Last dictation failed: {}", &failure));
     let error = ui
         .error
         .clone()
@@ -643,7 +677,11 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
         .py(8.0)
         .gap(12.0)
         .center_y()
-        .child(status_dot(if running { p.success() } else { p.muted() }))
+        .child(status_dot(if running && !no_model {
+            p.success()
+        } else {
+            p.muted()
+        }))
         .child(
             col()
                 .key("copy")
@@ -660,7 +698,7 @@ pub(super) fn listener_card(ui: &Ui, p: Paint) -> El {
                     text(hint)
                         .key("hint")
                         .font(DESCRIPTION)
-                        .color(p.muted())
+                        .color(if no_model { p.danger() } else { p.muted() })
                         .wrap(),
                 )
                 .children(failure.map(|failure| {
@@ -710,27 +748,18 @@ fn portal_grant(ui: &Ui, target: ShortcutTarget) -> Option<&DesktopGrantedShortc
         ShortcutTarget::Dictation => "Dictation",
         ShortcutTarget::PasteLast => "Paste last dictation",
         ShortcutTarget::RawDictation => "Dictate without processing",
+        // The portal never holds the cancel key.
+        ShortcutTarget::Cancel => return None,
         // The portal lists Annotate's shortcut under that name.
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => "Annotate",
+        #[cfg(all(hex_capture, target_os = "macos"))]
+        ShortcutTarget::CaptureReplay => return None,
         // macOS has no shortcuts portal.
         #[cfg(target_os = "macos")]
-        ShortcutTarget::SecondDictation => return None,
+        ShortcutTarget::SecondDictation | ShortcutTarget::Screenshot => return None,
     };
     granted.iter().find(|shortcut| shortcut.name == name)
-}
-
-/// The key a shortcuts portal's desktop gave Cancel dictation. Hex suggests
-/// none, so a key here comes from the desktop (#624), and it takes that key
-/// from every app.
-pub(super) fn cancel_grant(ui: &Ui) -> Option<&str> {
-    let Some(DesktopShortcuts::Portal(granted)) = ui.shortcuts() else {
-        return None;
-    };
-    granted
-        .iter()
-        .find(|shortcut| shortcut.name == "Cancel dictation")
-        .and_then(|shortcut| shortcut.trigger.as_deref())
 }
 
 /// Keys GNOME keeps for itself by default (window menu, input sources, app
@@ -862,13 +891,6 @@ pub(super) fn desktop_commands(ui: &Ui, p: Paint) -> El {
             tr("Toggle dictation"),
             tr("Press to start dictating, press again to transcribe"),
             &["hex dictation toggle"],
-        ),
-        command_row(
-            p,
-            "cancel",
-            tr("Cancel dictation"),
-            tr("Discard the current recording"),
-            &["hex dictation cancel"],
         ),
         command_row(
             p,
@@ -1057,6 +1079,7 @@ pub(super) fn input_source_rows(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
                 controls.child(select(
                     p,
                     &format!("input-source-model{index}"),
+                    tr("Speech model"),
                     &label,
                     ui.open == Some(Menu::InputSourceModel(index)),
                     choices,
@@ -1081,7 +1104,7 @@ fn input_source_language(
     let current = transcription_models::language_name(&choice.language);
     let codes = transcription_models::definition(choice.model).language_choices();
     if codes.len() <= 1 {
-        return fixed_select(p, &key, current);
+        return fixed_select(p, &key, tr("Language"), current);
     }
     let choices = codes
         .into_iter()
@@ -1110,6 +1133,7 @@ fn input_source_language(
     select(
         p,
         &key,
+        tr("Language"),
         current,
         ui.open == Some(Menu::InputSourceLanguage(index)),
         choices,
@@ -1175,10 +1199,15 @@ pub(super) fn hotkey_key(target: ShortcutTarget) -> &'static str {
         ShortcutTarget::Dictation => "dictation-hotkey",
         ShortcutTarget::PasteLast => "paste-last-hotkey",
         ShortcutTarget::RawDictation => "raw-dictation-hotkey",
+        ShortcutTarget::Cancel => "cancel-hotkey",
         #[cfg(hex_capture)]
         ShortcutTarget::Capture => "capture-hotkey",
+        #[cfg(all(hex_capture, target_os = "macos"))]
+        ShortcutTarget::CaptureReplay => "capture-replay-hotkey",
         #[cfg(target_os = "macos")]
         ShortcutTarget::SecondDictation => "second-dictation-hotkey",
+        #[cfg(target_os = "macos")]
+        ShortcutTarget::Screenshot => "screenshot-hotkey",
     }
 }
 
@@ -1325,50 +1354,6 @@ pub(super) fn shortcut_caps(binding: &HotkeyBinding, side_picker: bool) -> Vec<S
         .collect()
 }
 
-pub(super) fn double_tap_only_applies(settings: &AppSettings) -> bool {
-    settings.shortcut_mode == ShortcutMode::Hold
-        && settings.double_tap_lock
-        && settings.dictation_hotkey.key.is_some()
-}
-
-pub(super) fn release_confirmation(_ui: &Ui, p: Paint) -> El {
-    setting_row(
-        p,
-        "confirm-release",
-        tr("Release the microphone when idle?"),
-        Some(tr(
-            "Opens the microphone on shortcut press without pre-roll.",
-        )),
-        row()
-            .key("actions")
-            .gap(8.0)
-            .child(button(
-                p,
-                "cancel-release",
-                tr("Cancel"),
-                ButtonKind::Secondary,
-                |ui: &mut Ui, _| {
-                    ui.confirm_release = false;
-                },
-            ))
-            .child(
-                button(
-                    p,
-                    "confirm-release",
-                    tr("Release microphone"),
-                    ButtonKind::Primary,
-                    |ui: &mut Ui, _| {
-                        if ui.update(|settings| settings.release_microphone_while_idle = true) {
-                            ui.confirm_release = false;
-                        }
-                    },
-                )
-                .default_button(),
-            ),
-    )
-    .fill(p.k.c.hover)
-}
-
 /// Stable or Dev shows only while this install updates itself: test,
 /// source, managed, and package-manager installs never check a channel.
 pub(super) fn updates_itself(ui: &Ui) -> bool {
@@ -1408,6 +1393,58 @@ mod special_keys_tests {
             validate(&settings, ShortcutTarget::Dictation, &menu),
             Ok(())
         );
+    }
+
+    /// Issue 1187: the recorder takes Scroll Lock, Pause, and Menu alone.
+    #[test]
+    fn recorder_takes_special_keys_alone() {
+        let mut settings = AppSettings::default();
+        settings.labs.standalone_special_keys = true;
+        for (key, name) in [
+            (Key::ScrollLock, "scroll lock"),
+            (Key::Pause, "pause"),
+            (Key::ContextMenu, "menu"),
+        ] {
+            let binding = recorded_binding(&KeyEvent {
+                key,
+                mods: Default::default(),
+            })
+            .unwrap();
+            assert_eq!(binding.key.as_ref().unwrap().name(), name);
+            assert_eq!(
+                validate(&settings, ShortcutTarget::Dictation, &binding),
+                Ok(())
+            );
+        }
+    }
+
+    /// Issue 1050: § alone only with Labs › Section key alone on; § with a
+    /// modifier as before.
+    #[test]
+    fn section_alone_needs_its_labs_toggle() {
+        let section = HotkeyBinding {
+            modifiers: HotkeyModifiers::default(),
+            key: Some(HotkeyKey::named("§")),
+        };
+        let with_control = HotkeyBinding {
+            modifiers: HotkeyModifiers::control_option(),
+            key: Some(HotkeyKey::named("§")),
+        };
+        let mut settings = AppSettings::default();
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &section),
+            Err(tr("Add a modifier"))
+        );
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &with_control),
+            Ok(())
+        );
+        settings.labs.section_key_alone = true;
+        assert_eq!(
+            validate(&settings, ShortcutTarget::Dictation, &section),
+            Ok(())
+        );
+        assert_eq!(section.keycaps(), ["§"]);
     }
 }
 

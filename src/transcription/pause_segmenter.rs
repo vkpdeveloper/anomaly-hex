@@ -15,6 +15,10 @@ const SPEECH_MARGIN_DB: f32 = 12.0;
 /// How far above the floor a frame may sit and still count as quiet.
 const QUIET_MARGIN_DB: f32 = 4.0;
 const MINIMUM_SPEECH_DB: f32 = -55.0;
+/// Below this a frame is quiet whatever the floor. Lower than
+/// `MINIMUM_SPEECH_DB`: a quiet built-in microphone can carry whole
+/// dictations under -55 dBFS (#841).
+const QUIET_MINIMUM_DB: f32 = -70.0;
 const LOWEST_FLOOR_DB: f32 = -90.0;
 /// About 3 dB per second at 50 frames per second.
 const FLOOR_RISE_DB_PER_FRAME: f32 = 0.06;
@@ -22,6 +26,18 @@ const MINIMUM_PIECE: Duration = Duration::from_secs(3);
 const PAUSE: Duration = Duration::from_millis(600);
 const LONG_PIECE: Duration = Duration::from_secs(8);
 const LONG_PIECE_PAUSE: Duration = Duration::from_millis(300);
+
+/// One frame against the noise floor. A frame can be neither quiet nor
+/// speech, but never both.
+pub(crate) struct FrameLevel {
+    /// The frame sits at the noise floor (within `QUIET_MARGIN_DB`) or below
+    /// `QUIET_MINIMUM_DB`. Stricter than "not speech": speech only a few dB
+    /// above steady room noise, or from a quiet microphone, is not quiet, so
+    /// audio that is dropped as quiet is never quiet speech the speech
+    /// margin missed.
+    pub quiet: bool,
+    pub speech: bool,
+}
 
 /// Classifies consecutive 20 ms frames of 16 kHz audio as speech or not
 /// against the adaptive noise floor described above.
@@ -33,22 +49,32 @@ pub(crate) struct SpeechFrames {
 impl SpeechFrames {
     /// Whether `frame`, the next `FRAME_SAMPLES` samples, is speech.
     pub(crate) fn is_speech(&mut self, frame: &[f32]) -> bool {
-        let (level_db, floor_db) = self.measure(frame);
-        level_db > (floor_db + SPEECH_MARGIN_DB).max(MINIMUM_SPEECH_DB)
+        self.classify(frame).speech
     }
 
-    /// Whether `frame` sits at the noise floor (within `QUIET_MARGIN_DB`) or
-    /// below the speech minimum. Stricter than "not speech": speech only a
-    /// few dB above steady room noise is not quiet, so audio that is dropped
-    /// as quiet is never quiet speech the speech margin missed.
-    pub(crate) fn is_quiet(&mut self, frame: &[f32]) -> bool {
+    /// How `frame`, the next `FRAME_SAMPLES` samples, sits against the noise
+    /// floor.
+    pub(crate) fn classify(&mut self, frame: &[f32]) -> FrameLevel {
         let (level_db, floor_db) = self.measure(frame);
-        level_db <= (floor_db + QUIET_MARGIN_DB).max(MINIMUM_SPEECH_DB)
+        FrameLevel {
+            quiet: level_db <= (floor_db + QUIET_MARGIN_DB).max(QUIET_MINIMUM_DB),
+            speech: level_db > (floor_db + SPEECH_MARGIN_DB).max(MINIMUM_SPEECH_DB),
+        }
     }
 
-    /// The frame's level and the noise floor after it, both in dBFS.
+    /// The frame's DC-removed level and the noise floor after it, both in
+    /// dBFS. Some microphones (a Ryzen built-in digital microphone, #841)
+    /// carry a DC offset far louder than the speech on it; counted as level,
+    /// it pins every frame to the floor and the whole dictation reads as a
+    /// pause. The dictation silence gate removes DC the same way.
     fn measure(&mut self, frame: &[f32]) -> (f32, f32) {
-        let energy = frame.iter().map(|sample| sample * sample).sum::<f32>() / frame.len() as f32;
+        let count = frame.len() as f32;
+        let mean = frame.iter().sum::<f32>() / count;
+        let energy = frame
+            .iter()
+            .map(|sample| (sample - mean) * (sample - mean))
+            .sum::<f32>()
+            / count;
         let level_db = if energy.is_finite() {
             10.0 * energy.max(1e-18).log10()
         } else {

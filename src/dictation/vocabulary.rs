@@ -5,12 +5,15 @@
 //! toward it through [`transcription_bias`], and Whisper and Qwen3-ASR read
 //! it as their context prompt through [`transcription_prompt`].
 
+use std::cell::Cell;
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
+
+use crate::dictation::context::ContextSnapshot;
 
 /// Longest term or "sounds like" entry, in characters.
 const MAX_TERM_CHARS: usize = 64;
@@ -25,10 +28,54 @@ const MAX_BIASED_TERMS: usize = 64;
 const SETTINGS_READ_LIMIT: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "SavedEntry")]
 pub struct VocabularyEntry {
     pub term: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sounds_like: Vec<String>,
+}
+
+/// An entry as `settings.json` holds it: a plain term, or the term with its
+/// "sounds like" spellings.
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum SavedEntry {
+    Term(String),
+    Entry {
+        term: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sounds_like: Vec<String>,
+    },
+}
+
+impl From<SavedEntry> for VocabularyEntry {
+    fn from(saved: SavedEntry) -> Self {
+        match saved {
+            SavedEntry::Term(term) => Self {
+                term,
+                sounds_like: Vec::new(),
+            },
+            SavedEntry::Entry { term, sounds_like } => Self { term, sounds_like },
+        }
+    }
+}
+
+/// Writes a list for `settings.json`: a term with no "sounds like"
+/// spellings as a plain string. Either form loads.
+pub(crate) fn serialize_saved<S: serde::Serializer>(
+    entries: &[VocabularyEntry],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(entries.iter().map(|entry| {
+        if entry.sounds_like.is_empty() {
+            SavedEntry::Term(entry.term.clone())
+        } else {
+            SavedEntry::Entry {
+                term: entry.term.clone(),
+                sounds_like: entry.sounds_like.clone(),
+            }
+        }
+    }))
 }
 
 /// How readily transcription swaps heard words for a vocabulary term that
@@ -69,6 +116,72 @@ impl VocabularyBoost {
 
 static SAVED: OnceLock<RwLock<Vec<VocabularyEntry>>> = OnceLock::new();
 static BOOST: AtomicU8 = AtomicU8::new(VocabularyBoost::Normal as u8);
+/// The focused app and page as last seen (macOS), whose mode's own terms a
+/// dictation hears with ahead of the shared list.
+static FOCUS: OnceLock<RwLock<Option<ContextSnapshot>>> = OnceLock::new();
+
+thread_local! {
+    static DICTATING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Records the focused app and page, so the next dictation's transcription
+/// hears with its mode's vocabulary.
+pub(crate) fn focus(context: &ContextSnapshot) {
+    *FOCUS
+        .get_or_init(Default::default)
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = Some(context.clone());
+}
+
+/// Runs `work` as a dictation's transcription on this thread: its runs hear
+/// with the focused mode's terms too. Meetings, captures, and other hosts'
+/// audio hear with the shared list alone.
+pub(crate) fn for_dictation<R>(work: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DICTATING.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(DICTATING.with(|flag| flag.replace(true)));
+    work()
+}
+
+/// The focused mode's own terms first, so the bias cap keeps them, then the
+/// shared list, each term once.
+fn transcription_entries() -> Vec<VocabularyEntry> {
+    let shared = entries();
+    if !DICTATING.with(Cell::get) {
+        return shared;
+    }
+    let focused = FOCUS
+        .get_or_init(Default::default)
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    #[cfg(target_os = "macos")]
+    if let Some(context) = focused {
+        let own = crate::dictation::config::dictation_profiles().vocabulary_for(&context);
+        return merged(&own, &shared);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = focused;
+    shared
+}
+
+/// `first`, then the entries of `then` whose term `first` lacks, in any case.
+pub(crate) fn merged(first: &[VocabularyEntry], then: &[VocabularyEntry]) -> Vec<VocabularyEntry> {
+    if first.is_empty() {
+        return then.to_vec();
+    }
+    let mut list = first.to_vec();
+    for entry in then {
+        if !contains(&list, &entry.term) {
+            list.push(entry.clone());
+        }
+    }
+    list
+}
 
 /// The saved terms, as last applied from settings.
 pub fn terms() -> Vec<String> {
@@ -97,7 +210,7 @@ pub(crate) fn transcription_bias()
     if boost == VocabularyBoost::Off {
         return None;
     }
-    bias_for(&entries(), boost)
+    bias_for(&transcription_entries(), boost)
 }
 
 fn bias_for(
@@ -127,25 +240,63 @@ fn bias_for(
     ))
 }
 
+/// How much of the vocabulary a context prompt carries, in characters, for a
+/// model of this architecture; `None` for one without a prompt. Whisper's
+/// prompt slot holds 223 tokens and its engine trims an overlong one from
+/// the front, dropping the first (most important) terms, so the list stays
+/// well inside it. Qwen3-ASR's system message has far more room; the bound
+/// keeps a long list from crowding out the audio or being echoed.
+pub(crate) fn prompt_chars(architecture: &str) -> Option<usize> {
+    match architecture {
+        "whisper" => Some(500),
+        "qwen3_asr" => Some(1_000),
+        _ => None,
+    }
+}
+
+/// How many of `entries`, first in list order, a model of this
+/// architecture reads: Parakeet's bias cap, or the terms that fit the
+/// prompt. The same budget [`transcription_bias`] and
+/// [`transcription_prompt`] apply.
+pub(crate) fn terms_read(entries: &[VocabularyEntry], architecture: &str) -> usize {
+    if architecture == "parakeet" {
+        return entries.len().min(MAX_BIASED_TERMS);
+    }
+    prompt_chars(architecture).map_or(0, |max_chars| prompt_terms(entries, max_chars))
+}
+
 /// The context prompt Whisper and Qwen3-ASR runs read: the first terms in
-/// list order (at most the bias cap), comma-separated so the echo filter can
-/// recognise the list, and only as many as fit `max_chars`. `None` while the
-/// list is empty. Read at the start of each run, like the bias.
+/// list order, comma-separated so the echo filter can recognise the list,
+/// and as many as fit `max_chars`. The bias's term cap is Parakeet's and
+/// does not apply here; the character budget is the prompt's own limit.
+/// `None` while the list is empty. Read at the start of each run, like the
+/// bias.
 pub(crate) fn transcription_prompt(max_chars: usize) -> Option<String> {
-    prompt_for(&entries(), max_chars)
+    prompt_for(&transcription_entries(), max_chars)
 }
 
 fn prompt_for(entries: &[VocabularyEntry], max_chars: usize) -> Option<String> {
-    let mut prompt = String::new();
-    for entry in entries.iter().take(MAX_BIASED_TERMS) {
-        let separator = if prompt.is_empty() { "" } else { ", " };
-        if prompt.chars().count() + separator.len() + entry.term.chars().count() > max_chars {
-            break;
+    let terms = &entries[..prompt_terms(entries, max_chars)];
+    (!terms.is_empty()).then(|| {
+        terms
+            .iter()
+            .map(|entry| entry.term.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+/// How many of the first terms fit `max_chars` joined by ", ".
+fn prompt_terms(entries: &[VocabularyEntry], max_chars: usize) -> usize {
+    let mut chars = 0;
+    for (index, entry) in entries.iter().enumerate() {
+        let separator = if index == 0 { 0 } else { 2 };
+        chars += separator + entry.term.chars().count();
+        if chars > max_chars {
+            return index;
         }
-        prompt.push_str(separator);
-        prompt.push_str(&entry.term);
     }
-    (!prompt.is_empty()).then_some(prompt)
+    entries.len()
 }
 
 /// Adds each name in recognition hints saved before they merged into the
@@ -330,6 +481,64 @@ mod tests {
     }
 
     #[test]
+    fn plain_terms_load_and_save_as_strings() {
+        #[derive(Deserialize, Serialize)]
+        struct File {
+            #[serde(serialize_with = "serialize_saved")]
+            vocabulary: Vec<VocabularyEntry>,
+        }
+        let file: File = serde_json::from_str(
+            r#"{"vocabulary": ["Rune", {"term": "OpenCode", "sounds_like": ["open code"]},
+                {"term": "Kaffar"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.vocabulary,
+            [
+                entry("Rune", &[]),
+                entry("OpenCode", &["open code"]),
+                entry("Kaffar", &[])
+            ]
+        );
+        assert_eq!(
+            serde_json::to_string(&file).unwrap(),
+            r#"{"vocabulary":["Rune",{"term":"OpenCode","sounds_like":["open code"]},"Kaffar"]}"#
+        );
+        // Replies to `hex vocabulary` keep the object form.
+        assert_eq!(
+            serde_json::to_string(&entry("Rune", &[])).unwrap(),
+            r#"{"term":"Rune"}"#
+        );
+    }
+
+    #[test]
+    fn a_modes_terms_come_first_and_each_term_once() {
+        let own = [entry("useEffect", &[]), entry("Rune", &["rooney"])];
+        let shared = [entry("rune", &[]), entry("OpenCode", &[])];
+        assert_eq!(
+            merged(&own, &shared),
+            [
+                entry("useEffect", &[]),
+                entry("Rune", &["rooney"]),
+                entry("OpenCode", &[])
+            ]
+        );
+        assert_eq!(merged(&[], &shared), shared);
+    }
+
+    #[test]
+    fn only_dictation_hears_with_the_focused_modes_terms() {
+        apply(&[entry("OpenCode", &[])], VocabularyBoost::Normal);
+        assert_eq!(transcription_entries(), [entry("OpenCode", &[])]);
+        let inside = for_dictation(|| {
+            assert!(DICTATING.with(Cell::get));
+            transcription_entries()
+        });
+        assert!(inside.iter().any(|entry| entry.term == "OpenCode"));
+        assert!(!DICTATING.with(Cell::get));
+    }
+
+    #[test]
     fn adding_dedupes_by_case_and_merges_spellings() {
         let mut list = Vec::new();
         assert!(add(&mut list, "  Cappuccino ", &["capuchin".into(), "".into()]).unwrap());
@@ -410,8 +619,38 @@ mod tests {
         assert_eq!(prompt_for(&list, 3), None);
         assert_eq!(prompt_for(&[], 100), None);
         let many: Vec<_> = (0..100).map(|n| entry(&format!("T{n}"), &[])).collect();
+        // Only the character budget limits the prompt, not the bias's term cap.
         let prompt = prompt_for(&many, 10_000).unwrap();
-        assert_eq!(prompt.split(", ").count(), MAX_BIASED_TERMS);
+        assert_eq!(prompt.split(", ").count(), 100);
+        let prompt = prompt_for(&many, 1_000).unwrap();
+        assert!(prompt.split(", ").count() > MAX_BIASED_TERMS);
+        assert!(prompt.chars().count() <= 1_000);
+    }
+
+    #[test]
+    fn terms_read_counts_exactly_what_transcription_takes() {
+        let many: Vec<_> = (0..200)
+            .map(|n| entry(&format!("Term number {n}"), &[]))
+            .collect();
+        for count in [0, 1, 20, 40, 64, 65, 200] {
+            let list = &many[..count];
+            for architecture in ["whisper", "qwen3_asr"] {
+                let prompt = prompt_for(list, prompt_chars(architecture).unwrap());
+                let taken = prompt.map_or(0, |prompt| prompt.split(", ").count());
+                assert_eq!(
+                    terms_read(list, architecture),
+                    taken,
+                    "{architecture} {count}"
+                );
+            }
+            let biased =
+                bias_for(list, VocabularyBoost::Normal).map_or(0, |(terms, _)| terms.len());
+            assert_eq!(terms_read(list, "parakeet"), biased);
+            assert_eq!(terms_read(list, "sense_voice"), 0);
+        }
+        assert_eq!(terms_read(&many, "parakeet"), MAX_BIASED_TERMS);
+        assert!(terms_read(&many, "whisper") < terms_read(&many, "qwen3_asr"));
+        assert!(terms_read(&many, "qwen3_asr") < many.len());
     }
 
     #[test]

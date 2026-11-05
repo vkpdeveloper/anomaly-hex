@@ -142,6 +142,7 @@ impl Backend {
                 transcription: published.transcription.clone(),
                 update_status: published.update_status.clone(),
                 update_notes: published.update_notes.clone(),
+                update_blocked: None,
                 editing: false,
             },
             settings: published.settings.clone(),
@@ -298,7 +299,7 @@ impl ChordCapture {
             Ok(key) => key,
             Err(message) => return Some(Chord::Captured(Err(message))),
         };
-        if modifiers.is_empty() && !is_function_key(&key.label) {
+        if modifiers.is_empty() && !is_function_key(&key.label) && !is_navigation_key(code) {
             return Some(Chord::Captured(Err(tr("Add a modifier"))));
         }
         Some(Chord::Captured(Ok(HotkeyBinding {
@@ -341,6 +342,13 @@ fn is_function_key(label: &str) -> bool {
         .strip_prefix('F')
         .and_then(|number| number.parse::<u8>().ok())
         .is_some_and(|number| (1..=20).contains(&number))
+}
+
+/// Home, End, Page Up, Page Down, and Help (Insert on PC keyboards): keys
+/// that type nothing, so, like a function key, one may be a shortcut alone,
+/// as it could before (#1138).
+fn is_navigation_key(code: u16) -> bool {
+    matches!(code, 115 | 119 | 116 | 121 | 114)
 }
 
 /// The key a virtual key code records, and its label.
@@ -455,18 +463,26 @@ pub(super) fn hotkey_key_named(name: &str) -> Result<HotkeyKey, &'static str> {
 }
 
 /// macOS accepts every binding the capture can produce, except that Paste
-/// Last fires only on a key press (`suppression::paste_action`), and the
-/// capture shortcut, pressed once to start and again to finish, and the
+/// Last and the screenshot shortcut fire only on a key press
+/// (`suppression::paste_action`), and the capture shortcut, pressed once to start and again to finish, and the
 /// send-to list's need a key.
 pub(super) fn validate_hotkey(
     target: ShortcutTarget,
     binding: &HotkeyBinding,
 ) -> Result<(), &'static str> {
-    if target == ShortcutTarget::PasteLast && binding.key.is_none() {
+    if matches!(
+        target,
+        ShortcutTarget::PasteLast | ShortcutTarget::Cancel | ShortcutTarget::Screenshot
+    ) && binding.key.is_none()
+    {
         return Err(tr("Add a key"));
     }
     #[cfg(hex_capture)]
-    if target == ShortcutTarget::Capture && binding.key.is_none() {
+    if matches!(
+        target,
+        ShortcutTarget::Capture | ShortcutTarget::CaptureReplay
+    ) && binding.key.is_none()
+    {
         return Err(tr("Add a key"));
     }
     Ok(())
@@ -1641,6 +1657,24 @@ mod tests {
         let f12 = captured(capture.key_down(111, false, None, FUNCTION)).unwrap();
         assert!(f12.modifiers.is_empty());
         assert_eq!(f12.key.unwrap().label, "F12");
+        // Issue 1138: End, and the other keys that type nothing, record alone.
+        for (code, label) in [
+            (119, "End"),
+            (115, "Home"),
+            (116, "Page Up"),
+            (121, "Page Down"),
+            (114, "Help"),
+        ] {
+            let binding = captured(capture.key_down(code, false, None, FUNCTION)).unwrap();
+            assert!(binding.modifiers.is_empty());
+            assert_eq!(binding.key.as_ref().unwrap().label, label);
+            assert!(binding.runtime().matches_key_press(code, FUNCTION));
+        }
+        assert_eq!(
+            captured(capture.key_down(123, false, None, FUNCTION)),
+            Err(tr("Add a modifier")),
+            "arrows still need one"
+        );
         assert!(matches!(
             capture.key_down(ESCAPE_KEY_CODE, false, None, 0),
             Some(Chord::Cancelled)

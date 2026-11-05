@@ -16,7 +16,7 @@ use super::settings::Chord;
 use super::{HostState, ServiceView};
 use crate::app_settings::HotkeyBinding;
 use crate::desktop::i18n::tr;
-use crate::windows::input::{ChordCapture, ChordPoll, WindowsHotkey};
+use crate::windows::input::{ChordCapture, ChordPoll, NumpadWatch, WindowsHotkey};
 use crate::windows::rune::RuntimeHandle;
 pub(super) use crate::windows::rune::{Request, ShortcutTarget};
 
@@ -110,6 +110,7 @@ impl Backend {
                 transcription: published.transcription.clone(),
                 update_status: published.update_status.clone(),
                 update_notes: published.update_notes.clone(),
+                update_blocked: published.update_blocked,
                 editing: false,
             },
             settings: published.settings.clone(),
@@ -144,10 +145,14 @@ impl ChordWatch {
             .name("hex-chord-capture".into())
             .spawn(move || {
                 let mut capture = ChordCapture::default();
+                let numpad = NumpadWatch::install();
                 // The modifiers last shown while the chord is in progress.
                 let mut shown = capture.held();
                 while !worker_stop.load(Ordering::Relaxed) {
                     std::thread::sleep(CHORD_POLL);
+                    if let Some(numpad) = &numpad {
+                        numpad.pump();
+                    }
                     // Keys typed into another application never rebind a
                     // shortcut.
                     if !crate::windows::input::app_is_foreground() {
@@ -160,6 +165,10 @@ impl ChordWatch {
                             Chord::Held(HotkeyBinding::from(&shown).modifiers)
                         }
                         ChordPoll::Cancelled => Chord::Cancelled,
+                        ChordPoll::Unsupported => {
+                            shown = capture.held();
+                            Chord::Captured(Err(tr("Unsupported key")))
+                        }
                         ChordPoll::Captured(hotkey) => {
                             // A rejected chord: record the next one from
                             // scratch.
@@ -210,6 +219,16 @@ pub(super) fn validate_hotkey(
 ) -> Result<(), &'static str> {
     if target != ShortcutTarget::Dictation && binding.key.is_none() {
         return Err(tr("Add a key"));
+    }
+    // Hex takes the cancel key only while a recording runs, so a key alone,
+    // such as Escape, never keeps it from other apps.
+    if target == ShortcutTarget::Cancel {
+        return WindowsHotkey::from(binding)
+            .key
+            .as_deref()
+            .map_or(Ok(0), crate::windows::input::virtual_key)
+            .map(|_| ())
+            .map_err(|_| tr("Unsupported key"));
     }
     WindowsHotkey::from(binding)
         .validate()

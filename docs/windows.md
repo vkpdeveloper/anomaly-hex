@@ -4,7 +4,7 @@ The Windows port is a beta with a Rune desktop app (a tray process; see
 [The app](#the-app)), WASAPI capture,
 local `transcribe.cpp` transcription, a global shortcut, and generation-safe
 automatic paste. Its daily-use surface includes live microphone, model, and
-shortcut settings, Hold or Toggle shortcut modes, double-tap lock, Paste Last
+shortcut settings, Hold, Tap, and double-tap shortcut modes, Paste Last
 Dictation, recording tones, a click-through HUD, retained History, text
 replacements, a resident system tray, and per-user Launch at login. Global and
 contextual Modes can rewrite completed dictation through the same
@@ -13,8 +13,10 @@ or user-defined TypeScript transformations.
 
 The default shortcut is `Ctrl+Space`. In **Hold** mode, hold both keys while
 speaking and release Space to transcribe and paste. In **Toggle** mode, press
-`Ctrl+Space` to start and again to finish. Only Escape cancels; holding a
-modifier on its own does nothing. Hex consumes the chord while it matches, so
+`Ctrl+Space` to start and again to finish, or press the **Cancel** shortcut
+(Escape by default) to throw the recording away; Hex takes that key only while
+a recording runs. Hold mode has no cancel (every dictation finishes and
+pastes), and holding a modifier on its own does nothing. Hex consumes the chord while it matches, so
 applications and input methods no longer see `Ctrl+Space`; rebind it in Settings
 if you rely on that chord elsewhere. To let another app use the same key, such as
 a Discord push-to-talk key, turn on **Share dictation shortcut with other apps**
@@ -41,16 +43,18 @@ updating itself from the Dev channel; afterwards, the stable release.
 
 [anoma.ly/hex](https://anoma.ly/hex/) picks the right one. The
 installer needs no administrator rights: it installs for the current user,
-adds Hex to the Start menu and to **Settings › Apps** for uninstalling, and
-opens Hex, whose first run downloads a speech model. Releases built once
+adds Hex to the Start menu, to **Settings › Apps** for uninstalling, and
+`hex` to PATH for terminals, and opens Hex, whose first run downloads a speech
+model. Releases built once
 Anomaly's Azure Artifact Signing is configured are Authenticode-signed
 ([windows-signing.md](windows-signing.md)). Until then, and while a new
 publisher builds SmartScreen reputation, SmartScreen may say it protected your
 PC; choose **More info**, then **Run anyway**.
 
-**x64** decodes on the GPU through Vulkan and needs a current NVIDIA, AMD, or
-Intel graphics driver (it supplies `vulkan-1.dll`); the installer stops with an
-explanation when it is missing. **ARM64** decodes on the CPU. Both are
+**x64** decodes on the GPU through Vulkan 1.2, which a current NVIDIA, AMD, or
+Intel graphics driver supplies (`vulkan-1.dll`). With a missing or older
+driver Hex still starts and decodes on the CPU, and Settings › Speech engine
+says so. **ARM64** decodes on the CPU. Both are
 self-contained: no Visual C++ Redistributable is required. Hex then keeps
 itself current through the signed update feed. Uninstalling removes every
 installed version, the shortcut, and Launch at login, and keeps settings, logs,
@@ -64,6 +68,16 @@ powershell -ExecutionPolicy Bypass -Command "iwr https://anoma.ly/hex/files/inst
 ```
 
 Uninstall a script install with `install-windows.ps1 -Uninstall`.
+
+The managed layout is `%APPDATA%\hex\versions\<version>\` holding `hex.exe`,
+the app, a GUI program so launching Hex opens no console window, and
+`hex.com`, its console entry point, which runs `hex.exe` with the same
+arguments, waits for it, and returns its exit code (`hex` and `hex app` only
+start the app and return). Shortcuts, Launch at login,
+and the Start menu open `hex.exe`. `%APPDATA%\hex\bin\hex.com`, a copy that
+runs the version `current-version` names, is on the user's PATH, and a
+terminal resolves `hex` to it before any `hex.exe` because PATHEXT lists
+`.COM` first. Terminals opened before the install need reopening to see PATH.
 
 ## Known Issues
 
@@ -172,8 +186,10 @@ discarded. `--device` accepts a case-insensitive fragment from `devices`.
 Runtime data is stored under `%APPDATA%\hex`. Observations are in
 `logs\live.ndjson`, and native/runtime diagnostics are in `logs\process.log`,
 including every panic with its thread and backtrace. A worker that stops
-unexpectedly leaves its cause there. The app detaches from its console at
-launch, so it has no stdout or stderr.
+unexpectedly leaves its cause there. `hex.exe` is a GUI program, so a launch
+from Explorer, the Start menu, or login opens no console window. Run from a
+terminal, it prints startup errors there, then the app leaves the terminal and
+has no stdout or stderr.
 Successful pasted dictations are retained, subject to the selected retention
 window and hard size limits, in `history.json`. Captured audio is never retained
 by default.
@@ -297,7 +313,7 @@ current-user startup registry, UI Automation, and Windows capture APIs.
 
 | Area | Windows status |
 | --- | --- |
-| Local hold-to-dictate, Toggle mode, timestamped boundaries, Escape, paste | Implemented |
+| Local hold-to-dictate, Toggle mode, timestamped boundaries, paste | Implemented |
 | Live model, shortcut, and microphone selection | Implemented |
 | Double-tap lock and Paste Last Dictation | Implemented |
 | Clipboard preservation and generation-safe restoration | Implemented |
@@ -314,7 +330,7 @@ current-user startup registry, UI Automation, and Windows capture APIs.
 | Signed automatic self-update for managed installs | Implemented for x64 and ARM64; the same ed25519 key and `https://anoma.ly/hex/files` origin as Linux, one feed per architecture, activating into a user-local versions directory. Checks 10 s after launch and every 6 h (or Check for updates); a staged update shows Restart to update in the tray menu and the window's sidebar footer, and the tray tooltip says an update is available. Source builds keep the GitHub release link (Download update); CI test builds never check |
 | Web-domain mode rules and browser context via UI Automation | Implemented; the page URL comes from the browser's UIA document element, bounded so a hung provider degrades to application-only context |
 | Managed installer with Start Menu integration and clean uninstall | Implemented as `.github/release/install-windows.ps1`; it creates the self-updating versions layout, and updates retarget the managed shortcut and Launch-at-login entry |
-| First-run onboarding | Implemented; a fresh install picks a dictation language, downloads its recommended model with live progress, and starts listening only once setup is recorded — the shared Rune tour |
+| First-run onboarding | Implemented; a fresh install picks a dictation language, downloads its recommended model with live progress, and starts listening only once setup is recorded — the shared first-run story, with a Microphone page only while the privacy switch is off and the practice game on the real shortcut |
 | Activity pane with the live session and recent transcripts | Implemented in developer builds; the shared read-only pane |
 | Developer Meetings, live drafts, and meeting paste | Missing |
 | Local transcription API and public TypeScript SDK host lifecycle on Windows | Missing; see Local Transcription Service |
@@ -340,7 +356,7 @@ The Windows listener preserves physical press/release timestamps, keeps audio
 capture off the transcription and paste worker, and restores the previous
 clipboard only when no newer clipboard change supersedes it.
 `check-windows` builds and tests the optimized MSVC release for x64 and ARM64
-on every pull request. The remaining code
+in Release's check and stable channels; pull requests only compile x64. The remaining code
 parity slice is the developer-only Meetings surface after the physical matrix
 is green. Shared
 first-run onboarding, complete OpenCode mode rewriting controls, and the bounded

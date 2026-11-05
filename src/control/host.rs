@@ -132,16 +132,17 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
             action,
             print: true,
             raw,
-        } => reply(super::check_flags(action, true, raw).and_then(|()| {
+        } => reply(super::check_flags(action, true, raw).and_then(|action| {
             let (print, printed) = PrintReply::channel();
             host.dictation(action, Some(print), false)?;
             Ok(super::await_printed(&printed, super::PRINT_WAIT))
         })),
-        ControlCommand::Dictation { action, raw, .. } => reply(
-            super::check_flags(action, false, raw)
-                .and_then(|()| host.dictation(action, None, raw))
-                .map(|()| ControlReply::done(dictation_message(action))),
-        ),
+        ControlCommand::Dictation { action, raw, .. } => {
+            reply(super::check_flags(action, false, raw).and_then(|action| {
+                host.dictation(action, None, raw)
+                    .map(|()| ControlReply::done(dictation_message(action)))
+            }))
+        }
         ControlCommand::PasteLast => reply(
             host.paste_last()
                 .map(|()| ControlReply::done("Pasting the last dictation")),
@@ -232,6 +233,10 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
                 Ok(reply)
             }))
         }
+        ControlCommand::Screenshot { .. } => reply(Err(ControlError::new(
+            "unsupported",
+            "screenshots are macOS only",
+        ))),
         command @ (ControlCommand::ScrawlCapture { .. }
         | ControlCommand::ScrawlCaptureList { .. }
         | ControlCommand::ScrawlCaptureShow { .. }
@@ -245,8 +250,8 @@ fn dictation_message(action: CaptureAction) -> &'static str {
     match action {
         CaptureAction::Start => "Starting dictation",
         CaptureAction::Stop => "Stopping dictation",
-        CaptureAction::Cancel => "Cancelling dictation",
         CaptureAction::Toggle => "Toggling dictation",
+        CaptureAction::Cancel => "Cancelling dictation",
     }
 }
 
@@ -275,10 +280,7 @@ fn meeting(stop: bool, title: Option<String>) -> ControlReply {
     use crate::meeting::MeetingRequest;
     use crate::meeting::watcher::MeetingMenuState;
     if !crate::app_settings::meetings_enabled() {
-        return ControlReply::error(
-            "feature-off",
-            "Meetings are off; turn them on with `hex settings set meetings.enabled on`",
-        );
+        return ControlReply::error("feature-off", crate::app_settings::meetings_off_reason());
     }
     let request = match (crate::meeting::runtime::state(), stop) {
         (MeetingMenuState::Recording { title, .. }, false) => {

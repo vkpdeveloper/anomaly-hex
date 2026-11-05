@@ -114,8 +114,7 @@ impl Follow {
     }
 
     /// What the router's news for the shown capture tells the capsule. The
-    /// capsule shows a rule's or a chip's send as sent itself, so only what
-    /// it can't know moves it: the answer, the send going (for its sound),
+    /// capsule follows the answer and its refinements, the send going,
     /// a send OpenCode didn't take (and its later retry), how an Undo
     /// ended, and a failed send.
     fn routed(&mut self, snapshot: &CaptureSnapshot) -> Vec<Input> {
@@ -140,6 +139,11 @@ impl Follow {
         };
         if answered(Some(&route)) && !answered(before.as_ref()) {
             inputs.extend(capsule_route(&route.answer).map(Input::Routed));
+        } else if before
+            .as_ref()
+            .is_some_and(|before| before.answer != route.answer)
+        {
+            inputs.extend(capsule_route(&route.answer).map(Input::Refined));
         }
         let was = before.and_then(|before| before.delivery);
         if route.delivery == was {
@@ -236,12 +240,20 @@ fn capsule_route(answer: &RouteAnswer) -> Option<Route> {
         dests
             .iter()
             .map(|dest| {
-                Dest::new(dest.name.clone(), dest.why.clone()).session(dest.session.clone())
+                let folder = dest
+                    .directory
+                    .as_deref()
+                    .and_then(|directory| directory.file_name())
+                    .map(|name| name.to_string_lossy().into_owned());
+                Dest::new(dest.name.clone(), dest.why.clone())
+                    .session(dest.session.clone())
+                    .folder(folder)
             })
             .collect()
     };
     Some(match answer {
         RouteAnswer::Looking => return None,
+        RouteAnswer::ResolvingRule { name } => Route::ResolvingRule { name: name.clone() },
         RouteAnswer::Rule {
             to,
             suggested,
@@ -286,8 +298,11 @@ pub(crate) struct CaptureOverlays {
 }
 
 impl CaptureOverlays {
-    /// Adds the three overlays, prewarmed and hidden, and starts following
-    /// captures.
+    /// Adds the three overlays, hidden, and starts following captures. They
+    /// make their GPU surfaces only to show, and on macOS and Windows their
+    /// windows too, so a Hex that never annotates holds none: idle
+    /// screen-sized panels emptied macOS 27's Mission Control Space
+    /// thumbnails (#1315).
     pub(crate) fn install<S: 'static>(app: &mut rune::App<S>) -> Self {
         let picker = PickerOverlay::install(app, act);
         let aim = picker.clone();
@@ -309,17 +324,16 @@ impl CaptureOverlays {
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     /// Follows `capture.show_overlays_in_recordings` on windows already
-    /// made; returns the new value when it changed.
-    pub(crate) fn follow_recordings(&mut self) -> Option<bool> {
+    /// made.
+    pub(crate) fn follow_recordings(&mut self) {
         let shown = crate::capture_host::own_windows_recorded();
         if shown == self.shown {
-            return None;
+            return;
         }
         self.shown = shown;
         self.capsule.show_in_recordings(shown);
         self.picker.show_in_recordings(shown);
         self.ink.show_in_recordings(shown);
-        Some(shown)
     }
 }
 
@@ -467,6 +481,7 @@ pub(crate) fn act(action: Action) {
             always: always.is_some(),
         })],
         Action::Undo { .. } => vec![command(CaptureCommand::Undo)],
+        Action::Hold(on) => vec![command(CaptureCommand::Hold(on))],
         Action::Pen => {
             crate::capture_host::toggle_pen();
             return;
@@ -787,6 +802,7 @@ mod tests {
             session: format!("ses_{name}"),
             name: name.into(),
             why: why.into(),
+            directory: None,
         }
     }
 

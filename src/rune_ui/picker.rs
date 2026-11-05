@@ -1,6 +1,8 @@
-//! The speech model: the local transcription picker, a modal listing every
-//! model with the saved language's recommendations first, and the Language
-//! select below the model in Settings. Choosing a model asks the service to
+//! The speech model: the local transcription picker, a modal that compares
+//! the saved language's first three models side by side
+//! ([`compare`]) and lists every model a step away
+//! ([`list`]), and the Language select below the model in
+//! Settings. Choosing a model asks the service to
 //! download, verify, and load it (`ChooseModel`) with the saved language, or
 //! the model's default language when it does not support that one; changing
 //! only the language prepares the same model again. Progress comes back in
@@ -8,8 +10,12 @@
 //! ready. Downloaded models other than the active one can be deleted after a
 //! confirmation.
 
+mod compare;
+mod facts;
+mod list;
+
 use rune::{El, col, el, row, text};
-use rune_kit::{Badge, ControlSize, IconButton, IconButtonVariant, Progress};
+use rune_kit::{ControlSize, IconButton, IconButtonVariant};
 
 use super::controls::{
     ButtonKind, Paint, button, modal_scrim_transition, modal_transition, pressable_row, row_switch,
@@ -25,11 +31,12 @@ use crate::transcription::models::{
     TranscriptionSelection, language_name,
 };
 
-const MODAL_WIDTH: f32 = 620.0;
-const MODAL_HEIGHT: f32 = 520.0;
+const PANEL_WIDTH: f32 = compare::WIDTH;
+/// The full list's height: the window's less a margin above and below.
+const PANEL_HEIGHT: f32 = 680.0;
 
 /// A model is the active selection only once it is installed.
-fn transcription_selection_is_active(
+pub(super) fn transcription_selection_is_active(
     selection: &TranscriptionSelection,
     model: &ModelDefinition,
     installed: bool,
@@ -68,26 +75,43 @@ impl Sort {
     }
 }
 
+/// What the picker shows: the saved language's first three models side
+/// by side, or every model.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum View {
+    #[default]
+    Compare,
+    All,
+}
+
 #[derive(Default)]
 pub(super) struct Picker {
     pub(super) open: bool,
+    pub(super) view: View,
+    /// The models that don't speak the saved language, in the full list.
+    pub(super) others_open: bool,
     /// The card order while Labs › Sort and filter models is on.
     sort: Sort,
     /// Only models that support the saved language (or detect it, for Auto),
     /// while Labs › Sort and filter models is on.
     supported_only: bool,
+    /// Only downloaded models, while Labs › Downloaded models only is on.
+    downloaded_only: bool,
     /// The model whose Delete (an import's Remove) is armed.
     pub(super) deletion: Option<TranscriptionModelId>,
     deletion_error: Option<String>,
     /// Installed models for fixtures; live windows ask the filesystem.
     pub(super) installed: Option<Vec<TranscriptionModelId>>,
     pub(super) fallback: Option<LanguageFallback>,
-    /// Labs › Use your own speech model: the file dialog, the import
+    /// Your own speech models: the file dialog, the import
     /// worker, and the name being edited.
     pub(super) import: super::model_import::ImportState,
     /// The card whose details are open (Parakeet Ultra's credit and
     /// published benchmarks).
     pub(super) details: super::model_details::DetailsState,
+    /// The model in use when the picker opened, which Labs › Model in use
+    /// first lists first; fixed until the picker closes.
+    in_use_first: Option<TranscriptionModelId>,
 }
 
 impl Picker {
@@ -116,8 +140,21 @@ pub(super) fn open(ui: &mut Ui) {
     ui.open = None;
     ui.picker.open = true;
     ui.picker.clear_deletion();
+    // Models already on this computer: headers only, on a worker.
+    super::found::scan(ui);
     ui.picker.sort = Sort::default();
     ui.picker.supported_only = false;
+    ui.picker.downloaded_only = false;
+    ui.picker.view = View::Compare;
+    ui.picker.others_open = false;
+    ui.picker.in_use_first = (active_first_on(ui) && ui.picker.selected_installed(&ui.settings))
+        .then_some(ui.settings.transcription.model);
+}
+
+/// Switches between the comparison and the full list.
+pub(super) fn show(ui: &mut Ui, view: View) {
+    ui.picker.view = view;
+    ui.picker.clear_deletion();
 }
 
 /// Whether Labs › Sort and filter models is on.
@@ -126,15 +163,82 @@ fn sort_filter_on(ui: &Ui) -> bool {
     feature.shipped() && feature.on(&ui.settings)
 }
 
+/// Whether Labs › Downloaded models only is on.
+fn downloaded_on(ui: &Ui) -> bool {
+    let feature = crate::labs::Feature::PickerDownloaded;
+    feature.shipped() && feature.on(&ui.settings)
+}
+
+/// Whether the full list shows only downloaded models now.
+pub(super) fn downloaded_filter(ui: &Ui) -> bool {
+    downloaded_on(ui) && ui.picker.downloaded_only
+}
+
+/// Whether `model` is downloaded for the picker, as its row's state reads it.
+fn is_downloaded(ui: &Ui, model: &ModelDefinition, language: &str) -> bool {
+    ui.picker.installed(model, model.language_for(language))
+}
+
+/// The bytes the downloaded `models` take in Hex's own models folder: files
+/// another app downloaded, or added where they are, aren't Hex's.
+fn downloaded_total(
+    models: &[PickerModel],
+    downloaded: impl Fn(&ModelDefinition) -> bool,
+    owned: impl Fn(&ModelDefinition) -> bool,
+) -> u64 {
+    models
+        .iter()
+        .filter(|(model, _)| downloaded(model) && owned(model))
+        .filter_map(|(model, _)| model.download_bytes())
+        .sum()
+}
+
+/// Whether Hex keeps `model`'s file in its own models folder.
+fn owned_by_hex(model: &ModelDefinition) -> bool {
+    if model.id.is_custom() {
+        return !crate::transcription::custom_models::imported()
+            .iter()
+            .any(|import| import.definition.id == model.id && import.in_place);
+    }
+    !transcription_models::is_in_place(model)
+}
+
+/// A size as the picker writes one: `2.4 GB`, `640 MB`.
+fn bytes_label(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else {
+        format!("{} MB", bytes / 1_000_000)
+    }
+}
+
+/// Whether Labs › Model in use first is on.
+fn active_first_on(ui: &Ui) -> bool {
+    let feature = crate::labs::Feature::PickerActiveFirst;
+    feature.shipped() && feature.on(&ui.settings)
+}
+
+/// The model the comparison shows first: the one in use when the picker
+/// opened, while Labs › Model in use first is on.
+fn pinned(ui: &Ui) -> Option<TranscriptionModelId> {
+    ui.picker.in_use_first.filter(|_| active_first_on(ui))
+}
+
+/// The model the full list leads with: [`pinned`], unless Labs › Sort and
+/// filter models sorts by size or name, which keep their exact order.
+fn list_first(ui: &Ui) -> Option<TranscriptionModelId> {
+    pinned(ui).filter(|_| !sort_filter_on(ui) || ui.picker.sort == Sort::Recommended)
+}
+
 /// Whether Labs › Benchmark details is on.
-fn benchmark_details_on(ui: &Ui) -> bool {
+pub(super) fn benchmark_details_on(ui: &Ui) -> bool {
     let feature = crate::labs::Feature::BenchmarkDetails;
     feature.shipped() && feature.on(&ui.settings)
 }
 
 /// The badge a card shows. With Benchmark details on, "Most accurate" stays
 /// only when its figure is comparable with the other recommendations'.
-fn shown_recommendation(
+pub(super) fn shown_recommendation(
     recommendation: Option<Recommendation>,
     model: &ModelDefinition,
     language: &str,
@@ -148,7 +252,7 @@ fn shown_recommendation(
 }
 
 /// The raw error rate with its direction: `7.57% CER · lower is better`.
-fn benchmark_rate(record: &BenchmarkRecord) -> String {
+pub(super) fn benchmark_rate(record: &BenchmarkRecord) -> String {
     tr_named(
         "{rate} · lower is better",
         &[("rate", record.rate_label().as_str())],
@@ -158,7 +262,7 @@ fn benchmark_rate(record: &BenchmarkRecord) -> String {
 /// One line of where a figure comes from: language, dataset and split,
 /// source, conditions, and the speed figure's qualification. Whatever the
 /// source did not record reads as unknown.
-fn benchmark_detail(record: &BenchmarkRecord) -> String {
+pub(super) fn benchmark_detail(record: &BenchmarkRecord) -> String {
     let mut parts = vec![
         language_name(record.language).to_owned(),
         record
@@ -206,7 +310,7 @@ fn benchmark_detail(record: &BenchmarkRecord) -> String {
     parts.join(" · ")
 }
 
-type PickerModel = (
+pub(super) type PickerModel = (
     &'static ModelDefinition,
     Option<transcription_models::Recommendation>,
 );
@@ -232,11 +336,16 @@ fn arranged(language: &str, sort: Sort, supported_only: bool) -> Vec<PickerModel
 /// The cards the picker shows: the catalog's order, or with the Lab on its
 /// sort and language toggle.
 fn shown_models(ui: &Ui, language: &str) -> Vec<PickerModel> {
-    if sort_filter_on(ui) {
+    let mut models = if sort_filter_on(ui) {
         arranged(language, ui.picker.sort, ui.picker.supported_only)
     } else {
         transcription_models::picker_models(language)
+    };
+    // Labs › Downloaded models only.
+    if downloaded_filter(ui) {
+        models.retain(|(model, _)| is_downloaded(ui, model, language));
     }
+    models
 }
 
 /// The model the language toggle hides that still matters: the one being
@@ -255,10 +364,11 @@ fn hidden_model(
 
 pub(super) fn close(ui: &mut Ui) {
     ui.picker.open = false;
+    ui.picker.in_use_first = None;
     ui.picker.clear_deletion();
 }
 
-fn cancel(ui: &mut Ui) {
+pub(super) fn cancel(ui: &mut Ui) {
     if ui.preparing.is_some() {
         ui.send(Request::CancelModel);
     }
@@ -266,7 +376,7 @@ fn cancel(ui: &mut Ui) {
 
 /// Asks for `model` with the saved language when it supports it, else with
 /// its default language, which Settings then names.
-fn choose(ui: &mut Ui, model: &'static ModelDefinition) {
+pub(super) fn choose(ui: &mut Ui, model: &'static ModelDefinition) {
     ui.picker.clear_deletion();
     let current = &ui.settings.transcription;
     let installed = ui.picker.installed(model, &current.language);
@@ -319,7 +429,7 @@ pub(super) fn fallback_note(ui: &Ui) -> Option<String> {
     })
 }
 
-fn delete(ui: &mut Ui, model: &'static ModelDefinition) {
+pub(super) fn delete(ui: &mut Ui, model: &'static ModelDefinition) {
     ui.picker.deletion_error = None;
     if ui.picker.deletion != Some(model.id) {
         ui.picker.deletion = Some(model.id);
@@ -343,64 +453,123 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
     }
     let c = &p.k.c;
     let language = ui.settings.transcription.language.clone();
-    let mut models = col().key("models").gap(8.0);
+    let view = ui.picker.view;
+    let inset = match view {
+        View::Compare => 24.0,
+        View::All => 16.0,
+    };
     let transcription = ui.view.as_ref().map(|view| &view.transcription);
-    if let Some(error) = transcription.and_then(|t| t.error.clone()) {
-        models = models.child(error_panel(
-            p,
+    let errors = [
+        (
             "install-error",
             tr("Model could not be installed."),
-            &error,
-        ));
-    }
-    if let Some(error) = &ui.picker.import.error {
-        models = models.child(error_panel(
-            p,
+            transcription.and_then(|t| t.error.as_deref()),
+        ),
+        (
             "import-error",
             tr("Model could not be added."),
-            error,
-        ));
-    }
-    if let Some(error) = &ui.picker.deletion_error {
-        models = models.child(error_panel(
-            p,
+            ui.picker.import.error.as_deref(),
+        ),
+        (
             "delete-error",
             tr("Model could not be deleted."),
-            error,
-        ));
-    }
-    let shown = shown_models(ui, &language);
-    for (index, (model, recommendation)) in shown.iter().copied().enumerate() {
-        models = models.child(model_card(ui, p, index, model, recommendation, &language));
-    }
-    let header = row()
+            ui.picker.deletion_error.as_deref(),
+        ),
+        (
+            "found-error",
+            tr("Model could not be used."),
+            ui.found.error.as_deref(),
+        ),
+    ];
+    let close_button = IconButton::new(p.k.glyph.close)
+        .variant(IconButtonVariant::Ghost)
+        .control_size(ControlSize::Regular)
+        .label(tr("Close"))
+        .on_press(close)
+        .build(p.k)
+        .key("close-picker");
+    let mut header = row()
         .key("picker-header")
-        .h(52.0)
-        .pl(20.0)
+        .h(56.0)
         .pr(12.0)
-        .center_y()
-        .child(
-            text(tr("Local transcription"))
-                .key("title")
-                .font(p.k.ty.body_medium)
-                .color(p.text())
-                .grow(1.0),
-        )
-        .children(super::model_import::add_button(ui, p).map(|add| add.mr(8.0)))
-        .child(
-            IconButton::new(p.k.glyph.close)
-                .variant(IconButtonVariant::Ghost)
-                .control_size(ControlSize::Regular)
-                .label(tr("Close"))
-                .on_press(close)
-                .build(p.k)
-                .key("close-picker"),
-        );
+        .gap(8.0)
+        .center_y();
+    let title = match view {
+        View::Compare => facts::title(&language),
+        View::All => tr("All speech models").to_owned(),
+    };
+    let heading = |title: &str| {
+        text(title.to_owned())
+            .key("title")
+            .role("heading")
+            .level(2)
+            .font(p.k.ty.body_medium)
+            .color(p.text())
+            .grow(1.0)
+    };
+    let body = match view {
+        View::Compare => {
+            let entries = facts::entries(
+                ui,
+                &language,
+                &transcription_models::picker_models(&language),
+            );
+            header = header.pl(24.0).child(heading(&title));
+            compare::body(ui, p, &entries, &language)
+        }
+        View::All => {
+            let shown = shown_models(ui, &language);
+            let entries = facts::entries(ui, &language, &shown);
+            header = header
+                .pl(12.0)
+                .child(
+                    IconButton::new(&rune_theme_opencode::icons::CHEVRON_RIGHT)
+                        .variant(IconButtonVariant::Ghost)
+                        .control_size(ControlSize::Regular)
+                        .label(tr("Back"))
+                        .on_press(|ui: &mut Ui| show(ui, View::Compare))
+                        .build(p.k)
+                        .key("picker-back")
+                        .rotate(std::f32::consts::PI),
+                )
+                .child(heading(&title));
+            // Labs › Use model files where they are.
+            if let Some(in_place) = super::model_import::in_place_button(ui, p) {
+                header = header.child(in_place);
+            }
+            header = header.child(super::model_import::add_button(ui, p));
+            let mut all = col().key("all");
+            if sort_filter_on(ui) {
+                all = all.child(sort_filter_row(ui, p, &language));
+            }
+            if downloaded_on(ui) {
+                all = all.child(downloaded_row(ui, p, &language));
+            }
+            if (sort_filter_on(ui) || downloaded_on(ui))
+                && let Some(note) = hidden_note(ui, p, &shown, &language)
+            {
+                all = all.child(note);
+            }
+            all.child(list::body(ui, p, &entries, &language))
+        }
+    };
+    let header = header.child(close_button);
+    let mut content = col().key("picker-content");
+    if errors.iter().any(|(_, _, detail)| detail.is_some()) {
+        let mut panels = col().key("errors").gap(8.0).px(inset).pb(8.0);
+        for (key, title, detail) in errors {
+            if let Some(detail) = detail {
+                panels = panels.child(error_panel(p, key, title, detail));
+            }
+        }
+        content = content.child(panels);
+    }
+    let content = content.child(body);
     let mut panel = col()
         .key("transcription-picker")
         .role("dialog")
-        .w(MODAL_WIDTH)
-        .h(MODAL_HEIGHT)
+        .label(title)
+        .w(PANEL_WIDTH)
         .radius(p.k.radius.xl)
         .fill(c.bg_base)
         .border(p.hair, c.border_weak)
@@ -409,23 +578,14 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
         .clip_soft(0.0)
         // Presses inside the panel stay inside.
         .on_press(|_: &mut Ui| {})
-        .child(header)
-        .child(el().key("rule").h(p.hair).w_full().fill(c.border_weak));
-    if sort_filter_on(ui) {
-        panel = panel.child(sort_filter_row(ui, p, &language));
-        if let Some(note) = hidden_note(ui, p, &shown, &language) {
-            panel = panel.child(note);
-        }
-    }
-    panel = panel.child(
-        col()
-            .key("model-column")
-            .grow(1.0)
-            .shrink()
-            .w_full()
-            .pt(12.0)
-            .child(super::scroll_body("model-scroll", models.px(16.0))),
-    );
+        .child(header);
+    // The comparison fits; the list scrolls inside the window's height.
+    panel = match view {
+        View::Compare => panel.child(content),
+        View::All => panel
+            .h(PANEL_HEIGHT)
+            .child(super::scroll_body(p.k, "model-scroll", content)),
+    };
     for shadow in &p.k.elevation.overlay {
         panel = panel.box_shadow(*shadow);
     }
@@ -451,7 +611,7 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
 }
 
 /// `model`'s preparation label and progress while the service prepares it.
-fn preparation(ui: &Ui, model: &ModelDefinition) -> Option<(String, Option<f32>)> {
+pub(super) fn preparation(ui: &Ui, model: &ModelDefinition) -> Option<(String, Option<f32>)> {
     let transcription = ui.view.as_ref().map(|view| &view.transcription)?;
     if transcription.preparing != Some(model.id) {
         return None;
@@ -508,20 +668,68 @@ fn sort_filter_row(ui: &Ui, p: Paint, language: &str) -> El {
                     .font(p.k.ty.small)
                     .color(p.text())
                     .shrink()
-                    .wrap(),
+                    .wrap()
+                    .a11y_hidden(),
             )
             .child(row_switch(p, ui.picker.supported_only)),
+        ui.picker.supported_only,
     )
     .on_press(|ui: &mut Ui| ui.picker.supported_only = !ui.picker.supported_only);
     row()
         .key("picker-controls")
         .px(16.0)
-        .pt(12.0)
+        .pb(16.0)
         .gaps(8.0, 12.0)
         .center_y()
         .justify_between()
         .flex_wrap()
         .child(sort)
+        .child(toggle)
+}
+
+/// Labs › Downloaded models only's row under the header: what the
+/// downloaded models take on disk and the toggle. It saves nothing.
+fn downloaded_row(ui: &Ui, p: Paint, language: &str) -> El {
+    let total = downloaded_total(
+        &transcription_models::picker_models(language),
+        |model| is_downloaded(ui, model, language),
+        owned_by_hex,
+    );
+    let label = tr("Only downloaded models");
+    let toggle = pressable_row(
+        row()
+            .key("picker-downloaded")
+            .label(label)
+            .gap(8.0)
+            .center_y()
+            .shrink()
+            .child(
+                text(label)
+                    .key("label")
+                    .font(p.k.ty.small)
+                    .color(p.text())
+                    .shrink()
+                    .wrap()
+                    .a11y_hidden(),
+            )
+            .child(row_switch(p, ui.picker.downloaded_only)),
+        ui.picker.downloaded_only,
+    )
+    .on_press(|ui: &mut Ui| ui.picker.downloaded_only = !ui.picker.downloaded_only);
+    row()
+        .key("picker-downloaded-controls")
+        .px(16.0)
+        .pb(16.0)
+        .gaps(8.0, 12.0)
+        .center_y()
+        .justify_between()
+        .flex_wrap()
+        .child(
+            text(tr_fill("Downloaded models take {}", &bytes_label(total)))
+                .key("downloaded-total")
+                .font(facts::tnum(p.k.ty.small))
+                .color(p.muted()),
+        )
         .child(toggle)
 }
 
@@ -546,6 +754,15 @@ fn hidden_note(ui: &Ui, p: Paint, shown: &[PickerModel], language: &str) -> Opti
     } else {
         tr("Active").to_owned()
     };
+    let names = [("model", model.name), ("state", state.as_str())];
+    let copy = if downloaded_filter(ui) && !is_downloaded(ui, model, language) {
+        tr_named(
+            "{model} is hidden by the downloaded filter: {state}",
+            &names,
+        )
+    } else {
+        tr_named("{model} is hidden by the language filter: {state}", &names)
+    };
     let mut note = row()
         .key("picker-hidden")
         .px(16.0)
@@ -553,16 +770,13 @@ fn hidden_note(ui: &Ui, p: Paint, shown: &[PickerModel], language: &str) -> Opti
         .gap(8.0)
         .center_y()
         .child(
-            text(tr_named(
-                "{model} is hidden by the language filter: {state}",
-                &[("model", model.name), ("state", state.as_str())],
-            ))
-            .key("label")
-            .font(p.k.ty.small)
-            .color(p.muted())
-            .grow(1.0)
-            .shrink()
-            .wrap(),
+            text(copy)
+                .key("label")
+                .font(p.k.ty.small)
+                .color(p.muted())
+                .grow(1.0)
+                .shrink()
+                .wrap(),
         );
     if is_preparing {
         note = note.child(button(
@@ -576,296 +790,6 @@ fn hidden_note(ui: &Ui, p: Paint, shown: &[PickerModel], language: &str) -> Opti
     Some(note)
 }
 
-enum Status {
-    Active,
-    Available {
-        installed: bool,
-    },
-    Preparing {
-        label: String,
-        progress: Option<f32>,
-    },
-}
-
-fn model_card(
-    ui: &Ui,
-    p: Paint,
-    index: usize,
-    model: &'static ModelDefinition,
-    recommendation: Option<transcription_models::Recommendation>,
-    language: &str,
-) -> El {
-    let c = &p.k.c;
-    let installed = ui.picker.installed(model, model.language_for(language));
-    let preparation = preparation(ui, model);
-    let preparing = preparation.is_some();
-    let active = transcription_selection_is_active(&ui.settings.transcription, model, installed);
-    let status = if let Some((label, progress)) = preparation {
-        Status::Preparing { label, progress }
-    } else if active {
-        Status::Active
-    } else {
-        Status::Available { installed }
-    };
-    let imported = model.id.is_custom();
-    let deletable = installed
-        && !preparing
-        && !imported
-        && matches!(model.runtime, ModelRuntime::Gguf(_))
-        && ui.settings.transcription.model != model.id;
-    let confirming = ui.picker.deletion == Some(model.id);
-    let metadata = if imported {
-        super::model_import::metadata(model)
-    } else {
-        model
-            .streams
-            .then(|| tr("Transcribes while you speak on a GPU"))
-            .into_iter()
-            .chain([
-                tr(model.coverage),
-                tr(model.quality_context),
-                tr(model.timestamps),
-            ])
-            .chain((installed && !active).then(|| tr("Installed")))
-            .collect::<Vec<_>>()
-            .join(" · ")
-    };
-    // An import that can't run (missing, changed, or off) offers no Use.
-    let usable = model.available();
-    let mut actions = row().key("actions").gap(8.0).center_y();
-    if let Some(toggle) = super::model_details::toggle(ui, p, model) {
-        actions = actions.child(toggle);
-    }
-    match &status {
-        Status::Active => {
-            actions = actions.child(
-                row()
-                    .key("active")
-                    .gap(6.0)
-                    .center_y()
-                    .child(super::controls::status_dot(p.accent()))
-                    .child(
-                        text(tr("Active"))
-                            .key("label")
-                            .font(p.k.ty.ui_medium)
-                            .color(p.text()),
-                    ),
-            );
-        }
-        Status::Available { installed } => {
-            if imported {
-                for action in super::model_import::actions(
-                    ui,
-                    p,
-                    model,
-                    !preparing && ui.settings.transcription.model != model.id,
-                ) {
-                    actions = actions.child(action);
-                }
-            }
-            if deletable {
-                let label = if confirming {
-                    tr_fill("Delete {}?", &model.size_label())
-                } else {
-                    tr("Delete").into()
-                };
-                let delete_button = button(
-                    p,
-                    "delete-model",
-                    &label,
-                    if confirming {
-                        ButtonKind::Danger
-                    } else {
-                        ButtonKind::Secondary
-                    },
-                    move |ui: &mut Ui, _| delete(ui, model),
-                );
-                actions = actions.child(if confirming {
-                    delete_button.default_button()
-                } else {
-                    delete_button
-                });
-            }
-            if usable {
-                actions = actions.child(button(
-                    p,
-                    "choose-model",
-                    if *installed {
-                        tr("Use")
-                    } else {
-                        tr("Download")
-                    },
-                    ButtonKind::Secondary,
-                    move |ui: &mut Ui, _| choose(ui, model),
-                ));
-            }
-        }
-        Status::Preparing { .. } => {
-            actions = actions.child(button(
-                p,
-                "cancel-model",
-                tr("Cancel"),
-                ButtonKind::Secondary,
-                |ui: &mut Ui, _| cancel(ui),
-            ));
-        }
-    }
-    let mut title = row()
-        .key("title")
-        .gap(8.0)
-        .center_y()
-        .grow(1.0)
-        .shrink()
-        .child(
-            text(model.name)
-                .key("name")
-                .font(p.k.ty.body_medium)
-                .color(p.text()),
-        );
-    // Labs › Benchmark details: raw error rates with their provenance.
-    let details = benchmark_details_on(ui);
-    let record = details
-        .then(|| transcription_models::benchmark(model))
-        .flatten();
-    if let Some(recommendation) = shown_recommendation(recommendation, model, language, details) {
-        title = title.child(Badge::new(tr(recommendation.label())).build(p.k));
-    }
-    if model.streams {
-        title = title.child(Badge::new(tr("Streams")).build(p.k));
-    }
-    // A catalog model behind its own Labs toggle says so.
-    if model.id == TranscriptionModelId::ParakeetUltra {
-        title = title.child(Badge::new(tr("Labs")).build(p.k));
-    }
-    let metric = |key: &str, label: &str, value: String| {
-        row()
-            .key(key)
-            .gap(6.0)
-            .child(text(label).key("label").font(p.k.ty.small).color(p.muted()))
-            .child(
-                text(value)
-                    .key("value")
-                    .font(p.k.ty.small_medium)
-                    .color(p.text()),
-            )
-    };
-    let mut card = col()
-        .key(format!("model{index}"))
-        .px(16.0)
-        .py(12.0)
-        .gap(8.0)
-        .radius(p.k.radius.lg)
-        .fill(if active { c.layer_02 } else { c.bg_base })
-        .border(
-            p.hair,
-            if active {
-                c.border_focus
-            } else {
-                c.border_weak
-            },
-        )
-        .child(
-            row()
-                .key("top")
-                .gap(12.0)
-                .center_y()
-                .child(title)
-                .child(actions),
-        )
-        .child(
-            text(metadata)
-                .key("metadata")
-                .font(p.k.ty.small)
-                .color(p.muted())
-                .wrap(),
-        )
-        .child(
-            row()
-                .key("metrics")
-                .gap(20.0)
-                .child(metric("speed", tr("Speed"), tr(model.realtime).into()))
-                .child(metric("size", tr("Size"), model.size_label()))
-                .child(match &record {
-                    Some(record) => metric("error-rate", tr("Error rate"), benchmark_rate(record)),
-                    None => metric(
-                        "accuracy",
-                        tr("Accuracy"),
-                        model.accuracy_label().unwrap_or_else(|| {
-                            if imported {
-                                tr("Unknown").into()
-                            } else {
-                                "System".into()
-                            }
-                        }),
-                    ),
-                }),
-        );
-    if let Some(record) = &record {
-        card = card.child(
-            text(benchmark_detail(record))
-                .key("benchmark")
-                .font(p.k.ty.small)
-                .color(p.muted())
-                .wrap(),
-        );
-    }
-    if let Some(note) = super::model_import::note(p, model) {
-        card = card.child(note);
-    }
-    if !model.supports_language(language) {
-        card = card.child(
-            text(tr_named(
-                "Doesn't support {language}; switches the language to {fallback}",
-                &[
-                    ("language", language_name(language)),
-                    ("fallback", language_name(model.default_language())),
-                ],
-            ))
-            .key("language-switch")
-            .font(p.k.ty.small)
-            .color(p.warning())
-            .wrap(),
-        );
-    }
-    if matches!(
-        model.id,
-        TranscriptionModelId::ParakeetV3 | TranscriptionModelId::ParakeetUltra
-    ) {
-        card = card.child(
-            text(
-                "Detects language from audio, not the selected language. \
-                 For language-guided transcription, try Whisper.",
-            )
-            .key("note")
-            .font(p.k.ty.small)
-            .color(p.muted())
-            .wrap(),
-        );
-    }
-    if let Some(details) = super::model_details::section(ui, p, model) {
-        card = card.child(details);
-    }
-    // One bar from download through verifying and loading: it fills, then
-    // sweeps while the stage has no measure.
-    if let Status::Preparing { label, progress } = status {
-        let bar = Progress::new(progress).label(label);
-        let bar = if progress.is_some() {
-            bar.show_value()
-        } else {
-            bar
-        };
-        card = card.child(bar.build(p.k).key("progress"));
-    }
-    if !active && !preparing && usable {
-        card = card
-            .role("button")
-            .hover(c.hover)
-            .press(c.pressed)
-            .on_press(move |ui: &mut Ui| choose(ui, model));
-    }
-    card
-}
-
 /// Parakeet Ultra's card first with its details and benchmark table open
 /// (Maltese saved, sorted by name, only models for Maltese). It lists Ultra
 /// only where Labs › Parakeet Ultra is on in the saved settings.
@@ -877,6 +801,7 @@ pub(super) fn parakeet_ultra_fixture(ui: &mut Ui) {
         language: "mt".into(),
     };
     ui.picker.open = true;
+    ui.picker.view = View::All;
     ui.picker.sort = Sort::Name;
     ui.picker.supported_only = true;
     ui.picker.details =
@@ -896,6 +821,26 @@ pub(super) fn fixture(ui: &mut Ui, downloading: Option<TranscriptionModelId>) {
         view.transcription.preparation_stage = Some(ModelPreparationStage::Downloading);
         ui.preparing = Some((model, std::time::Instant::now()));
     }
+}
+
+/// The full list with English and Parakeet saved.
+pub(super) fn all_fixture(ui: &mut Ui) {
+    fixture(ui, None);
+    ui.picker.view = View::All;
+}
+
+/// The picker with Japanese saved and Whisper in use; `downloading` shows
+/// a model mid-download.
+pub(super) fn japanese_fixture(ui: &mut Ui, downloading: Option<TranscriptionModelId>) {
+    ui.settings.transcription = TranscriptionSelection {
+        model: TranscriptionModelId::WhisperLargeV3Turbo,
+        language: "ja".into(),
+    };
+    ui.picker.installed = Some(vec![
+        TranscriptionModelId::WhisperLargeV3Turbo,
+        TranscriptionModelId::ParakeetUnifiedEnglish,
+    ]);
+    fixture(ui, downloading);
 }
 
 #[cfg(test)]
@@ -1032,6 +977,132 @@ mod tests {
         settings.labs.benchmark_details = true;
         let ui = Ui::with(settings, super::super::Service::Fixture(Vec::new()));
         assert!(benchmark_details_on(&ui));
+    }
+
+    fn ui_with_active_first(on: bool) -> Ui {
+        let mut settings = AppSettings::default();
+        settings.labs.picker_active_first = on;
+        let mut ui = Ui::with(settings, super::super::Service::Fixture(Vec::new()));
+        ui.picker.installed = Some(vec![ui.settings.transcription.model]);
+        ui
+    }
+
+    #[test]
+    fn the_model_in_use_is_fixed_while_the_picker_is_open() {
+        let mut ui = ui_with_active_first(true);
+        let saved = ui.settings.transcription.model;
+        open(&mut ui);
+        assert_eq!(pinned(&ui), Some(saved));
+        assert_eq!(list_first(&ui), Some(saved));
+        // Another model becomes the saved one while it is open: no change.
+        ui.settings.transcription.model = TranscriptionModelId::WhisperLargeV3Turbo;
+        assert_eq!(pinned(&ui), Some(saved));
+        // By size and by name keep their exact order.
+        ui.settings.labs.picker_sort_filter = true;
+        ui.picker.sort = Sort::Size;
+        assert_eq!(list_first(&ui), None);
+        assert_eq!(pinned(&ui), Some(saved));
+        ui.picker.sort = Sort::Name;
+        assert_eq!(list_first(&ui), None);
+        ui.picker.sort = Sort::Recommended;
+        assert_eq!(list_first(&ui), Some(saved));
+        close(&mut ui);
+        assert_eq!(pinned(&ui), None);
+    }
+
+    #[test]
+    fn without_model_in_use_first_nothing_is_pinned() {
+        let mut ui = ui_with_active_first(false);
+        open(&mut ui);
+        assert_eq!(pinned(&ui), None);
+        assert_eq!(list_first(&ui), None);
+        // A model that isn't installed is never pinned.
+        let mut ui = ui_with_active_first(true);
+        ui.picker.installed = Some(Vec::new());
+        open(&mut ui);
+        assert_eq!(pinned(&ui), None);
+    }
+
+    fn ui_with_downloaded(on: bool) -> Ui {
+        let mut settings = AppSettings::default();
+        settings.labs.picker_downloaded = on;
+        let mut ui = Ui::with(settings, super::super::Service::Fixture(Vec::new()));
+        ui.picker.installed = Some(vec![
+            TranscriptionModelId::ParakeetUnifiedEnglish,
+            TranscriptionModelId::WhisperLargeV3Turbo,
+        ]);
+        ui
+    }
+
+    #[test]
+    fn only_downloaded_models_keeps_the_installed_ones() {
+        let mut ui = ui_with_downloaded(true);
+        open(&mut ui);
+        assert!(!ui.picker.downloaded_only, "the switch starts off");
+        let all = shown_models(&ui, "en");
+        ui.picker.downloaded_only = true;
+        let shown = shown_models(&ui, "en");
+        assert_eq!(
+            ids(&shown),
+            ids(&all)
+                .into_iter()
+                .filter(|id| matches!(
+                    id,
+                    TranscriptionModelId::ParakeetUnifiedEnglish
+                        | TranscriptionModelId::WhisperLargeV3Turbo
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(shown.len(), 2);
+        // A model being downloaded is named while the switch hides it.
+        let cohere = TranscriptionModelId::CohereTranscribe;
+        assert_eq!(
+            hidden_model(&shown, Some(cohere), None),
+            Some((cohere, true))
+        );
+        close(&mut ui);
+        open(&mut ui);
+        assert!(!ui.picker.downloaded_only);
+    }
+
+    #[test]
+    fn the_downloaded_total_adds_up_hexs_own_files() {
+        let models = transcription_models::picker_models("en");
+        let installed = [
+            TranscriptionModelId::ParakeetUnifiedEnglish,
+            TranscriptionModelId::WhisperLargeV3Turbo,
+        ];
+        let expected: u64 = installed
+            .iter()
+            .filter_map(|id| transcription_models::definition(*id).download_bytes())
+            .sum();
+        assert!(expected > 0);
+        let downloaded = |model: &ModelDefinition| installed.contains(&model.id);
+        assert_eq!(downloaded_total(&models, downloaded, |_| true), expected);
+        // A file another app keeps isn't counted.
+        let whisper = transcription_models::definition(TranscriptionModelId::WhisperLargeV3Turbo)
+            .download_bytes()
+            .unwrap();
+        assert_eq!(
+            downloaded_total(&models, downloaded, |model| {
+                model.id != TranscriptionModelId::WhisperLargeV3Turbo
+            }),
+            expected - whisper
+        );
+        assert_eq!(bytes_label(2_400_000_000), "2.4 GB");
+        assert_eq!(bytes_label(640_000_000), "640 MB");
+    }
+
+    #[test]
+    fn without_downloaded_models_only_the_picker_is_unchanged() {
+        let mut ui = ui_with_downloaded(false);
+        open(&mut ui);
+        let all = shown_models(&ui, "en");
+        // Even a stale switch does nothing while the Lab is off.
+        ui.picker.downloaded_only = true;
+        assert!(!downloaded_filter(&ui));
+        assert_eq!(ids(&shown_models(&ui, "en")), ids(&all));
+        assert_eq!(ids(&all), ids(&transcription_models::picker_models("en")));
     }
 
     #[test]

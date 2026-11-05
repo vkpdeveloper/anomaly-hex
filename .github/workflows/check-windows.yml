@@ -1,25 +1,25 @@
 name: Check Windows
 
+# The full Windows suite (x64 with Vulkan and ARM64: tests, clippy, the
+# no-Visual-C++-runtime check). It runs where it matters: Release's check and
+# stable channels call it on the candidate commit and publish nothing until it
+# passes, and anyone can run it by hand. Pull requests only compile x64
+# (compile.yml).
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [dev]
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit to test
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A new push to a pull request cancels its stale run. Every push and manual run
-# keeps its own group, so each dev commit gets a result.
-concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
-  cancel-in-progress: true
-
 jobs:
   x64:
     name: x64 (Vulkan)
-    if: ${{ !github.event.pull_request.draft }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -27,6 +27,9 @@ jobs:
       TRANSCRIBE_CMAKE_ARGS: -DGGML_NATIVE=OFF
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -52,7 +55,7 @@ jobs:
       - run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo nextest run --release --profile ci
       - run: cargo build --locked --release
-      - name: Check the executable needs no Visual C++ Redistributable
+      - name: Check the executable needs no Visual C++ Redistributable or Vulkan loader, and is a GUI program
         shell: pwsh
         run: |
           $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
@@ -60,6 +63,13 @@ jobs:
           $imports = & $dumpbin.FullName /dependents target\release\hex.exe
           $redist = $imports | Select-String -Pattern 'VCRUNTIME|MSVCP|vcomp'
           if ($redist) { throw "hex.exe imports Visual C++ runtime DLLs: $redist" }
+          # The Vulkan loader comes with the graphics driver: imported at load
+          # time, a missing or Vulkan 1.0 one stops Hex before main (#1240).
+          $static = ($imports -join "`n") -split 'delay load dependencies' | Select-Object -First 1
+          if ($static -match 'vulkan-1\.dll') { throw "hex.exe imports vulkan-1.dll at load time instead of delay-loading it" }
+          # A GUI program, so opening Hex shows no console window (#850).
+          $headers = & $dumpbin.FullName /headers target\release\hex.exe
+          if (-not ($headers | Select-String -SimpleMatch 'subsystem (Windows GUI)')) { throw "hex.exe is not a Windows GUI program" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hex-windows-x86_64
@@ -67,7 +77,6 @@ jobs:
 
   arm64:
     name: ARM64 (CPU)
-    if: ${{ !github.event.pull_request.draft }}
     runs-on: windows-11-arm
     timeout-minutes: 90
     env:
@@ -86,6 +95,9 @@ jobs:
       TRANSCRIBE_CMAKE_ARGS: -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
