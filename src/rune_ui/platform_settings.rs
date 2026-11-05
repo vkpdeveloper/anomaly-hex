@@ -11,7 +11,8 @@ use super::controls::{
     ButtonKind, Choice, DESCRIPTION, Paint, button, card, icon_row, icon_toggle_row, note, section,
     select, setting_row,
 };
-use super::lists::{Tone, permission_control, tone_tag};
+use super::lists::{PermissionControl, Tone, permission_control, tone_tag};
+use super::paste_access::PasteAccess;
 use super::platform::{CalendarRequest, MeetingRequest, NotesAvailability, Os, PlatformRequest};
 use super::settings::toggle_menu;
 use super::{Menu, Pane, ShortcutTarget, Ui, icons};
@@ -65,7 +66,18 @@ pub(super) fn accessibility_name(renamed: bool) -> &'static str {
 
 /// The missing permissions above everything else, while the tour is closed.
 pub(super) fn permissions_section(ui: &Ui, p: Paint) -> Option<El> {
-    if !ui.platform.caps.permissions || ui.tour.is_some() {
+    if ui.tour.is_some() {
+        return None;
+    }
+    if let Some(paste) = paste_permission(ui, p) {
+        return Some(section(
+            p,
+            "permissions",
+            tr("Permissions needed"),
+            vec![paste],
+        ));
+    }
+    if !ui.platform.caps.permissions {
         return None;
     }
     let warnings = crate::desktop::onboarding::permission_warnings(ui.platform.permissions);
@@ -119,19 +131,47 @@ pub(super) fn permissions_section(ui: &Ui, p: Paint) -> Option<El> {
     Some(section(p, "permissions", tr("Permissions needed"), rows))
 }
 
+/// The desktop's paste permission on GNOME and KDE Wayland until it is
+/// allowed, for people who skipped onboarding (#932).
+fn paste_permission(ui: &Ui, p: Paint) -> Option<El> {
+    let paste = ui
+        .platform
+        .paste
+        .filter(|paste| *paste != PasteAccess::Allowed)?;
+    let description = if paste == PasteAccess::Declined {
+        tr("Without it, Hex copies your words and you press Ctrl+V.")
+    } else {
+        tr("Hex only sends the paste keystroke. It never sees your screen.")
+    };
+    let control = permission_control(
+        p,
+        "permission-paste-allow",
+        if paste == PasteAccess::Asking {
+            PermissionControl::Waiting
+        } else {
+            PermissionControl::Allow
+        },
+        ButtonKind::Secondary,
+        super::paste_access::ask,
+    );
+    Some(setting_row(
+        p,
+        "permission-paste",
+        tr("Paste into apps"),
+        Some(description),
+        control,
+    ))
+}
+
 /// Records which untrusted permission rows are currently visible in the window
 /// so the macOS host clears retired Hex bundle IDs' stale TCC rows once in the
 /// background when a row appears.
 pub(super) fn update_shown_permissions(ui: &mut Ui) {
-    use crate::desktop::onboarding::{PermissionState, Step};
+    use crate::desktop::onboarding::PermissionState;
     let visible = ui.window.as_ref().is_none_or(rune::AppHandle::is_visible);
     let mut shown = Vec::new();
     if visible && ui.platform.caps.permissions {
-        let setup_showing = ui
-            .tour
-            .as_ref()
-            .is_some_and(|tour| tour.flow.step() == Step::Setup)
-            || ui.first_run.is_some()
+        let setup_showing = ui.first_run.is_some()
             || (ui.tour.is_none() && !ui.labs_open && ui.pane == Pane::General);
         if setup_showing
             && matches!(
@@ -211,7 +251,7 @@ fn notes_description(availability: NotesAvailability) -> &'static str {
 
 fn folder_label(ui: &Ui) -> String {
     let folder = ui.settings.meetings.resolved_output_folder();
-    dirs::home_dir()
+    crate::app_paths::home_dir()
         .and_then(|home| {
             folder
                 .strip_prefix(home)
@@ -221,9 +261,22 @@ fn folder_label(ui: &Ui) -> String {
         .unwrap_or_else(|| folder.display().to_string())
 }
 
+/// Whether an organization turned OpenCode processing off.
+pub(super) fn opencode_managed() -> bool {
+    crate::policy::Policy::current().locks(crate::policy::Lock::OpenCodeProcessing)
+}
+
 /// The Meetings (beta) switch: the opt-in card's only row, and the first row
 /// of Meetings › Settings.
 pub(super) fn meetings_toggle(ui: &Ui, p: Paint) -> El {
+    if crate::labs::Feature::Meetings.managed().is_some() {
+        return super::controls::managed_row(
+            p,
+            "meetings-enabled",
+            Some(Pane::Meetings.icon()),
+            tr("Meetings (beta)"),
+        );
+    }
     icon_toggle_row(
         p,
         "meetings-enabled",
@@ -243,7 +296,7 @@ pub(super) fn meetings_toggle(ui: &Ui, p: Paint) -> El {
 /// Always record / Never offer choice; behind Advanced the indicator,
 /// folder, Apple Intelligence notes, and the granted permission.
 pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
-    use super::general::{advanced_open, advanced_toggle};
+    use super::general::advanced_toggle;
     let meetings = &ui.settings.meetings;
     let mut rows = vec![meetings_toggle(ui, p)];
     let mut more = Vec::new();
@@ -344,7 +397,15 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
                 },
             ));
         }
-        more.push(icon_toggle_row(
+        more.push(if opencode_managed() {
+            super::controls::managed_row(
+                p,
+                "meeting-notes-opencode",
+                Some(&icons::SPARKLES),
+                tr("Summarize with OpenCode"),
+            )
+        } else {
+            icon_toggle_row(
             p,
             "meeting-notes-opencode",
             &icons::SPARKLES,
@@ -359,7 +420,22 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
                 let enabled = !ui.settings.meetings.summarize_with_opencode;
                 ui.update(|settings| settings.meetings.summarize_with_opencode = enabled);
             },
-        ));
+        )
+        });
+        // Labs › Choose meeting summary model, for OpenCode's notes only.
+        if summary_model_shown(ui) {
+            more.extend(super::models::rows(
+                ui,
+                p,
+                super::models::Target::MeetingSummary,
+                layer,
+            ));
+            more.extend(super::models::unavailable(
+                ui,
+                p,
+                crate::desktop::opencode_catalog::OpenCodeFeature::MeetingSummary,
+            ));
+        }
         if let Some(error) = &ui.platform.meeting_folder_error {
             // A failed folder change shows where it happened, opening the fold.
             more.push(note("meeting-folder-error", error, p.danger()));
@@ -370,7 +446,7 @@ pub(super) fn meetings_settings(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Vec<E
         sections.extend(calendar_section(ui, p, layer));
         sections.push(detected_calls_section(ui, p, layer));
         sections.push(advanced_toggle(ui, p, Pane::Meetings));
-        if advanced_open(ui, Pane::Meetings) || ui.platform.meeting_folder_error.is_some() {
+        if meetings_advanced_shown(ui) {
             sections.push(card(p, "advanced", more));
         }
     }
@@ -385,6 +461,7 @@ fn retention_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
         ui,
         p,
         "meeting-retention",
+        tr("Keep meetings"),
         MeetingRetention::ALL
             .iter()
             .map(|retention| tr(retention.label()))
@@ -416,6 +493,48 @@ fn retention_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
     )
 }
 
+/// Whether Meetings › Settings shows its Advanced card: the fold is open, or
+/// a failed folder change opened it to show where.
+fn meetings_advanced_shown(ui: &Ui) -> bool {
+    super::general::advanced_open(ui, Pane::Meetings) || ui.platform.meeting_folder_error.is_some()
+}
+
+/// Whether Labs › Choose meeting summary model's picker shows: Meetings ›
+/// Settings › Advanced shows with Summarize with OpenCode and the lab on.
+/// The window reads the OpenCode catalog only while it does.
+pub(super) fn summary_model_shown(ui: &Ui) -> bool {
+    let summary_model = crate::labs::Feature::MeetingSummaryModel;
+    ui.pane == Pane::Meetings
+        && !ui.labs_open
+        && super::meetings::available(ui)
+        && ui.meetings.view == super::meetings::View::Settings
+        && ui.settings.meetings.enabled
+        && meetings_advanced_shown(ui)
+        && ui.settings.meetings.summarize_with_opencode
+        && !opencode_managed()
+        && summary_model.managed().is_none()
+        && summary_model.shipped()
+        && summary_model.on(&ui.settings)
+}
+
+/// What the summary model row says about the saved `provider/model`.
+pub(super) fn summary_model_about(saved: &str) -> String {
+    match crate::meeting::generator::parse_model(saved) {
+        Some((provider, model)) => tr_named(
+            "Summaries use {model}. If it isn't available, the meeting shows the error instead of trying another model",
+            &[("model", &format!("{provider}/{model}"))],
+        ),
+        None if saved.trim().is_empty() => tr(
+            "Empty: Hex tries its list of fast models in order and uses the first one OpenCode has",
+        )
+        .to_owned(),
+        None => tr(
+            "Write it as provider/model, such as openai/gpt-5.4-mini. Until then, Hex tries its list of fast models",
+        )
+        .to_owned(),
+    }
+}
+
 static ZOOM_ICON: Icon = Icon {
     name: "hex-provider-zoom",
     view: 16.0,
@@ -442,7 +561,8 @@ static WEBEX_ICON: Icon = Icon {
     body: include_str!("../../assets/icons/providers/webex.svg"),
 };
 
-fn provider_icon(provider: CallProvider) -> &'static Icon {
+/// A call service's icon, as the calendar list and the Meetings list show it.
+pub(super) fn provider_icon(provider: CallProvider) -> &'static Icon {
     match provider {
         CallProvider::Zoom => &ZOOM_ICON,
         CallProvider::GoogleMeet => &MEET_ICON,
@@ -525,6 +645,7 @@ fn calendar_section(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
                 ui,
                 p,
                 "calendar-lead",
+                tr("Remind me"),
                 vec![tr("At start"), tr("1 min"), tr("2 min"), tr("5 min")],
                 CALENDAR_LEAD_MINUTES
                     .iter()
@@ -641,6 +762,7 @@ fn calendars_row(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
         select(
             p,
             "calendar-calendars-control",
+            tr("Calendars"),
             &label,
             ui.open == Some(Menu::Calendars),
             choices,
@@ -686,6 +808,7 @@ fn detected_calls_section(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
                 p,
                 Menu::Call(index),
                 format!("call{index}-policy-control"),
+                &shown,
                 labels.to_vec(),
                 selected.unwrap_or(0),
                 move |ui, index| {

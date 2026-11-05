@@ -25,10 +25,24 @@ use scrawl_capture::{Router, RouterConfig, RouterDirs, RuleKind, Undone};
 
 use super::{SharedOutcomes, lock};
 
+mod preparation;
+mod session_name;
+
+#[cfg(test)]
+use session_name::session_name_by;
+use session_name::{name_answer, session_name};
+
 /// How often sends OpenCode didn't take are retried.
 const RETRY_EVERY: Duration = Duration::from_secs(15);
 /// How long taking back a send may wait on OpenCode.
 const UNDO_DEADLINE: Duration = Duration::from_secs(10);
+/// How long a rule's send waits for Undo before it goes.
+const SEND_HOLD: Duration = Duration::from_secs(3);
+/// A held send resumes with at least this long left, so it never goes the
+/// instant the pointer leaves the capsule.
+const RESUME_LEFT: Duration = Duration::from_secs(1);
+/// A hold the capsule never ends (it closed under the pointer) lapses.
+const HOLD_MAX: Duration = Duration::from_secs(120);
 const QUEUE: usize = 16;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +88,8 @@ pub struct RouteDest {
     pub name: String,
     /// A quiet word on why: `rule`, `dev server`, `guess`, `2 min ago`.
     pub why: String,
+    /// The session's folder, which the capsule's search also matches.
+    pub directory: Option<PathBuf>,
 }
 
 /// `recent` is every other session the look read, newest first.
@@ -81,9 +97,11 @@ pub struct RouteDest {
 pub enum RouteAnswer {
     /// Written; the router is still working.
     Looking,
+    /// A saved folder rule matched locally; its session is still being resolved.
+    ResolvingRule { name: String },
     /// A rule the person saved (`routing.sites` or `routing.apps`, a
     /// Shift pick's among them) says where it goes: sent to `to`
-    /// at once, and the capsule's Undo takes it back. `site` is what the
+    /// after the countdown, unless Undo cancels it. `site` is what the
     /// rule matches, for an always-rule sending it elsewhere instead.
     Rule {
         to: RouteDest,
@@ -148,7 +166,7 @@ pub enum RouteDelivery {
 pub fn router() -> Router {
     let settings = crate::app_settings::capture_settings();
     let config = settings.routing.config().clone();
-    let support = dirs::home_dir()
+    let support = crate::app_paths::home_dir()
         .unwrap_or_default()
         .join("Library/Application Support/scrawl");
     let dirs = RouterDirs::under(
@@ -158,7 +176,7 @@ pub fn router() -> Router {
     );
     Router::new(config, dirs)
         .with_log(|line| {
-            if line.starts_with("deliver:") {
+            if line.starts_with("deliver:") || line.starts_with("routing time:") {
                 tracing::info!(line, "capture router");
             } else {
                 tracing::debug!(line, "capture router");
@@ -168,7 +186,39 @@ pub fn router() -> Router {
 }
 
 fn sends(config: &RouterConfig) -> bool {
-    config.send_captures && std::env::var_os("SCRAWL_NO_OPENCODE").is_none()
+    config.send_captures && std::env::var_os("SCRAWL_NO_OPENCODE").is_none() && !opencode_managed()
+}
+
+/// Whether an organization turned OpenCode processing off, which includes
+/// sending captures to OpenCode sessions (`DisableOpenCodeProcessing`).
+fn opencode_managed() -> bool {
+    crate::policy::Policy::current().locks(crate::policy::Lock::OpenCodeProcessing)
+}
+
+/// Open OpenCode sessions, newest first, as Send to… lists them, read
+/// within `budget`. Blocks; call it off the UI thread.
+#[cfg(target_os = "macos")]
+pub fn recent_sessions(budget: Duration) -> anyhow::Result<Vec<RouteDest>> {
+    anyhow::ensure!(!opencode_managed(), "OpenCode is turned off here");
+    let read = router().run(|| {
+        let mut get = routing::within(scrawl_capture::opencode::api_get_within, budget);
+        look::read_candidates(&mut get, &[], &[], 1)
+    });
+    if read.candidates.is_empty()
+        && let Some(error) = read.error
+    {
+        return Err(error);
+    }
+    Ok(recent(&read.candidates, &[], now_ms()))
+}
+
+/// Sends the PNG at `png` with `text` into `session`, as the router sends
+/// captures. Blocks; call it off the UI thread.
+#[cfg(target_os = "macos")]
+pub fn send_image(session: &str, text: &str, png: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!opencode_managed(), "OpenCode is turned off here");
+    router().run(|| scrawl_capture::opencode::send_image_to_session(session, text, png))?;
+    Ok(())
 }
 
 /// The tab, terminal, and sessions behind a capture that just stopped,
@@ -178,6 +228,8 @@ pub(super) struct Look {
     seen: Receiver<Option<look::Live>>,
     /// When routing stops waiting for it.
     until: Instant,
+    local: std::sync::Arc<Mutex<look::Live>>,
+    model: jev::Hooks,
 }
 
 /// How long past its deadline a look's last step may run before routing
@@ -198,19 +250,27 @@ fn look_with(context: RouteContext, router: Router, senses: look::Senses) -> Opt
     }
     let deadline = Instant::now() + look::LOOK_DEADLINE;
     let (found, seen) = mpsc::sync_channel(1);
+    let local = std::sync::Arc::new(Mutex::new(look::Live::default()));
     {
         let router = router.clone();
+        let local = local.clone();
         thread::Builder::new()
             .name("capture-look".into())
             .spawn(move || {
                 let live = router.run(|| {
-                    routing::look_capture(
+                    let live = look::look_live_observed(
                         context.front_bundle_id.as_deref(),
                         context.captured_bundle_id.as_deref(),
                         context.app_pid,
                         deadline,
                         &senses,
-                    )
+                        |url| {
+                            local.lock().unwrap_or_else(|e| e.into_inner()).url =
+                                url.map(str::to_owned)
+                        },
+                    );
+                    *local.lock().unwrap_or_else(|e| e.into_inner()) = live.clone();
+                    Some(live)
                 });
                 let _ = found.try_send(live);
             })
@@ -221,6 +281,8 @@ fn look_with(context: RouteContext, router: Router, senses: look::Senses) -> Opt
         router,
         seen,
         until: deadline + LOOK_GRACE,
+        local,
+        model: jev::Hooks::default(),
     })
 }
 
@@ -237,6 +299,9 @@ pub(super) enum Job {
         always: bool,
     },
     Undo,
+    /// The pointer is on the capsule (`true`) or left it: a rule's send
+    /// waiting out its Undo window pauses there and resumes after.
+    Hold(bool),
     /// `hex capture send`: any capture, to `to` or where its route or its
     /// last send says.
     #[cfg_attr(target_os = "windows", allow(dead_code))]
@@ -355,6 +420,31 @@ struct Routed {
     offered: Option<scrawl_capture::OfferRule>,
     /// The rule a Shift pick saved with this send, which Undo takes back.
     saved: Option<SavedRule>,
+    /// The rule's cancellation window starts at publication, even before folder resolution.
+    due: Option<Instant>,
+    /// Since when the capsule holds `due` (the pointer is on it).
+    held: Option<Instant>,
+    destination: Option<Destination>,
+}
+
+impl Routed {
+    /// Ends a hold: `due` moves on by the time held, keeping what was left
+    /// (at least [`RESUME_LEFT`], never more than the whole [`SEND_HOLD`]).
+    fn resume(&mut self, now: Instant) {
+        let Some(since) = self.held.take() else {
+            return;
+        };
+        if let Some(due) = &mut self.due {
+            let left = due.saturating_duration_since(since);
+            *due = now + left.clamp(RESUME_LEFT, SEND_HOLD);
+        }
+    }
+
+    /// Whether the capsule still holds its send.
+    fn holding(&self, now: Instant) -> bool {
+        self.held
+            .is_some_and(|since| now.saturating_duration_since(since) < HOLD_MAX)
+    }
 }
 
 /// A rule saved with a send, and what its key held before.
@@ -378,6 +468,8 @@ struct Worker {
     current: Option<Routed>,
     retry_at: Instant,
     forward: Forward,
+    pending: Option<preparation::Pending>,
+    older: Vec<(Routed, Option<preparation::Pending>)>,
 }
 
 impl Worker {
@@ -387,16 +479,28 @@ impl Worker {
             current: None,
             retry_at: Instant::now() + RETRY_EVERY,
             forward: scrawl_capture::handoff::send_bundle,
+            pending: None,
+            older: Vec::new(),
         }
     }
 
     fn run(mut self, jobs: &Receiver<Job>) {
         loop {
-            match jobs.recv_timeout(self.retry_at.saturating_duration_since(Instant::now())) {
+            let wait = self.retry_at.saturating_duration_since(Instant::now());
+            let wait = if self.pending.is_some()
+                || !self.older.is_empty()
+                || self.current.as_ref().is_some_and(|c| c.due.is_some())
+            {
+                wait.min(Duration::from_millis(10))
+            } else {
+                wait
+            };
+            match jobs.recv_timeout(wait) {
                 Ok(job) => self.handle(job),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
+            self.prepared();
             if Instant::now() >= self.retry_at {
                 self.retry();
                 self.retry_at = Instant::now() + RETRY_EVERY;
@@ -409,6 +513,7 @@ impl Worker {
             Job::Written { bundle, look } => self.written(bundle, look),
             Job::Send { to, always } => self.chosen(&to, always),
             Job::Undo => self.undo(),
+            Job::Hold(on) => self.hold(on),
             Job::SendBundle {
                 bundle,
                 to,
@@ -464,8 +569,8 @@ impl Worker {
         }
         let dest = match to {
             Some(to) if to.starts_with("ses") => Destination {
+                title: session_name(to, to, &[]),
                 session: to.to_owned(),
-                title: to.to_owned(),
                 via: "chosen".into(),
                 url: None,
                 directory: None,
@@ -489,11 +594,15 @@ impl Worker {
         }
     }
 
-    fn written(&mut self, bundle: PathBuf, look: Look) {
+    #[cfg(test)]
+    fn written_before(&mut self, bundle: PathBuf, look: Look) {
+        let started = Instant::now();
         let Look {
             router,
             seen,
             until,
+            model,
+            ..
         } = look;
         let live = seen
             .recv_timeout(until.saturating_duration_since(Instant::now()))
@@ -508,6 +617,7 @@ impl Worker {
                 }
                 None
             });
+        let waited = started.elapsed();
         let loaded = scrawl_capture::handoff::load_bundle(&bundle)
             .map(|(_, loaded)| loaded)
             .inspect_err(|error| tracing::warn!(error = %format!("{error:#}"), "could not read a capture to route"))
@@ -525,13 +635,16 @@ impl Worker {
                 read = live.candidates.len(),
                 "a capture's look couldn't read all of OpenCode's sessions"
             );
+            if auth_refused(error) {
+                tracing::warn!("{AUTH_HINT}");
+            }
         }
         let unread = live.as_ref().and_then(sessions_unread);
         // Judged even without the sessions: a rule, page, or publisher names
         // one outright, and the record keeps what was seen for a replay.
         let (decision, url) = router.run(|| match (live, &loaded) {
             (Some(live), Some(loaded)) => {
-                let (judgement, url) = routing::judge_capture(&bundle, loaded, live);
+                let (judgement, url) = routing::judge_capture_with(&bundle, loaded, live, &model);
                 (judged(judgement.decision, unread.as_deref()), url)
             }
             (Some(live), None) => (Decided::Failed, live.url),
@@ -558,6 +671,8 @@ impl Worker {
             bundle = %bundle_name(&bundle),
             answer = answer_kind(&answer),
             why = shown.as_ref().map(|shown| shown.why.as_str()),
+            look_wait_ms = waited.as_millis() as u64,
+            judge_ms = started.elapsed().saturating_sub(waited).as_millis() as u64,
             "capture routed"
         );
         if let Some(shown) = &shown
@@ -576,6 +691,9 @@ impl Worker {
             sent: None,
             offered: None,
             saved: None,
+            due: None,
+            held: None,
+            destination: None,
         });
         self.publish();
         // A saved rule sends at once; the capsule's Undo takes it back.
@@ -594,6 +712,11 @@ impl Worker {
     }
 
     fn choose(&mut self, dest: Destination, always: bool) {
+        self.pending = None;
+        if let Some(current) = &mut self.current {
+            current.due = None;
+            current.destination = None;
+        }
         let Some(current) = self.current.as_ref() else {
             return;
         };
@@ -622,8 +745,37 @@ impl Worker {
         self.send_current(dest, Some("chosen"));
     }
 
+    fn hold(&mut self, on: bool) {
+        let Some(current) = &mut self.current else {
+            return;
+        };
+        let now = Instant::now();
+        if on {
+            current.held.get_or_insert(now);
+        } else {
+            current.resume(now);
+        }
+    }
+
     fn undo(&mut self) {
         if !self.acting_on_last() {
+            return;
+        }
+        self.pending = None;
+        if self
+            .current
+            .as_mut()
+            .is_some_and(|c| c.due.take().is_some())
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|c| c.route.delivery.is_none())
+        {
+            if let Some(current) = &mut self.current {
+                current.destination = None;
+            }
+            self.set_delivery(RouteDelivery::TakenBack);
+            self.publish();
             return;
         }
         if let Some(saved) = self
@@ -698,8 +850,12 @@ impl Worker {
     }
 
     fn send_current(&mut self, mut dest: Destination, via: Option<&str>) {
+        let started = Instant::now();
         if let Some(via) = via {
             via.clone_into(&mut dest.via);
+        }
+        if let Some(current) = self.current.as_ref() {
+            dest.title = session_name(&dest.session, &dest.title, &current.candidates);
         }
         self.set_delivery(RouteDelivery::Sending {
             to: dest.title.clone(),
@@ -719,6 +875,7 @@ impl Worker {
             bundle = %bundle_name(&current.bundle),
             session = dest.session,
             delivery = delivery_kind(&delivery),
+            elapsed_ms = started.elapsed().as_millis() as u64,
             "capture sent"
         );
         current.sent = sent;
@@ -812,7 +969,9 @@ impl Worker {
         });
         let (session, title) = match found {
             Some(dest) => (dest.session.clone(), dest.name.clone()),
-            None if to.starts_with("ses") => (to.to_owned(), to.to_owned()),
+            None if to.starts_with("ses") => {
+                (to.to_owned(), session_name(to, to, &current.candidates))
+            }
             None => {
                 tracing::info!("the capsule named a session the route doesn't list");
                 return None;
@@ -866,7 +1025,11 @@ impl Worker {
     /// Retries sends OpenCode didn't take, unless another process owns
     /// retries: Scrawl's app, or anything serving Scrawl's ingest port.
     fn retry(&mut self) {
-        if cfg!(test) || crate::app_settings::scrawl_app_running() || ingest_port_served() {
+        if cfg!(test)
+            || opencode_managed()
+            || crate::app_settings::scrawl_app_running()
+            || ingest_port_served()
+        {
             return;
         }
         let router = router();
@@ -905,6 +1068,7 @@ enum Decided {
     Judged(smart::Decision),
     /// OpenCode's sessions couldn't be read: why, in a few words.
     Unreachable(String),
+    #[cfg(test)]
     Failed,
 }
 
@@ -933,7 +1097,9 @@ fn unreachable_why(error: &str) -> String {
         .into_iter()
         .find_map(|prefix| error.strip_prefix(prefix))
         .unwrap_or(error);
-    if error.contains("didn't answer in time") || error.contains("took over") {
+    if auth_refused(error) {
+        AUTH_REFUSED.into()
+    } else if error.contains("didn't answer in time") || error.contains("took over") {
         "didn't answer in time".into()
     } else if error.contains("Could not reach server") {
         "it isn't running".into()
@@ -946,6 +1112,27 @@ fn unreachable_why(error: &str) -> String {
 /// the bundle there first.
 const FILES_UNSEEN: &str = "OpenCode can't see files";
 
+/// OpenCode answered but refused Hex's credentials (HTTP 401 or 403): the
+/// password in its registration was missing or didn't match, as when the
+/// service runs in WSL and writes its registration inside WSL's home.
+const AUTH_REFUSED: &str = "OpenCode needs a password Hex doesn't have";
+
+/// What process.log says beside [`AUTH_REFUSED`]; it never names the
+/// password itself.
+const AUTH_HINT: &str = "OpenCode refused Hex's password. Hex reads it from OpenCode's \
+                         service.json under this user's ~/.local/state/opencode (or \
+                         OPENCODE_PASSWORD); an OpenCode running in WSL keeps its registration \
+                         inside WSL, which Hex on Windows can't read. The capture is saved and \
+                         copied either way";
+
+/// Whether a failed request (`{err:#}`) was OpenCode refusing the
+/// credentials.
+fn auth_refused(error: &str) -> bool {
+    ["HTTP 401", "HTTP 403", "401 Unauthorized", "403 Forbidden"]
+        .iter()
+        .any(|status| error.contains(status))
+}
+
 /// A failed send (`{err:#}`, outer context first) in the few words the
 /// capsule shows under "Copied". What OpenCode said comes first: it was
 /// reached. `agent_host` is whether bundles are copied to its Mac first.
@@ -957,6 +1144,9 @@ fn send_why(error: &str, agent_host: bool) -> String {
     // The server reads the contact sheet from its own disk.
     if error.contains("Unable to read attachment") && !agent_host {
         return FILES_UNSEEN.into();
+    }
+    if auth_refused(error) {
+        return AUTH_REFUSED.into();
     }
     if error.contains("HTTP 404") {
         return "session not found".into();
@@ -1039,6 +1229,7 @@ fn answer_for(
             session: dest.session,
             name: dest.title,
             why: why(&dest.via).to_owned(),
+            directory: scored.candidate.directory.clone(),
         }
     };
     let recent = |shown: &[&str]| recent(candidates, shown, now_ms);
@@ -1055,7 +1246,7 @@ fn answer_for(
             shown: Some(Shown::guess(why)),
         }
     };
-    match decided {
+    let mut answered = match decided {
         // Only a rule the person saved sends on its own; anything else the
         // router would send is its first suggestion.
         Decided::Judged(smart::Decision::Send { to, instead }) if policy::saved_rule(&to) => {
@@ -1090,10 +1281,16 @@ fn answer_for(
             recent: recent(&[]),
         }),
         Decided::Unreachable(why) => Answered::of(RouteAnswer::Unreachable { why }),
+        #[cfg(test)]
         Decided::Failed => Answered::of(RouteAnswer::NoAnswer {
             recent: recent(&[]),
         }),
-    }
+    };
+    // The early local read, a saved rule, or a list read without a title can
+    // leave a `ses…` id where a name goes; the capsule and the bundle say the
+    // title instead.
+    name_answer(&mut answered.answer, answered.send.as_mut(), candidates);
+    answered
 }
 
 /// What [`answer_for`] made of a decision.
@@ -1141,6 +1338,7 @@ fn recent(candidates: &[smart::Candidate], shown: &[&str], now_ms: u64) -> Vec<R
                 "{} ago",
                 smart::ago_text(now_ms.saturating_sub(candidate.updated_ms))
             ),
+            directory: candidate.directory.clone(),
         })
         .collect()
 }
@@ -1169,7 +1367,9 @@ fn why(via: &str) -> &str {
 /// Every session the route lists, suggestions first.
 fn listed(answer: &RouteAnswer) -> Vec<&RouteDest> {
     match answer {
-        RouteAnswer::Looking | RouteAnswer::Unreachable { .. } => Vec::new(),
+        RouteAnswer::Looking
+        | RouteAnswer::ResolvingRule { .. }
+        | RouteAnswer::Unreachable { .. } => Vec::new(),
         RouteAnswer::Rule {
             to,
             suggested,
@@ -1229,7 +1429,24 @@ fn deliver(
     Option<Sent>,
     Option<scrawl_capture::OfferRule>,
 ) {
+    if opencode_managed() {
+        return (
+            RouteDelivery::Failed {
+                to: dest.title.clone(),
+                why: crate::policy::Lock::OpenCodeProcessing.refusal().into(),
+            },
+            None,
+            None,
+        );
+    }
     router.run(|| {
+        // The bundle and its summary name the session too, so they say its
+        // title rather than a `ses…` id when one reached this far.
+        let titled = Destination {
+            title: session_name(&dest.session, &dest.title, &[]),
+            ..dest.clone()
+        };
+        let dest = &titled;
         let recorded = scrawl_capture::handoff::load_bundle(bundle).and_then(
             |(_, mut loaded): (PathBuf, ScrawlBundle)| {
                 routing::record_destination(bundle, &mut loaded, dest.clone())
@@ -1278,6 +1495,8 @@ fn deliver(
                         "OpenCode can't read a capture from its own disk; if it runs on another \
                          Mac, set capture.routing.agentHost to that Mac's SSH host. Retrying"
                     );
+                } else if why == AUTH_REFUSED {
+                    tracing::warn!("{AUTH_HINT}. Retrying");
                 } else {
                     tracing::warn!(
                         error = delivery::short(&error),
@@ -1319,6 +1538,7 @@ fn bundle_name(bundle: &Path) -> String {
 fn answer_kind(answer: &RouteAnswer) -> &'static str {
     match answer {
         RouteAnswer::Looking => "looking",
+        RouteAnswer::ResolvingRule { .. } => "resolving-rule",
         RouteAnswer::Rule { .. } => "rule",
         RouteAnswer::Guess { .. } => "guess",
         RouteAnswer::Nothing { .. } => "nothing",
@@ -1394,6 +1614,93 @@ mod tests {
             ],
             0,
         )
+    }
+
+    /// Kit's Nov 4 capture: a saved app rule named a session by id before the
+    /// session server answered, and the pill said `Sent to ses_…`. A name is
+    /// a title, or the word "session".
+    #[test]
+    fn a_session_is_named_by_its_title_never_its_id() {
+        let candidates = [candidate("ses_seer", "SEER", 0)];
+        let no_lookup = |_: &str| panic!("a title needs no lookup");
+        assert_eq!(
+            session_name_by("ses_seer", "SEER", &candidates, no_lookup),
+            "SEER"
+        );
+        // A rule that named only the id: the capture's list has the title.
+        assert_eq!(
+            session_name_by("ses_seer", "ses_seer", &candidates, |_| None),
+            "SEER"
+        );
+        // Not in the list: OpenCode's title.
+        assert_eq!(
+            session_name_by("ses_x", "ses_x", &candidates, |_| Some("HOME".into())),
+            "HOME"
+        );
+        // Nowhere at all: "session", never the id.
+        assert_eq!(
+            session_name_by("ses_x", "ses_x", &candidates, |_| None),
+            "session"
+        );
+        assert_eq!(
+            session_name_by("ses_x", "ses_x", &candidates, |_| Some(String::new())),
+            "session"
+        );
+        assert_eq!(session_name("ses_x", "", &candidates), "session");
+        assert_eq!(
+            session_name_by("ses_seer", "SEER", &candidates, |_| Some("HOME".into())),
+            "SEER",
+            "a title already read is kept"
+        );
+    }
+
+    /// The answer and its send carry a name even when the router handed over
+    /// only a session id.
+    #[test]
+    fn a_rule_answer_and_send_are_named_by_title() {
+        let rule = |title: &str| {
+            answer_for(
+                Decided::Judged(smart::Decision::Send {
+                    to: scored_by(
+                        "ses_seer",
+                        title,
+                        smart::Basis::Clue(smart::Source::AppRule),
+                        "routing.apps sends com.kitlangton.seer to ses_seer",
+                    ),
+                    instead: Vec::new(),
+                }),
+                None,
+                None,
+                &[candidate("ses_seer", "SEER", 0)],
+                0,
+            )
+        };
+        for answered in [rule(""), rule("ses_seer")] {
+            let RouteAnswer::Rule { to, .. } = &answered.answer else {
+                panic!("not a rule: {:?}", answered.answer);
+            };
+            assert_eq!(to.name, "SEER", "the pill's name");
+            assert_eq!(
+                answered.send.map(|dest| dest.title),
+                Some("SEER".into()),
+                "the bundle and summary's name"
+            );
+        }
+        // Nothing read and no server: words, never the id.
+        let answered = answer_for(
+            Decided::Judged(smart::Decision::Send {
+                to: scored("ses_seer", ""),
+                instead: Vec::new(),
+            }),
+            None,
+            None,
+            &[],
+            0,
+        );
+        let RouteAnswer::Guess { suggested, .. } = &answered.answer else {
+            panic!("not a guess: {:?}", answered.answer);
+        };
+        assert_eq!(suggested[0].name, "session");
     }
 
     #[test]
@@ -1501,6 +1808,7 @@ mod tests {
                 session: "ses_b".into(),
                 name: "Beta".into(),
                 why: "1 min ago".into(),
+                directory: Some("/tmp/ses_b".into()),
             }]
         );
     }
@@ -1563,6 +1871,11 @@ mod tests {
                 "session not found",
             ),
             ("bundle has no contact sheet", "bundle has no contact sheet"),
+            (
+                "OpenCode said: Unauthorized: OpenCode API failed: HTTP 401",
+                AUTH_REFUSED,
+            ),
+            ("OpenCode API failed: HTTP 403", AUTH_REFUSED),
         ];
         for (error, why) in cases {
             assert_eq!(send_why(error, false), why, "{error}");
@@ -1595,9 +1908,22 @@ mod tests {
         assert_eq!(unreachable_why(spent), "didn't answer in time");
         let down = "couldn't list sessions: Could not reach server at http://127.0.0.1:4096";
         assert_eq!(unreachable_why(down), "it isn't running");
+        // A service that wants a password Hex doesn't have (#1131: OpenCode
+        // in WSL, Hex on Windows) says so rather than a bare status.
         assert_eq!(
             unreachable_why("couldn't list sessions: 401 Unauthorized"),
-            "401 Unauthorized"
+            AUTH_REFUSED
+        );
+        assert_eq!(
+            unreachable_why(
+                "couldn't list sessions: OpenCode said: Unauthorized: OpenCode API failed: HTTP 401"
+            ),
+            AUTH_REFUSED
+        );
+        assert_eq!(
+            unreachable_why("couldn't list sessions: 500"),
+            "500",
+            "other refusals still say what OpenCode answered"
         );
         let Answered { answer, send, .. } = answer_for(
             Decided::Unreachable(unreachable_why(&error)),
@@ -1705,6 +2031,35 @@ mod tests {
             None
         }
 
+        #[test]
+        fn routing_latency_with_a_slow_session_server() {
+            static READS: AtomicU64 = AtomicU64::new(0);
+            fn slow(path: &str, budget: Duration) -> anyhow::Result<Vec<u8>> {
+                READS.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(300));
+                sessions(path, budget)
+            }
+            for (name, destination) in [("session_rule", "ses_board"), ("folder_rule", "/p/board")]
+            {
+                READS.store(0, Ordering::Relaxed);
+                let router = router_with(|c| {
+                    c.apps
+                        .insert("com.example.board".into(), destination.into());
+                });
+                let mut senses = senses(no_tab);
+                senses.hooks.api = slow;
+                let started = Instant::now();
+                let (answer, sent) = route(router, "com.example.board", senses);
+                eprintln!(
+                    "METRIC {name}_ms={} session_reads={}",
+                    started.elapsed().as_millis(),
+                    READS.load(Ordering::Relaxed)
+                );
+                assert!(matches!(answer, RouteAnswer::Rule { .. }));
+                assert_eq!(sent.as_deref(), Some("ses_board"));
+            }
+        }
+
         fn senses(tab: fn(Option<&str>, Option<&str>) -> Option<String>) -> look::Senses {
             look::Senses {
                 hooks: Hooks {
@@ -1772,6 +2127,345 @@ mod tests {
             }
         }
 
+        fn settle(worker: &mut Worker) {
+            settle_with_clock(worker, true);
+        }
+
+        fn settle_with_clock(worker: &mut Worker, advance: bool) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while worker.pending.is_some()
+                || !worker.older.is_empty()
+                || worker.current.as_ref().is_some_and(|c| c.due.is_some())
+            {
+                assert!(Instant::now() < deadline, "routing did not finish");
+                if advance {
+                    for current in worker
+                        .current
+                        .iter_mut()
+                        .chain(worker.older.iter_mut().map(|(c, _)| c))
+                    {
+                        if let Some(due) = &mut current.due {
+                            *due = Instant::now();
+                        }
+                    }
+                }
+                worker.prepared();
+                std::thread::park_timeout(Duration::from_millis(1));
+            }
+        }
+
+        fn held_look(router: Router, live: look::Live) -> (Look, SyncSender<Option<look::Live>>) {
+            let (found, seen) = mpsc::sync_channel(1);
+            (
+                Look {
+                    router,
+                    seen,
+                    local: std::sync::Arc::new(Mutex::new(live)),
+                    until: Instant::now() + Duration::from_secs(5),
+                    model: jev::Hooks::default(),
+                },
+                found,
+            )
+        }
+
+        #[test]
+        fn saved_rules_publish_before_the_session_server_answers() {
+            for target in ["ses_board", "/p/board"] {
+                let router = router_with(|c| {
+                    c.apps.insert("com.example.board".into(), target.into());
+                });
+                let (look, found) = held_look(router, look::Live::default());
+                let outcomes = SharedOutcomes::default();
+                let mut worker = worker(outcomes.clone());
+                let bundle = written("com.example.board");
+                lock(&outcomes).fail(bundle.clone(), "test".into());
+                let started = Instant::now();
+                worker.written(bundle, look);
+                assert!(started.elapsed() < Duration::from_millis(200));
+                let current = worker.current.as_ref().unwrap();
+                assert!(current.sent.is_none());
+                assert!(current.due.unwrap() >= started + Duration::from_secs(3));
+                assert!(matches!(
+                    current.route.answer,
+                    RouteAnswer::Rule { .. } | RouteAnswer::ResolvingRule { .. }
+                ));
+                worker.undo();
+                assert_eq!(
+                    worker.current.as_ref().unwrap().route.delivery,
+                    Some(RouteDelivery::TakenBack)
+                );
+                drop(found);
+                settle(&mut worker);
+                assert!(worker.current.as_ref().unwrap().sent.is_none());
+            }
+        }
+
+        /// A saved app rule to a session id sends before the session server
+        /// answers: the pill, the delivery and the bundle still say a name,
+        /// never `ses_…`.
+        #[test]
+        fn a_rule_sent_before_the_sessions_read_names_a_session_not_its_id() {
+            let router = router_with(|c| {
+                c.apps
+                    .insert("com.example.board".into(), "ses_board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            // The local read saw nothing, so the rule's send is due at once.
+            worker.current.as_mut().unwrap().due = Some(Instant::now());
+            worker.prepared();
+            let current = worker.current.as_ref().unwrap();
+            assert!(
+                matches!(&current.route.answer, RouteAnswer::Rule { to, .. }
+                    if to.session == "ses_board" && to.name == "session"),
+                "{:?}",
+                current.route.answer
+            );
+            assert_eq!(
+                current.route.delivery,
+                Some(RouteDelivery::Sent {
+                    to: "session".into()
+                }),
+                "the pill's name"
+            );
+            let (_, loaded) = scrawl_capture::handoff::load_bundle(&bundle).unwrap();
+            assert_eq!(
+                loaded.destination.map(|dest| dest.title),
+                Some("session".into()),
+                "the bundle and summary's name"
+            );
+            drop(found);
+            worker.pending = None;
+            std::fs::remove_dir_all(bundle.parent().unwrap()).ok();
+        }
+
+        #[test]
+        fn the_capsule_holds_a_rules_send_while_the_pointer_is_on_it() {
+            static POSTS: AtomicU64 = AtomicU64::new(0);
+            fn post(path: &Path, id: &str) -> anyhow::Result<scrawl_capture::handoff::Posted> {
+                POSTS.fetch_add(1, Ordering::Relaxed);
+                posted(path, id)
+            }
+            let router = router_with(|c| {
+                c.apps
+                    .insert("com.example.board".into(), "ses_board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            worker.forward = post;
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            worker.hold(true);
+            // Its window ran out while the pointer was on the capsule.
+            worker.current.as_mut().unwrap().due = Some(Instant::now());
+            worker.prepared();
+            assert_eq!(POSTS.load(Ordering::Relaxed), 0, "held, it waits");
+            // Held 10 s with 2 s left: it goes 2 s after the pointer leaves.
+            let current = worker.current.as_mut().unwrap();
+            let since = Instant::now() - Duration::from_secs(10);
+            current.held = Some(since);
+            current.due = Some(since + Duration::from_secs(2));
+            worker.hold(false);
+            let current = worker.current.as_ref().unwrap();
+            assert!(current.held.is_none());
+            let left = current
+                .due
+                .unwrap()
+                .saturating_duration_since(Instant::now());
+            assert!(left > Duration::from_millis(1900) && left <= Duration::from_secs(2));
+            worker.prepared();
+            assert_eq!(POSTS.load(Ordering::Relaxed), 0, "not before its time");
+            drop(found);
+            settle(&mut worker);
+            assert_eq!(POSTS.load(Ordering::Relaxed), 1);
+            std::fs::remove_dir_all(bundle.parent().unwrap()).unwrap();
+        }
+
+        #[test]
+        fn a_new_capture_does_not_cancel_an_older_folder_rules_send() {
+            static POSTS: AtomicU64 = AtomicU64::new(0);
+            fn post(path: &Path, id: &str) -> anyhow::Result<scrawl_capture::handoff::Posted> {
+                assert_eq!(id, "ses_board");
+                POSTS.fetch_add(1, Ordering::Relaxed);
+                posted(path, id)
+            }
+            let router = router_with(|c| {
+                c.apps.insert("com.example.board".into(), "/p/board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            worker.forward = post;
+            let first = written("com.example.board");
+            lock(&outcomes).fail(first.clone(), "test".into());
+            worker.written(first.clone(), look);
+            let second = written("com.example.other");
+            lock(&outcomes).fail(second.clone(), "test".into());
+            let (look, later) = held_look(router_with(|_| {}), look::Live::default());
+            worker.written(second.clone(), look);
+            assert_eq!(worker.older.len(), 1);
+            found
+                .send(Some(look::Live {
+                    candidates: vec![smart::Candidate {
+                        directory: Some("/p/board".into()),
+                        repo: Some("/p/board".into()),
+                        ..candidate("ses_board", "Board", 0)
+                    }],
+                    ..Default::default()
+                }))
+                .unwrap();
+            later.send(Some(look::Live::default())).unwrap();
+            settle(&mut worker);
+            assert_eq!(POSTS.load(Ordering::Relaxed), 1);
+            assert_eq!(worker.current.as_ref().unwrap().bundle, second);
+            assert!(worker.current.as_ref().unwrap().sent.is_none());
+            std::fs::remove_dir_all(first.parent().unwrap()).unwrap();
+            std::fs::remove_dir_all(second.parent().unwrap()).unwrap();
+        }
+
+        #[test]
+        fn a_pick_cancels_a_late_rule_resolution() {
+            let router = router_with(|c| {
+                c.apps.insert("com.example.board".into(), "/p/board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            worker.chosen("ses_home", false);
+            let _ = found.send(Some(look::Live::default()));
+            settle(&mut worker);
+            assert_eq!(
+                worker
+                    .current
+                    .as_ref()
+                    .unwrap()
+                    .sent
+                    .as_ref()
+                    .unwrap()
+                    .session,
+                "ses_home"
+            );
+            assert!(worker.current.as_ref().unwrap().due.is_none());
+            std::fs::remove_dir_all(bundle.parent().unwrap()).unwrap();
+        }
+
+        #[test]
+        #[ignore = "paired wall-clock benchmark; fake 60 ms remote and 2.5 s routing model"]
+        fn paired_written_to_route_and_send() {
+            fn remote(path: &str, budget: Duration) -> anyhow::Result<Vec<u8>> {
+                std::thread::sleep(Duration::from_millis(60));
+                sessions(path, budget)
+            }
+            fn old_send(path: &Path, id: &str) -> anyhow::Result<scrawl_capture::handoff::Posted> {
+                // Light copy, idle check, post: three serialized round trips.
+                std::thread::sleep(Duration::from_millis(180));
+                posted(path, id)
+            }
+            fn new_send(path: &Path, id: &str) -> anyhow::Result<scrawl_capture::handoff::Posted> {
+                // Idle check and post; copying is no longer on this path.
+                std::thread::sleep(Duration::from_millis(120));
+                posted(path, id)
+            }
+            fn model(_: &[u8], _: Duration) -> anyhow::Result<Vec<u8>> {
+                std::thread::sleep(Duration::from_millis(2500));
+                Ok(serde_json::to_vec(&serde_json::json!({
+                    "model": "fixture", "answers": {
+                        "target": {"type":"choice", "choice":"targets.t1", "confidence":0.95, "probabilities":{"targets.t1":0.95,"targets.t2":0.05}},
+                        "any_fits": {"type":"noul", "noul":0.95}
+                    }
+                }))?)
+            }
+            for (name, target) in [
+                ("session", Some("ses_board")),
+                ("folder", Some("/p/board")),
+                ("guess", None),
+            ] {
+                for after in [false, true] {
+                    let mut shown = Vec::new();
+                    let mut sent = Vec::new();
+                    for sample in 0..8 {
+                        let router = router_with(|c| {
+                            c.smart_routing = true;
+                            c.jev_routing = target.is_none();
+                            if let Some(target) = target {
+                                c.apps.insert("com.example.board".into(), target.into());
+                            }
+                        });
+                        let mut senses = senses(no_tab);
+                        senses.hooks.api = remote;
+                        let context = RouteContext {
+                            front_bundle_id: None,
+                            captured_bundle_id: Some("com.example.board".into()),
+                            app_pid: None,
+                        };
+                        let mut look = look_with(context, router, senses).unwrap();
+                        if after {
+                            // Preparation completes during the recording, before Written.
+                            let live = look.seen.recv_timeout(Duration::from_secs(5)).unwrap();
+                            let (tx, rx) = mpsc::sync_channel(1);
+                            tx.send(live).unwrap();
+                            look.seen = rx;
+                        }
+                        look.model.ask = model;
+                        let bundle = written("com.example.board");
+                        let outcomes = SharedOutcomes::default();
+                        lock(&outcomes).fail(bundle.clone(), "test".into());
+                        let mut worker = worker(outcomes.clone());
+                        worker.forward = if after { new_send } else { old_send };
+                        let started = Instant::now();
+                        let observer = std::thread::spawn(move || {
+                            loop {
+                                if lock(&outcomes)
+                                    .last
+                                    .as_ref()
+                                    .and_then(|c| c.route.as_ref())
+                                    .is_some_and(|r| r.answer != RouteAnswer::Looking)
+                                {
+                                    return started.elapsed();
+                                }
+                                assert!(started.elapsed() < Duration::from_secs(10));
+                                std::thread::park_timeout(Duration::from_millis(1));
+                            }
+                        });
+                        if after {
+                            worker.written(bundle.clone(), look);
+                        } else {
+                            worker.written_before(bundle.clone(), look);
+                        }
+                        settle_with_clock(&mut worker, false);
+                        let elapsed = started.elapsed();
+                        let first = observer.join().unwrap();
+                        if sample > 0 {
+                            shown.push(first.as_millis());
+                            if target.is_some() {
+                                sent.push(elapsed.saturating_sub(first).as_millis());
+                            }
+                        }
+                        let _ = std::fs::remove_dir_all(bundle.parent().unwrap());
+                    }
+                    shown.sort();
+                    sent.sort();
+                    eprintln!(
+                        "METRIC {name}_{}_written_to_shown_ms={} range={}-{} routed_to_sent_ms={:?}",
+                        if after { "after" } else { "before" },
+                        shown[3],
+                        shown[0],
+                        shown[6],
+                        sent.get(3)
+                    );
+                }
+            }
+        }
+
         /// What the worker answers for a capture of `bundle_id` looked at
         /// with `senses`, and the session it was sent to at once, if any.
         fn route(
@@ -1787,6 +2481,7 @@ mod tests {
             let look = look_with(context, router, senses).expect("captures are sent");
             let mut worker = worker(SharedOutcomes::default());
             worker.written(written(bundle_id), look);
+            settle(&mut worker);
             let current = worker.current.unwrap();
             let sent = current.sent.map(|sent| sent.session);
             (current.route.answer, sent)
@@ -1861,6 +2556,7 @@ mod tests {
             let look = look_with(context(), router_with(|_| {}), senses()).unwrap();
             let mut worker = worker(SharedOutcomes::default());
             worker.written(written("com.example.rune"), look);
+            settle(&mut worker);
             // Shift-picking RUNE DESKTOP saves the app's rule to that session.
             let (kind, key, target) = worker.rule_for("ses_rune").expect("an app rule");
             assert_eq!(
@@ -1956,6 +2652,7 @@ mod tests {
             let look = look_with(context(), router_with(|_| {}), senses()).unwrap();
             let mut worker = worker(SharedOutcomes::default());
             worker.written(written("com.example.rune"), look);
+            settle(&mut worker);
             let (kind, key, target) = worker.rule_for("ses_rune").expect("an app rule");
             assert_eq!(
                 target, "ses_rune",
@@ -2006,6 +2703,7 @@ mod tests {
             let look = look_with(context, router, senses(board_tab)).unwrap();
             let mut worker = worker(SharedOutcomes::default());
             worker.written(written("com.brave.Browser"), look);
+            settle(&mut worker);
             let current = worker.current.as_mut().unwrap();
             current.sent = Some(Sent {
                 delivery_id: "dlv_1".into(),
@@ -2045,6 +2743,7 @@ mod tests {
             // B, started while A was looked at, is written first.
             lock(&outcomes).fail(written("com.example.board"), "test".into());
             worker.written(a.clone(), look);
+            settle(&mut worker);
             assert!(worker.resolve("BOARD").is_none(), "the capsule shows B");
             assert_eq!(
                 worker.listed_as("BOARD").map(|dest| dest.session),
@@ -2070,6 +2769,7 @@ mod tests {
             lock(&outcomes).fail(bundle.clone(), "test".into());
             let look = look_with(context, router_with(|_| {}), senses(dev_tab)).unwrap();
             worker.written(bundle, look);
+            settle(&mut worker);
             let current = worker.current.as_mut().unwrap();
             // Not a delivery id, so the router's undo fails.
             current.sent = Some(Sent {
@@ -2131,14 +2831,17 @@ mod tests {
                 router: router_with(|_| {}),
                 seen,
                 until: Instant::now() + Duration::from_millis(50),
+                local: Default::default(),
+                model: jev::Hooks::default(),
             };
             let mut worker = worker(SharedOutcomes::default());
             let started = Instant::now();
             worker.written(written("com.example.board"), look);
+            settle(&mut worker);
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(matches!(
                 worker.current.unwrap().route.answer,
-                RouteAnswer::NoAnswer { .. }
+                RouteAnswer::Unreachable { .. }
             ));
         }
     }

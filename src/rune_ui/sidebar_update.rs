@@ -1,6 +1,7 @@
 //! The sidebar's update: Restart to update, Download update, or a channel
 //! switch, and under Restart to update what the staged dev build changed.
 
+use super::sidebar::FOOTER_LINE;
 use super::*;
 
 const SHOWN: usize = 3;
@@ -37,6 +38,24 @@ pub(super) fn control(ui: &Ui, p: Paint) -> Option<El> {
                 move |ui: &mut Ui, _| ui.send(Request::Desktop(action.clone())),
             ))
     })
+}
+
+/// Under Download update on Windows, why this Hex can't update itself and
+/// what to do (#1352).
+pub(super) fn blocked(ui: &Ui, p: Paint) -> Option<El> {
+    let view = ui.view.as_ref()?;
+    let why = view
+        .update_blocked
+        .filter(|_| view.update_status == DesktopUpdateStatus::Available)?;
+    Some(
+        text(tr(why))
+            .key("sidebar-update-blocked")
+            .font(p.k.ty.small)
+            .color(p.faint())
+            .wrap()
+            .mt(6.0)
+            .px(6.0),
+    )
 }
 
 /// What the staged dev build changed, while Restart to update shows.

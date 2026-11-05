@@ -25,6 +25,11 @@ const LINUX_WINDOWS: &str = "Linux & Windows";
 const PATHS: &[(&str, &str)] = &[
     ("mac-settings", "Window/General/Settings"),
     ("mac-settings-sides", "Window/General/Left Option shortcut"),
+    ("toggle-cancel", "Window/General/Toggle cancel shortcut"),
+    (
+        "portal-toggle-cancel",
+        "Window/General/Toggle cancel on Wayland",
+    ),
     ("mac-settings-advanced", "Window/General/Advanced"),
     ("mac-settings-mic-level", "Window/General/Microphone level"),
     (
@@ -64,6 +69,10 @@ const PATHS: &[(&str, &str)] = &[
     (
         "vocabulary-unused",
         "Window/General/Vocabulary · not used by the model",
+    ),
+    (
+        "vocabulary-budget",
+        "Window/General/Vocabulary · more terms than the model reads",
     ),
     ("shortcut-row", "Window/General/Shortcut/Left Option"),
     ("shortcut-row-right", "Window/General/Shortcut/Right Option"),
@@ -108,34 +117,34 @@ const PATHS: &[(&str, &str)] = &[
     ),
     (
         "picker-custom-models",
-        "Window/Transcription model/Add your own model (Labs)",
+        "Window/Transcription model/Add your own model",
+    ),
+    (
+        "picker-found",
+        "Window/Transcription model/Found on this computer",
     ),
     (
         "picker-japanese",
         "Window/Transcription model/Japanese saved",
+    ),
+    (
+        "picker-japanese-all",
+        "Window/Transcription model/Japanese, every model",
     ),
     ("language-menu", "Window/Transcription model/Language menu"),
     (
         "language-fallback",
         "Window/Transcription model/Language fallback",
     ),
-    ("shortcut-explainer", "Window/Shortcut explainer/Hold"),
-    (
-        "shortcut-explainer-toggle",
-        "Window/Shortcut explainer/Toggle",
-    ),
-    (
-        "shortcut-explainer-chord",
-        "Window/Shortcut explainer/Chord",
-    ),
-    (
-        "shortcut-explainer-motion",
-        "Window/Shortcut explainer/Looping",
-    ),
+    ("shortcut-mode", "Window/Shortcut mode/Modifier"),
+    ("shortcut-mode-key", "Window/Shortcut mode/Key"),
+    ("shortcut-mode-chord", "Window/Shortcut mode/Chord"),
+    ("shortcut-mode-motion", "Window/Shortcut mode/Looping"),
     ("sound-sets", "Window/Sounds/Sheet"),
     ("sound-sets-playing", "Window/Sounds/Playing"),
     ("output", "Window/Output/Steps"),
     ("output-open", "Window/Output/App rule open"),
+    ("output-trust", "Window/Output/Trust prompt"),
     ("output-empty", "Window/Output/Empty"),
     ("modes", "Window/Modes/Modes"),
     ("modes-global", "Window/Modes/Global mode"),
@@ -160,8 +169,14 @@ const PATHS: &[(&str, &str)] = &[
     ("meetings-delete", "Window/Meetings/Delete"),
     ("meetings-failed", "Window/Meetings/Failed"),
     ("meetings-empty", "Window/Meetings/Empty"),
+    ("meetings-platform-icons", "Window/Meetings/Platform icons"),
     ("meetings-off", "Window/Meetings/Off"),
     ("meetings-settings", "Window/Meetings/Settings"),
+    ("meetings-summary-model", "Window/Meetings/Summary model"),
+    (
+        "meetings-summary-model-not-running",
+        "Window/Meetings/Summary model without OpenCode",
+    ),
     ("meetings-allow", "Window/Meetings/Allow system audio"),
     ("meetings-calendar", "Window/Meetings/Calendar"),
     (
@@ -195,66 +210,43 @@ const PATHS: &[(&str, &str)] = &[
     ("mac-hud-lab", "Window/HUD Lab/HUD Lab"),
     ("mac-labs", "Window/General/Labs"),
     ("mac-labs-link", "Window/General/Labs link"),
+    ("mac-labs-on", "Window/General/Labs turned on"),
+    ("mac-labs-screenshots", "Window/General/Labs screenshots"),
+    ("mac-labs-category", "Window/General/Labs category"),
+    ("mac-labs-search", "Window/General/Labs search"),
+    ("mac-labs-settings", "Window/General/Labs settings"),
+    ("mac-labs-phone", "Window/General/Labs phone dictation"),
     ("mac-production", "Window/General/Production build"),
     ("mac-activity", "Window/Activity/Activity"),
-    ("mac-onboarding", "Window/Onboarding tour/Welcome"),
-    ("onboarding-hero", "Window/Onboarding tour/Welcome · hero"),
+    ("mac-onboarding", "Window/Onboarding/Setting up Hex"),
     (
-        "onboarding-hero-still",
-        "Window/Onboarding tour/Welcome · still",
-    ),
-    ("mac-onboarding-setup", "Window/Onboarding tour/Setup"),
-    (
-        "mac-onboarding-progress",
-        "Window/Onboarding tour/Setup · progress",
-    ),
-    (
-        "mac-onboarding-stale",
-        "Window/Onboarding tour/Setup · stale entry",
+        "mac-onboarding-permissions",
+        "Window/Onboarding/Permissions",
     ),
     (
         "mac-onboarding-denied",
-        "Window/Onboarding tour/Setup · denied",
+        "Window/Onboarding/Permissions · denied",
+    ),
+    (
+        "mac-onboarding-stale",
+        "Window/Onboarding/Permissions · stale entry",
     ),
     (
         "mac-onboarding-restart",
-        "Window/Onboarding tour/Setup · restart",
+        "Window/Onboarding/Permissions · restart",
     ),
-    (
-        "mac-onboarding-download-failed",
-        "Window/Onboarding tour/Setup · download failed",
-    ),
-    ("mac-onboarding-try", "Window/Onboarding tour/Try it"),
-    (
-        "mac-onboarding-listening",
-        "Window/Onboarding tour/Try it · listening",
-    ),
-    (
-        "mac-onboarding-landed",
-        "Window/Onboarding tour/Try it · landed",
-    ),
+    ("mac-onboarding-try", "Window/Onboarding/Your turn"),
     (
         "mac-onboarding-reopen",
-        "Window/Onboarding tour/Try it · reopen",
+        "Window/Onboarding/Your turn · reopen",
     ),
-    ("mac-onboarding-mic", "Window/Onboarding tour/Mic · hearing"),
-    (
-        "mac-onboarding-mic-open",
-        "Window/Onboarding tour/Mic · open",
-    ),
-    (
-        "mac-onboarding-mic-silent",
-        "Window/Onboarding tour/Mic · silent",
-    ),
-    (
-        "mac-onboarding-mic-lid",
-        "Window/Onboarding tour/Mic · lid closed",
-    ),
-    ("mac-onboarding-done", "Window/Onboarding tour/Done"),
+    ("mac-onboarding-ready", "Window/Onboarding/Hex is ready"),
     ("portal", "Linux & Windows/Settings · portal shortcuts"),
     ("commands", "Linux & Windows/Settings · hex commands"),
     ("portal-mouse", "Linux & Windows/Settings · mouse button"),
     ("windows-settings", "Linux & Windows/Settings · Windows"),
+    ("windows-labs", "Linux & Windows/Labs · Windows"),
+    ("linux-labs", "Linux & Windows/Labs · Linux"),
     ("disabled", "Linux & Windows/Disabled"),
     ("capturing", "Linux & Windows/Recording a shortcut"),
     ("menus", "Linux & Windows/Microphone menu"),
@@ -265,7 +257,45 @@ const PATHS: &[(&str, &str)] = &[
         "Linux & Windows/Voice Filter unavailable",
     ),
     ("onboarding", "Linux & Windows/Onboarding"),
-    ("onboarding-setup", "Linux & Windows/Onboarding · setup"),
+    (
+        "onboarding-download-failed",
+        "Linux & Windows/Onboarding · download failed",
+    ),
+    (
+        "onboarding-no-model",
+        "Linux & Windows/Onboarding · continued without a model",
+    ),
+    (
+        "onboarding-model-found",
+        "Linux & Windows/Onboarding · models on this computer",
+    ),
+    (
+        "onboarding-model-found-downloading",
+        "Linux & Windows/Onboarding · recommended model downloading",
+    ),
+    (
+        "onboarding-model-found-recommended",
+        "Linux & Windows/Onboarding · recommended model on this computer",
+    ),
+    (
+        "onboarding-model-found-back",
+        "Linux & Windows/Onboarding · back to the models",
+    ),
+    ("onboarding-demo", "Linux & Windows/Onboarding · demo"),
+    (
+        "onboarding-waiting",
+        "Linux & Windows/Onboarding · almost ready",
+    ),
+    (
+        "onboarding-paste",
+        "Linux & Windows/Onboarding · paste permission",
+    ),
+    ("onboarding-try", "Linux & Windows/Onboarding · your turn"),
+    ("onboarding-ready", "Linux & Windows/Onboarding · ready"),
+    (
+        "windows-onboarding-microphone",
+        "Linux & Windows/Onboarding · Windows microphone",
+    ),
 ];
 
 /// Labs › Playground is on.
@@ -609,10 +639,9 @@ mod tests {
             ("general-mac-settings", "Window/General/Settings"),
             ("Meetings/meetings-calendar", "Window/Meetings/Calendar"),
             (
-                "onboarding-onboarding-setup",
-                "Linux & Windows/Onboarding · setup",
+                "onboarding-onboarding-demo",
+                "Linux & Windows/Onboarding · demo",
             ),
-            ("onboarding-hero", "Window/Onboarding tour/Welcome · hero"),
             ("HUD/Processing", "Prototypes/HUD/Processing"),
             (
                 "hud-recording-your-voice",

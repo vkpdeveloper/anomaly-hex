@@ -17,6 +17,11 @@ unsafe extern "C" {
         value: *mut CfTypeRef,
     ) -> i32;
     fn AXUIElementSetMessagingTimeout(element: AxUiElementRef, timeout_in_seconds: f32) -> i32;
+    fn AXUIElementSetAttributeValue(
+        element: AxUiElementRef,
+        attribute: CfStringRef,
+        value: CfTypeRef,
+    ) -> i32;
     fn AXUIElementCopyParameterizedAttributeValue(
         element: AxUiElementRef,
         parameterized_attribute: CfStringRef,
@@ -59,11 +64,16 @@ unsafe extern "C" {
     fn CFURLGetTypeID() -> usize;
     fn CFURLGetString(url: CfTypeRef) -> CfStringRef;
     fn CFRelease(value: CfTypeRef);
+    fn CFRetain(value: CfTypeRef) -> CfTypeRef;
+    fn CFEqual(left: CfTypeRef, right: CfTypeRef) -> u8;
+    fn CFArrayGetTypeID() -> usize;
+    fn CFArrayGetCount(array: CfTypeRef) -> isize;
+    fn CFArrayGetValueAtIndex(array: CfTypeRef, index: isize) -> CfTypeRef;
+    static kCFBooleanTrue: CfTypeRef;
 }
 
 pub fn focused_window_title(pid: i32) -> Option<String> {
-    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
-    let application = bounded_element(unsafe { AXUIElementCreateApplication(pid) })?;
+    let application = foreign_application(pid)?;
     let window = copy_element(&application, c"AXFocusedWindow")?;
     copy_string(&window, c"AXTitle").filter(|title| !title.is_empty())
 }
@@ -74,8 +84,7 @@ pub fn focused_window_title(pid: i32) -> Option<String> {
 /// the page itself.
 pub fn focused_web_url(pid: i32) -> Option<String> {
     const MAX_DEPTH: usize = 64;
-    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
-    let application = bounded_element(unsafe { AXUIElementCreateApplication(pid) })?;
+    let application = foreign_application(pid)?;
     let mut element = copy_element(&application, c"AXFocusedUIElement")?;
     let mut url = None;
     for _ in 0..MAX_DEPTH {
@@ -90,12 +99,121 @@ pub fn focused_web_url(pid: i32) -> Option<String> {
     url
 }
 
+/// Every page a browser's windows show, for a call's address or tab title
+/// when its scripting dictionary can't be asked (#831). Chromium (Arc,
+/// Chrome, Brave, Edge) builds its web accessibility tree only for an
+/// assistive app that asks, which `AXManualAccessibility` does, once per
+/// process; without it a browser behind another app shows windows but no
+/// web areas.
+pub fn browser_pages(pid: i32) -> crate::dictation::browser_page::BrowserPages {
+    let Some(application) = foreign_application(pid) else {
+        return Default::default();
+    };
+    request_web_accessibility(pid, &application);
+    let mut windows: Vec<CfObject> = Vec::new();
+    let candidates = [
+        copy_element(&application, c"AXFocusedWindow"),
+        copy_element(&application, c"AXMainWindow"),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(copy_elements(&application, c"AXWindows"));
+    for window in candidates {
+        // SAFETY: Both are live AXUIElements.
+        if !windows
+            .iter()
+            .any(|known| unsafe { CFEqual(known.0, window.0) } != 0)
+        {
+            windows.push(window);
+        }
+    }
+    let mut pages = crate::dictation::browser_page::pages(windows.into_iter().map(Element));
+    // The focused web area, when there is one, is the likeliest page.
+    if let Some(url) = focused_web_url(pid) {
+        pages.urls.retain(|known| known != &url);
+        pages.urls.insert(0, url);
+    }
+    pages
+}
+
+/// Asks a Chromium browser for its web accessibility tree, once per
+/// process. Other apps ignore the attribute.
+fn request_web_accessibility(pid: i32, application: &CfObject) {
+    static ASKED: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+    let mut asked = ASKED.lock().unwrap_or_else(|error| error.into_inner());
+    if asked.contains(&pid) {
+        return;
+    }
+    asked.push(pid);
+    let Some(attribute) = cf_string_literal(c"AXManualAccessibility").map(CfObject) else {
+        return;
+    };
+    // SAFETY: A live application element, a CFString name, and the shared
+    // kCFBooleanTrue constant.
+    let status =
+        unsafe { AXUIElementSetAttributeValue(application.0, attribute.0, kCFBooleanTrue) };
+    if status != 0 {
+        tracing::debug!(
+            status,
+            pid,
+            "the browser has no manual accessibility switch"
+        );
+    }
+}
+
+/// An element as `browser_page` walks it.
+struct Element(CfObject);
+
+impl crate::dictation::browser_page::AxNode for Element {
+    fn role(&self) -> Option<String> {
+        copy_string(&self.0, c"AXRole")
+    }
+
+    fn title(&self) -> Option<String> {
+        copy_string(&self.0, c"AXTitle")
+    }
+
+    fn url(&self) -> Option<String> {
+        copy_url(&self.0, c"AXURL")
+    }
+
+    fn children(&self) -> Vec<Self> {
+        copy_elements(&self.0, c"AXChildren")
+            .into_iter()
+            .map(Element)
+            .collect()
+    }
+}
+
+/// An attribute holding elements (`AXWindows`, `AXChildren`), each bounded.
+fn copy_elements(element: &CfObject, name: &CStr) -> Vec<CfObject> {
+    let Some(array) = copy_attribute(element, name) else {
+        return Vec::new();
+    };
+    if unsafe { CFGetTypeID(array.0) } != unsafe { CFArrayGetTypeID() } {
+        return Vec::new();
+    }
+    let count = unsafe { CFArrayGetCount(array.0) };
+    (0..count)
+        .filter_map(|index| {
+            // SAFETY: Get rule: the array owns the item, so it is retained
+            // before the array goes.
+            let item = unsafe { CFArrayGetValueAtIndex(array.0, index) };
+            if item.is_null() {
+                return None;
+            }
+            let item = CfObject(unsafe { CFRetain(item) });
+            (unsafe { AXUIElementSetMessagingTimeout(item.0, MESSAGING_TIMEOUT_SECS) } == 0)
+                .then_some(item)
+        })
+        .collect()
+}
+
 /// The character just before the insertion point of the application's
 /// focused text element, for Labs › Smart spacing. `None` when text is
 /// selected, the cursor is at the start, or the app doesn't say.
 pub fn char_before_caret(pid: i32) -> Option<char> {
-    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
-    let application = bounded_element(unsafe { AXUIElementCreateApplication(pid) })?;
+    let application = foreign_application(pid)?;
     let focused = copy_element(&application, c"AXFocusedUIElement")?;
     let selection = copy_range(&focused, c"AXSelectedTextRange")?;
     if selection.length != 0 || selection.location <= 0 {
@@ -153,6 +271,18 @@ impl Drop for CfObject {
     fn drop(&mut self) {
         unsafe { CFRelease(self.0) };
     }
+}
+
+/// The Accessibility application element for another process, never for
+/// Hex's own: its window serves that tree from the same runtime its main
+/// thread updates, so a read from the foreground-context thread (or Smart
+/// spacing) while an update runs can panic and take Hex down (#1402).
+fn foreign_application(pid: i32) -> Option<CfObject> {
+    if pid == std::process::id() as i32 {
+        return None;
+    }
+    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
+    bounded_element(unsafe { AXUIElementCreateApplication(pid) })
 }
 
 fn bounded_element(element: AxUiElementRef) -> Option<CfObject> {
@@ -235,5 +365,18 @@ mod tests {
         assert_eq!(focused_window_title(i32::MAX), None);
         assert_eq!(focused_web_url(i32::MAX), None);
         assert_eq!(char_before_caret(i32::MAX), None);
+    }
+
+    /// Hex's own tree belongs to the main thread that updates it: the
+    /// foreground-context poller and Smart spacing must never ask for it
+    /// (#1402).
+    #[test]
+    fn hex_never_reads_its_own_accessibility_tree() {
+        let own_pid = std::process::id() as i32;
+        assert!(foreign_application(own_pid).is_none());
+        assert_eq!(focused_window_title(own_pid), None);
+        assert_eq!(focused_web_url(own_pid), None);
+        assert_eq!(char_before_caret(own_pid), None);
+        assert!(browser_pages(own_pid).urls.is_empty());
     }
 }

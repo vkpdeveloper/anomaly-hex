@@ -32,6 +32,22 @@ line_icon!(
     ]
 );
 line_icon!(
+    PHONE,
+    "hex-row-phone",
+    [
+        "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z",
+        "M12 18h.01",
+    ]
+);
+line_icon!(
+    CAMERA,
+    "hex-row-camera",
+    [
+        "M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z",
+        "M15 13a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+    ]
+);
+line_icon!(
     BLUETOOTH,
     "hex-row-bluetooth",
     ["m7 7 10 10-5 5V2l5 5L7 17"]
@@ -85,14 +101,6 @@ line_icon!(
     ]
 );
 line_icon!(
-    LOCK,
-    "hex-row-lock",
-    [
-        "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
-        "M7 11V7a5 5 0 0 1 10 0v4",
-    ]
-);
-line_icon!(
     TIMER,
     "hex-row-timer",
     [
@@ -116,11 +124,6 @@ line_icon!(
         "m8 13 4-7 4 7",
         "M9.1 11h5.7",
     ]
-);
-line_icon!(
-    HINTS,
-    "hex-row-hints",
-    ["M4 7V4h16v3", "M9 20h6", "M12 4v16"]
 );
 line_icon!(
     PASTE,
@@ -258,5 +261,22 @@ line_icon!(
     [
         "M12 2a6 6 0 0 1 6 6v8a6 6 0 0 1-12 0V8a6 6 0 0 1 6-6z",
         "M12 6v4"
+    ]
+);
+line_icon!(
+    CALL,
+    "hex-row-call",
+    [
+        "m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5",
+        "M4 6h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z",
+    ]
+);
+line_icon!(
+    CIRCLE_X,
+    "hex-row-circle-x",
+    [
+        "M2 12a10 10 0 1 0 20 0a10 10 0 1 0-20 0",
+        "m15 9-6 6",
+        "m9 9 6 6"
     ]
 );

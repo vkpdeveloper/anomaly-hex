@@ -8,6 +8,7 @@
 use color_eyre::eyre::Result;
 
 use crate::app_settings::{AppSettings, HotkeyBinding};
+use crate::desktop::host::DesktopShortcuts;
 use crate::linux::gsettings::{gsettings, string_list, string_list_text, string_text};
 
 const LIST_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
@@ -24,6 +25,20 @@ struct Entry {
     name: &'static str,
     arguments: &'static str,
     accelerator: String,
+}
+
+/// Whether Hex's entries should exist, or `None` while a starting listener
+/// hasn't said how it gets its shortcuts. They stand in for a missing
+/// shortcuts portal only: once the portal (or X11) binds the shortcuts, an
+/// entry on the same key would also run `hex dictation toggle` on every press
+/// and repeat, stopping the hold the portal just started (#931).
+pub(crate) fn wanted(requested: bool, shortcuts: Option<DesktopShortcuts>) -> Option<bool> {
+    match shortcuts {
+        _ if !requested => Some(false),
+        Some(DesktopShortcuts::Commands) => Some(true),
+        Some(DesktopShortcuts::Portal(_) | DesktopShortcuts::Registered) => Some(false),
+        Some(DesktopShortcuts::Unregistered) | None => None,
+    }
 }
 
 /// Writes Hex's entries for `settings`' shortcuts, starting `hex`, and
@@ -142,7 +157,22 @@ fn accelerator(binding: &HotkeyBinding) -> Option<String> {
 
 /// A key's lowercase name as the X keysym GTK reads.
 fn keysym(name: &str) -> String {
-    let named = match name {
+    if let Some(named) = named_keysym(name) {
+        return named.into();
+    }
+    match name.strip_prefix('f') {
+        Some(number) if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) => {
+            format!("F{number}")
+        }
+        _ => name.into(),
+    }
+}
+
+/// The X keysym of a named (non-character) key, by its lowercase name as
+/// Settings records it. GNOME's accelerators and the shortcuts portal's
+/// triggers share it, so both Linux paths accept the same keys.
+pub(crate) fn named_keysym(name: &str) -> Option<&'static str> {
+    Some(match name {
         "return" | "enter" => "Return",
         "tab" => "Tab",
         "escape" => "Escape",
@@ -159,17 +189,8 @@ fn keysym(name: &str) -> String {
         "right" => "Right",
         "print" => "Print",
         "pause" => "Pause",
-        _ => "",
-    };
-    if !named.is_empty() {
-        return named.into();
-    }
-    match name.strip_prefix('f') {
-        Some(number) if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) => {
-            format!("F{number}")
-        }
-        _ => name.into(),
-    }
+        _ => return None,
+    })
 }
 
 /// `word` as one argument for GNOME, which splits the command as a shell
@@ -215,6 +236,25 @@ mod tests {
             key: None,
         };
         assert_eq!(accelerator(&modifiers_only), None);
+    }
+
+    /// #931: the entries only stand in for a missing portal; with the portal
+    /// bound they'd toggle on every press and repeat.
+    #[test]
+    fn entries_exist_only_without_the_portal() {
+        assert_eq!(wanted(true, Some(DesktopShortcuts::Commands)), Some(true));
+        assert_eq!(
+            wanted(true, Some(DesktopShortcuts::Portal(Vec::new()))),
+            Some(false)
+        );
+        assert_eq!(
+            wanted(true, Some(DesktopShortcuts::Registered)),
+            Some(false)
+        );
+        assert_eq!(wanted(true, Some(DesktopShortcuts::Unregistered)), None);
+        assert_eq!(wanted(true, None), None);
+        assert_eq!(wanted(false, Some(DesktopShortcuts::Commands)), Some(false));
+        assert_eq!(wanted(false, None), Some(false));
     }
 
     #[test]

@@ -3,7 +3,12 @@
 The Linux beta targets x86_64 and ARM64 (aarch64) Linux: i3/X11 and compatible wlroots-based Wayland
 compositors such as Hyprland or Sway. Audio uses ALSA, including PipeWire systems
 with ALSA compatibility. Inference uses Vulkan when available and can fall back
-to the CPU. The window still needs a Vulkan driver, even with CPU
+to the CPU. A GPU that hangs or fails while transcribing is remembered for
+its current driver, and Auto transcribes on the CPU on it until the driver
+changes. An integrated GPU slow enough to miss streaming deadlines is timed
+against the CPU once, and Auto keeps whichever is faster. General › Advanced ›
+**Speech engine** picks Auto, GPU, or CPU
+(`hex settings set transcription_device cpu`). The window still needs a Vulkan driver, even with CPU
 inference; `vulkan-icd-loader` alone is not a driver. Install a driver for your GPU
 or a software Vulkan driver. See the Wayland requirements below.
 
@@ -108,6 +113,9 @@ not a network API or the macOS embedded transcription SDK service. It carries
 `Activate`, `Status`, and Annotate's recording commands. The `hex` control
 commands reach Hex through its local API's `POST /control`; dictation
 commands go straight from there to the listener, never through the window.
+The local API's `/dictations` (the TypeScript SDK's `hex.dictation`) also
+records on the listener while Hex is listening, as on macOS: one capture at a
+time, so a client's dictation and the shortcut never end each other.
 
 For development, run `cargo run --release`. `hex dictate` remains an explicit
 foreground diagnostic listener without the window or HUD and cannot coexist
@@ -125,8 +133,8 @@ mark it urgent), and closing it keeps the window's state for the next open.
 ## Install A Published Build
 
 Published builds exist for x86_64 and ARM64, as a bare executable, a `.deb`,
-and an `.rpm`. They are built on Ubuntu 24.04 and need glibc 2.39 or later:
-Ubuntu 24.04, Debian 13, Fedora 40, current Arch, or newer. ARM64 builds use
+and an `.rpm`. They are built on Debian 12 and need glibc 2.36 or later:
+Debian 12, Ubuntu 23.04, Fedora 37, current Arch, or newer. ARM64 builds use
 Vulkan like x64 and fall back to the CPU.
 
 ### Install script
@@ -166,6 +174,16 @@ version layout, `~/.local/bin/hex`, a desktop launcher, and an XDG autostart
 entry and a `hex.service` user unit. It does not start recording during installation.
 General › **Launch at login** turns that autostart entry on or off
 (`~/.config/autostart/anomaly.hex.desktop`); Hex leaves an entry it did not write alone.
+Where the desktop has the Background portal (GNOME, KDE), Hex asks it at startup
+to run in the background, and Launch at login goes through it: the portal writes
+and removes that same autostart entry (marked `X-XDP-Autostart=anomaly.hex`).
+Elsewhere Hex writes the entry itself. The launcher entry below is written only
+when no installed package or data directory provides one, and left as it is
+while the program it starts is there. Installed by a version manager (mise,
+asdf), both entries start its shim (`~/.local/share/mise/shims/hex`), which
+outlives each version, so an upgrade can't strand them. An entry Hex wrote
+whose program is gone points at this Hex the next time it starts, or goes
+once a package ships its own.
 The launcher entry is `~/.local/share/applications/anomaly.hex.desktop`, named
 for Hex's app id `anomaly.hex`, which its windows also report. Earlier installs
 named both entries `hex.desktop`; Hex and the installer rename Hex's own.
@@ -175,8 +193,10 @@ direct install gets it in `~/.local/share/icons/hicolor` when Hex first starts.
 Remove the application while preserving logs and settings with:
 
 ```sh
-sh install-linux.sh uninstall
+curl -fsSL https://anoma.ly/hex/files/install-linux.sh | sh -s -- uninstall
 ```
+
+or, with a saved copy of the installer, `sh install-linux.sh uninstall`.
 
 ### Upgrading from 2.3.1
 
@@ -273,9 +293,10 @@ unmanaged development Hex instead; without one it forwards to the installed Hex.
 ## Dictate
 
 Hold **Alt-Space**, speak, then release. Double-tap the shortcut to keep
-recording, press the same chord again to finish, or press Escape to cancel the
-active recording (on Wayland, the Cancel dictation shortcut you assign; see below). **Double-tap only** waits for two complete taps before
-recording, and **Toggle** mode starts and stops with single presses.
+recording, and press the same chord again to finish. **Shortcut mode** picks how the shortcut
+triggers: **Hold or double-tap** (the default), **Hold**, **Tap** (starts and
+stops with single presses), or **Double-tap** (waits for two complete taps,
+and needs a shortcut with a key).
 **Ctrl-Alt-V** pastes the last dictation again. Settings shows listener state,
 Start/Stop, and operational errors. Changing a shortcut or a setting the
 listener reads at start temporarily stops listening and restores the previous
@@ -298,7 +319,7 @@ only with accessibility turned on: launch them with
 `~/.config/chrome-flags.conf`), or run a screen reader. Without it, the
 application rule applies. Completed dictations are kept in History.
 
-**Microphone mode** can release the microphone between dictations; it then opens
+**Turn off the mic when not dictating** (General) releases the microphone between dictations; it then opens
 on the shortcut press without pre-roll. **While dictating** can mute the default
 output through `wpctl` (PipeWire) or `pactl` (PulseAudio), or pause playing
 MPRIS media players over D-Bus, once the hold passes 300 ms, so shortcut chords
@@ -315,14 +336,14 @@ hands-free profile (HFP/HSP): mono, call-quality sound in both directions.
 This is how Bluetooth audio works, not something Hex chooses, and how quickly
 the headset switches back depends on the headset and WirePlumber's settings.
 
-If Hex records from the headset's microphone, the two **Microphone mode**
-choices trade off differently:
+If Hex records from the headset's microphone, **Turn off the mic when not
+dictating** trades off differently on and off:
 
-- **Release when idle** opens the microphone only when you press the shortcut,
+- **On** opens the microphone only when you press the shortcut,
   so each dictation switches the headset to hands-free and back. Playback
   drops out or pauses during the switch, and the microphone takes longer to
   open, so the first words can be lost.
-- **Keep ready** keeps the microphone open, so the headset stays in hands-free
+- **Off** (the default) keeps the microphone open, so the headset stays in hands-free
   mode, with call-quality playback, for as long as Hex listens.
 
 The recommended setup is a separate microphone for input (the laptop's
@@ -364,7 +385,10 @@ dictation rules:
   any it refused. A desktop may keep an older binding when you record a new
   shortcut (KDE does); where its portal supports it, **Desktop shortcuts >
   Open** shows the desktop's own dialog for Hex's shortcuts, and Settings
-  follows what you choose there. The portal identifies Hex by its app id
+  follows what you choose there. KDE asks once in a "Global Shortcuts
+  Requested" dialog; Hex waits for your answer, and if you cancel it KDE asks
+  again the next time Hex binds. Hex's shortcuts are listed under **Hex** in
+  System Settings › Keyboard › Shortcuts. The portal identifies Hex by its app id
   `anomaly.hex`, its installed `anomaly.hex.desktop` entry, and by inspecting
   the Hex process. A downloaded executable has no entry, so Hex writes a minimal
   `~/.local/share/applications/anomaly.hex.desktop` that runs it (a managed
@@ -372,8 +396,8 @@ dictation rules:
   `systemctl --user restart xdg-desktop-portal`. Run `hex service` directly:
   a setgid wrapper such as `newgrp`, once used to grant input-device access,
   makes the portal refuse Hex. The desktop delivers the keys to Hex, not to the
-  focused application. On GNOME, new setups dictate with Ctrl+Alt+Space, because GNOME keeps
-  Alt+Space for the window menu; Settings warns when a shortcut uses a key GNOME
+  focused application. On GNOME and KDE Plasma, new setups dictate with Ctrl+Alt+Space,
+  because GNOME keeps Alt+Space for the window menu and Plasma for KRunner; Settings warns when a shortcut uses a key GNOME
   keeps for itself. Keys you change in GNOME Settings › Keyboard work at once,
   and Hex's Settings and `hex status --json` show them. Annotate's shortcut (F9
   by default) sits under the dictation shortcut in General. **Disable** (General or the tray) keeps Hex disabled
@@ -385,19 +409,40 @@ dictation rules:
   nothing happens until you bind one in your config, and the key Settings
   records is not used. Hex can't tell whether your config binds it. Prefer
   keys without modifiers, because Hyprland adds every modifier you still hold
-  to Hex's paste (see [Native Wayland Requirements](#native-wayland-requirements)). For example:
+  to Hex's paste (see [Native Wayland Requirements](#native-wayland-requirements)).
+  Avoid Alt in the bind too: Hyprland takes the key (Space) but lets Alt
+  through to the focused window, so Electron apps with a hidden menu bar
+  (Slack, Discord, VS Code) see Alt pressed and released alone, move focus to
+  their menu, and the paste lands there instead of the message box
+  (#1023). Hex still logs the
+  paste as sent. Ctrl+Space or a key without modifiers works.
+  Hyprland names each shortcut `anomaly.hex:<shortcut>`: `anomaly.hex:dictation`,
+  `anomaly.hex:paste-last`, `anomaly.hex:capture` (Annotate), and
+  `anomaly.hex:raw-dictation` (Dictate without processing). The names stay the
+  same when you record another key in Settings (#1376), so a bind keeps
+  working; `hyprctl globalshortcuts` lists them while Hex runs. For example:
 
 ```lua
-hl.bind("End", hl.dsp.global("hex:dictation"))
-hl.bind("F9", hl.dsp.global("hex:paste-last"))
+hl.bind("End", hl.dsp.global("anomaly.hex:dictation"))
+hl.bind("F10", hl.dsp.global("anomaly.hex:paste-last"))
 ```
 
-  Older Hyprland configs write `bind = , End, global, hex:dictation`.
-  Cancel the same way with `hex:cancel-dictation`, on a key you don't need
-  elsewhere (an Escape bind takes Escape from every application). Hyprland 0.56's Lua binds send no release when the modifier comes
+  Traditional Hyprland configs write
+  `bind = , End, global, anomaly.hex:dictation`. Earlier builds put the
+  recorded key in the name (`anomaly.hex:dictation-ALT-space`), and binds to
+  `hex:dictation` or `hex:paste-last` (names from before Hex's app id was
+  `anomaly.hex`) are older still; both do nothing now, so replace them. Remove any `cancel-dictation`
+  bind: Hex no longer has it. Hyprland 0.56's Lua binds send no release when the modifier comes
   up before the key (Alt before Z); 0.57 fixes this. On 0.56, Toggle is
   unaffected: the next press still finishes. In Hold, recording continues
   until the next press and release, so lift the key first or use Toggle.
+  For hold-to-talk that doesn't depend on the portal's release, bind Hex's
+  own commands instead (below), for example
+  `bind = , End, exec, hex dictation start` with
+  `bindr = , End, exec, hex dictation stop`, or one
+  `bind = , End, exec, hex dictation toggle`. Pasting into a terminal needs
+  **Terminal paste shortcut** (Ctrl+Shift+V) unless the terminal accepts
+  Ctrl+V.
 - **Wayland without the portal** (for example Sway): nothing registers global
   shortcuts. Settings lists these commands; bind them in your desktop's own
   keyboard configuration:
@@ -406,7 +451,6 @@ hl.bind("F9", hl.dsp.global("hex:paste-last"))
 hex dictation start     # bind to a key's press: start recording
 hex dictation stop      # bind to the same key's release: stop and transcribe
 hex dictation toggle    # one key: start, then stop and transcribe
-hex dictation cancel    # discard the recording
 hex paste-last          # paste the last dictation again
 hex dictation toggle --raw  # dictate without processing: paste the words as heard
 ```
@@ -440,29 +484,25 @@ See `docs/cli.md`.
 The commands are safe to bind anywhere, including X11 beside the grabs. They
 talk to the running Hex and never start it: without one, or while Hex is
 not listening, they print a one-line error and exit non-zero. Starting while recording,
-stopping while idle, and cancelling while idle do nothing, so key repeat is
+and stopping while idle do nothing, so key repeat is
 harmless. Start and stop bypass Hold, Toggle, and double-tap: start records,
 stop finishes. A shortcut press also finishes a recording a command started.
 
-Escape cancels only while something records, on X11. On Wayland, Escape stays
-with your applications: a portal shortcut is held for as long as Hex runs, and
-the desktop would keep Escape from every application. With the portal, Hex asks
-for a **Cancel dictation** shortcut with no key; assign one in your desktop's
-shortcut settings (Settings > Desktop shortcuts > Open), and it cancels the
-recording. Hex ignores it while nothing records, so pick a key you don't need
-elsewhere. Without the portal, bind `hex dictation cancel` instead. Either way,
-finishing with the dictation shortcut and deleting the text works too.
+In **Tap** mode, a **Cancel** shortcut (Escape by default) throws away the
+recording: nothing is pasted or saved, and dictations already transcribing
+still finish. On X11, Hex grabs that key only while a recording runs, so it
+works normally everywhere else. On Wayland a desktop shortcut would hold the
+key all the time, so Hex binds nothing; bind `hex dictation cancel` to a key in
+your desktop's keyboard shortcuts instead. `hex dictation cancel` works in any
+mode. In the Hold modes there is no cancel: every dictation finishes and pastes.
+On KDE, Hex removes the Cancel dictation shortcut older builds asked for,
+so its key returns to your applications.
 
 Shortcuts need a non-modifier key. Modifier-only shortcuts, such as Super
 alone, are not supported on Linux.
 
-On X11, Hex first grabs Escape with any modifiers. If another application owns
-a modified Escape shortcut, Hex falls back to plain Escape with Caps/Num Lock
-variants; release other modifiers before cancelling. If plain Escape also
-conflicts, dictation continues and Settings and `hex status` show
-`Escape cancel unavailable: another application holds Escape`. Finish with the
-dictation shortcut instead. Hex logs once per conflict episode and retries on
-the next capture; a successful grab clears the warning.
+On X11, Hex grabs Escape only while Annotate draws, where it stops drawing. If
+another application holds it, drawing goes on and Hex logs it once.
 
 Recording sounds are enabled at 50% volume by default, including when upgrading
 older settings. A start sound is queued immediately when the shortcut starts capture,
@@ -504,7 +544,16 @@ target read the paste, so a target stalled past the delay can paste the
 restored clipboard instead (see [#24](https://github.com/anomalyco/hex/issues/24)).
 On Wayland, restoring needs the compositor's `ext-data-control` protocol
 (KDE Plasma 6, recent wlroots compositors) or `wlr-data-control` (wlroots
-compositors, niri, Hyprland); without either the transcript stays.
+compositors, niri, Hyprland); without either the transcript stays, and
+Settings › Output says so.
+
+GNOME offers neither. There you can opt in to Labs › Restore clipboard on
+GNOME (`hex labs on gnome-clipboard-restore`, off by default): Hex then reads
+and restores the clipboard through XWayland, which GNOME keeps in sync with
+Wayland apps both ways. It works only while XWayland is already running (an X11
+app is open and `DISPLAY` is set); Hex never starts XWayland, and otherwise the
+transcript stays and the log says why. The same rules apply: nothing newer is
+ever overwritten.
 
 On GNOME, Hex pastes through the RemoteDesktop portal, and GNOME shows its
 remote-control indicator while that session is open. Hex closes it 15 seconds
@@ -531,11 +580,18 @@ approved, so you're asked only once.
     Ctrl+V to paste" and the transcript stays on the clipboard.
 
   There is no silent XWayland, direct-typing, uinput, or privileged
-  input-injection fallback. Transcript text travels on stdin, not command-line
+  input-injection fallback; the only XWayland uses besides the HUD are the
+  opt-in clipboard restore above and the opt-in floating meeting capsules
+  below. Transcript text travels on stdin, not command-line
   arguments.
 - The overlay uses layer-shell. Without it (GNOME), only the HUD opens on
   XWayland as an override-redirect, click-through window that never takes
-  focus. With neither, Settings reports that the HUD is unavailable rather than
+  focus. The meeting capsules take clicks, so there a call offer opens the
+  Meetings pane instead, unless you opt in to Labs › Floating meeting capsules
+  on GNOME (`hex labs on gnome-meeting-capsules`, off by default): the offer
+  and recording capsule then float over the call on XWayland, taking clicks
+  on their buttons but never keyboard focus. It works only while XWayland is
+  already running; Hex never starts it. With neither, Settings reports that the HUD is unavailable rather than
   presenting a normal focus-taking window as an overlay.
 - Shortcuts come from the GlobalShortcuts portal or from your own keybindings
   for the `hex` commands ([Shortcuts](#shortcuts)). Hex reads no input devices
@@ -553,7 +609,10 @@ approved, so you're asked only once.
   250 ms. A modifier still held past that changes the paste, so bind keys
   without modifiers (End, F-keys) or let go of the modifiers before the
   transcript arrives. Hex logs a dictation as pasted once it sent the paste
-  shortcut; it can't confirm the application accepted it.
+  shortcut; it can't confirm the application accepted it. A compositor that
+  passes a shortcut's Alt through to the app (Hyprland) can also open an
+  Electron app's menu when Alt comes up, which takes the paste (see
+  [Shortcuts](#shortcuts)).
 
 ## Updates And Validation
 

@@ -431,6 +431,9 @@ fn connect() -> std::result::Result<UnixStream, RequestError> {
 /// `hex capture`'s recording commands, handed to the running listener.
 pub(crate) fn capture(action: crate::control::ScrawlCaptureAction) -> crate::control::ControlReply {
     use crate::control::{ControlReply, ScrawlCaptureAction};
+    if action == ScrawlCaptureAction::Replay {
+        return ControlReply::error("unsupported", "Annotate replay requires macOS 27 or later");
+    }
     if action == ScrawlCaptureAction::Status {
         return match exchange(Request::CaptureStatus, SEND_WAIT) {
             Ok(reply) => reply
@@ -520,6 +523,22 @@ pub(crate) fn capture_status() -> crate::control::ControlReply {
     receiver
         .recv_timeout(SEND_WAIT / 2)
         .unwrap_or_else(|_| ControlReply::error("unavailable", "the listener didn't answer"))
+}
+
+/// Whether a Hex instance answers on the single-instance socket, whatever
+/// its protocol. A current Hex serves the socket only after its local API
+/// is up, so one that answers here while the local API doesn't is an older
+/// build an update left running (#915).
+pub(crate) fn instance_answers() -> bool {
+    let Ok(mut stream) = connect() else {
+        return false;
+    };
+    let message = Message {
+        version: VERSION,
+        request: Request::Status,
+    };
+    write_frame(&mut stream, &message).is_ok()
+        && read_frame::<serde_json::Value>(&mut stream).is_ok()
 }
 
 /// Sends one request to the running instance. Never starts one.
@@ -804,10 +823,17 @@ pub(crate) fn supervised() -> bool {
 
 /// A custom data root uses only its supplied desktop environment, not the
 /// user's manager or discovered display sockets. `HEX_SYSTEMD_UNIT` opts an
-/// isolated test into a managed unit explicitly.
+/// isolated test into a managed unit explicitly. A root that names the
+/// default folder (Home Manager's unit sets it, #1140) is not custom.
 fn custom_root() -> bool {
-    std::env::var_os("HEX_APPLICATION_SUPPORT_DIR").is_some()
-        && std::env::var_os("HEX_SYSTEMD_UNIT").is_none()
+    std::env::var_os("HEX_SYSTEMD_UNIT").is_none()
+        && std::env::var_os("HEX_APPLICATION_SUPPORT_DIR")
+            .is_some_and(|root| !default_root(Path::new(&root), dirs::data_dir().as_deref()))
+}
+
+/// Whether `root` is the default data root under the user's data directory.
+fn default_root(root: &Path, data: Option<&Path>) -> bool {
+    data.is_some_and(|data| root == data.join("hex"))
 }
 
 fn systemctl(arguments: &[&str]) -> Result<()> {
@@ -1123,6 +1149,21 @@ mod tests {
         assert!(!body.contains("XDG_DATA_DIRS"));
         assert!(!body.contains("LC_ALL"));
         assert!(environment_line("DISPLAY", ":0\nEVIL=yes").is_err());
+    }
+
+    #[test]
+    fn the_default_folder_named_explicitly_is_not_a_custom_root() {
+        let data = Path::new("/home/kit/.local/share");
+        assert!(default_root(
+            Path::new("/home/kit/.local/share/hex"),
+            Some(data)
+        ));
+        assert!(default_root(
+            Path::new("/home/kit/.local/share/hex/"),
+            Some(data)
+        ));
+        assert!(!default_root(Path::new("/tmp/hex-test"), Some(data)));
+        assert!(!default_root(Path::new("/home/kit/.local/share/hex"), None));
     }
 
     #[test]

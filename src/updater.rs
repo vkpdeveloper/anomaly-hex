@@ -14,6 +14,8 @@
 //! manifest's SHA-256, and (macOS, Windows) the code signature are the
 //! integrity checks.
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub mod legacy;
 mod notes;
 #[cfg_attr(target_os = "linux", path = "updater/linux.rs")]
 #[cfg_attr(target_os = "macos", path = "updater/macos.rs")]
@@ -194,6 +196,9 @@ struct Shared {
     staged: Mutex<Option<StagedUpdate>>,
     /// What the staged dev build changed, when the dev notes said.
     notes: Mutex<Option<UpdateNotes>>,
+    /// Why this install can't update itself (Windows), shown with Download
+    /// update.
+    blocked: Mutex<Option<&'static str>>,
     restart: Mutex<Restart>,
 }
 
@@ -208,6 +213,7 @@ impl Shared {
             confirmed: Mutex::new(None),
             staged: Mutex::new(None),
             notes: Mutex::new(None),
+            blocked: Mutex::new(None),
             restart: Mutex::new(Restart::Idle),
         }
     }
@@ -247,7 +253,7 @@ pub struct Updater {
 impl Updater {
     pub fn start() -> Self {
         let method = platform::method();
-        let disabled = if option_env!("HEX_TEST_BUILD") == Some("1") {
+        let disabled = if option_env!("HEX_TEST_BUILD") == Some("1") || updates_off_by_env() {
             Some(DesktopUpdateStatus::Unavailable)
         } else if crate::app_paths::is_local_build() {
             Some(DesktopUpdateStatus::SourceBuild)
@@ -266,6 +272,9 @@ impl Updater {
             },
             matches!(method, Method::Package(_)),
         ));
+        if method == Method::Unknown {
+            *lock(&shared.blocked) = platform::blocked();
+        }
         if checks {
             let worker = shared.clone();
             if let Err(error) = std::thread::Builder::new()
@@ -331,6 +340,15 @@ impl Updater {
     pub fn stop(&self) {
         lock(&self.shared.wake).stop = true;
         self.shared.signal.notify_all();
+    }
+
+    /// Why this install can't update itself, while Download update shows:
+    /// an English sentence the window translates.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn blocked(&self) -> Option<&'static str> {
+        matches!(*lock(&self.shared.state), State::Download { .. })
+            .then(|| *lock(&self.shared.blocked))
+            .flatten()
     }
 
     /// What the staged dev build changed, while Restart to update shows.
@@ -459,6 +477,13 @@ impl Updater {
             *state = State::Applied;
         }
     }
+}
+
+/// `HEX_DISABLE_UPDATES=1` turns this launch's updater off, as a test build
+/// has it: no checks, no network, nothing offered. For copies of Hex that
+/// must stay quiet, such as benchmarks (docs/perf.md).
+fn updates_off_by_env() -> bool {
+    std::env::var_os("HEX_DISABLE_UPDATES").is_some_and(|value| value == "1")
 }
 
 /// Whether an administrator turned updates off (`DisableUpdates`), read
@@ -635,6 +660,14 @@ fn check(
         }
         Decision::None { .. } => {
             transport::prune(&updates, None);
+            #[cfg(target_os = "windows")]
+            if matches!(method, Method::Direct { .. }) && platform::console_missing() {
+                let installed = download_console(&manifest, &manifest_url, &user_agent, &updates)
+                    .and_then(|file| file.map_or(Ok(()), |file| platform::install_console(&file)));
+                if let Err(error) = installed {
+                    tracing::warn!(error = %format!("{error:#}"), "could not add hex.com to this install");
+                }
+            }
             Ok(State::Current)
         }
         Decision::Notify {
@@ -684,8 +717,12 @@ fn check(
             #[cfg(target_os = "linux")]
             verify_linux_signature(&manifest, &manifest_url, &user_agent, &target, &updates)?;
             let file = transport::download(&url, &user_agent, &target, &updates)?;
-            let staged = platform::stage(&file, &version)
-                .wrap_err_with(|| format!("could not stage Hex {version}"))?;
+            #[cfg(target_os = "windows")]
+            let staged = download_console(&manifest, &manifest_url, &user_agent, &updates)
+                .and_then(|console| platform::stage(&file, console.as_deref(), &version));
+            #[cfg(not(target_os = "windows"))]
+            let staged = platform::stage(&file, &version);
+            let staged = staged.wrap_err_with(|| format!("could not stage Hex {version}"))?;
             *lock(&shared.staged) = Some(StagedUpdate {
                 staged,
                 sha256: target.sha256,
@@ -736,6 +773,26 @@ fn verify_linux_signature(
         .ok_or_else(|| eyre!("the signature URL {} is not usable", signature.url))?;
     let file = transport::download(&url, user_agent, signature, updates)?;
     platform::verify_signature(&target.sha256, &std::fs::read(file)?)
+}
+
+/// The release's `hex.com` (`<target>-cli`), checked against the manifest's
+/// size and SHA-256; none when the release has no console entry point.
+#[cfg(target_os = "windows")]
+fn download_console(
+    manifest: &str,
+    manifest_url: &str,
+    user_agent: &str,
+    updates: &Path,
+) -> Result<Option<PathBuf>> {
+    let Some(manifest) = protocol::parse_manifest(manifest) else {
+        return Ok(None);
+    };
+    let Some(target) = manifest.release.target(platform::CONSOLE_TARGET) else {
+        return Ok(None);
+    };
+    let url = protocol::resolve_url(manifest_url, &target.url)
+        .ok_or_else(|| eyre!("the hex.com URL {} is not usable", target.url))?;
+    transport::download(&url, user_agent, target, updates).map(Some)
 }
 
 /// Whether `decision` replaces the staged update: only a different release
@@ -816,8 +873,10 @@ fn receipt_channel(root: &Path) -> Option<String> {
         method: String,
         root: PathBuf,
     }
-    let receipt: Receipt =
-        serde_json::from_slice(&std::fs::read(root.join("install.json")).ok()?).ok()?;
+    let bytes = std::fs::read(root.join("install.json")).ok()?;
+    // Tolerate a byte order mark: some UTF-8 writers add one.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let receipt: Receipt = serde_json::from_slice(bytes).ok()?;
     let canonical = |path: &Path| path.canonicalize().ok();
     (receipt.app == APP
         && receipt.artifact == ARTIFACT

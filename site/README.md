@@ -42,8 +42,11 @@ renders it, with a Canvas 2D fallback (`?canvas2d` forces it).
   manifest are fetched on start, the opening clips first. The sound toggle in the
   header remembers its choice in `localStorage`.
 - It pauses when the tab is hidden or the hero is off screen, runs the idle head at
-  30 fps, caps the pixel ratio (1.5 on phones), and thins the messages on small
-  screens. Reduced motion keeps the still until the key is pressed, then runs only
+  30 fps on a timer (no frame callback between its frames), caps the pixel ratio
+  (1.5 on phones), and thins the messages on small screens. The option key's glow
+  pulses at 30 fps from `src/glow.ts`, set by the key until the engine runs and then
+  by the engine in the head's frame: as a CSS animation it restyled the page on every
+  vsync. Reduced motion keeps the still until the key is pressed, then runs only
   the calm stage with no shake or flashes.
 - Dax, Jay and Frank (teammates) appear with their real X avatars; everyone else is
   invented with a generated portrait (`src/shout/assets/people.webp`). Brand glyphs
@@ -57,6 +60,30 @@ Regenerate the idle still after changing the head:
 VITE_SHOUT_CAPTURE=1 bunx vite --port 5531
 HEX_SITE_URL=http://127.0.0.1:5531 bun run generate:poster
 ```
+
+## Performance
+
+`perf/hex.bench.ts` is a [strobe](https://github.com/Hona/strobe) bench: load to
+the live head, the idle head for 8 s, and the first 20 s of the show after a click
+on the key. `strobe.json` builds the site and serves the Build Output under `/hex/`
+with `perf/serve.ts`. strobe builds and serves both variants with this checkout's
+`strobe.json` and `perf/`, so any commit works as the base. From the repository root:
+
+```sh
+strobe bench site/perf/hex.bench.ts --base origin/dev --head .
+strobe bench site/perf/hex.bench.ts --head . --check            # each case once, pass or fail
+strobe report experiment <exp_…> --format pr --update-pr <n>     # the results block in PR n
+```
+
+In a PR, write your own text (what strobe showed, what changed) and let
+`--update-pr` place strobe's generated results block: it replaces only its own
+block after a rerun. Don't edit inside it. The bench's `expect` refuses a block
+whose page isn't the landing page (`WrongScreen`).
+
+The show draws at its own frame rate, not the display's: `canvas.frames` and
+`canvas.interval.p95` count the show's WebGPU frames, where presented frames count
+the display's refreshes. `gpu.compile` is the GPU process's shader and pipeline work
+during a load.
 
 ## Social image
 

@@ -8,6 +8,7 @@ on your PATH.
 hex history --since 3d --app 'OpenCode Beta' --grep problems --json
 hex history --since 2026-10-20 --until 2026-10-21 --raw --oldest-first --limit 500
 hex history --since 7d --search 'problems board' --json
+hex history stats --since 7d --json   # Labs › Dictation stats
 hex meetings list --since 7d --json
 hex meetings show latest --md
 hex meetings show 1790000500000-1002 --json
@@ -47,12 +48,30 @@ may have no app or mode; Hex does not infer missing metadata.
   silently widening the retention window. Off preserves existing entries and
   prevents new ones, matching the History pane.
 
+## History stats sum up what is retained
+
+`history stats` (Labs › Dictation stats, `hex labs on history-stats`, off by
+default) prints a summary of the retained entries: dictations, words (the
+inserted text split on whitespace), words per minute (words over recorded
+audio minutes, counting only entries with audio; unknown without any), how
+many entries Output changed (inserted text differs from the transcript, ignoring
+surrounding whitespace), the daily streak (consecutive local days with an entry,
+ending today or, with none yet today, yesterday), active days, and the five
+most used applications. With the toggle off it fails, naming the command that
+turns it on, before History is read. `--since` and `--until` narrow it with the
+same time syntax; the retention window always applies. It counts only what
+History still holds: nothing is kept after retention removes an entry, and
+which replacements fired is not tracked.
+
 ## Meetings use the same queries as MCP
 
 `meetings list` defaults to 20 entries (maximum 200). It accepts `--since` and
 `--until`, using the same time syntax as history. Meetings qualify when their
 duration overlaps the range; they sort newest first. Active recordings are
-included and labeled. Unreadable folders are reported, not repaired.
+included and labeled. Unreadable folders are reported, not repaired. To
+catch up on meetings that finished while a companion app was offline, list
+from a saved cursor and deduplicate by id
+([streams.md](streams.md#catching-up-after-being-offline)).
 
 `meetings show` accepts an exact ID, an unambiguous prefix of at least six
 characters, or `latest` (the newest readable meeting, including one in progress).
@@ -162,6 +181,19 @@ type History = {
   }[]
 }
 
+type HistoryStats = { // hex history stats --json
+  version: 1
+  retention: "off" | "day" | "week" | "month" | "forever"
+  dictations: number
+  words: number
+  audio_ms: number
+  words_per_minute: number | null // null without recorded audio
+  changed_by_output: number
+  streak_days: number
+  active_days: number
+  top_apps: { application: string; dictations: number }[] // at most 5, most first
+}
+
 type Meeting = {
   id: string
   title: string
@@ -217,8 +249,9 @@ History reads one file descriptor, so an atomic replacement yields a complete
 old or new snapshot. Malformed history produces an error without recovery writes.
 
 Data comes from `~/Library/Application Support/hex`. `HEX_APPLICATION_SUPPORT_DIR` overrides the
-root for fixtures or a mirrored copy. These CLI commands currently target macOS;
-Linux and Windows retain their existing command surfaces.
+root for fixtures or a mirrored copy (`%APPDATA%\hex` on Windows,
+`~/.local/share/hex` or `$XDG_DATA_HOME/hex` on Linux). These commands are
+available on every OS.
 
 ## Retention stays bounded in one store
 

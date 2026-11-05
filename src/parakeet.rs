@@ -106,6 +106,8 @@ struct InferenceJob {
     prepare_ms: u128,
     target: TranscriptionTarget,
     context: ContextSnapshot,
+    /// The clip, kept for History while Labs › Keep recordings is on.
+    recording: Option<crate::history::Recording>,
 }
 
 struct ProcessorJob {
@@ -115,6 +117,7 @@ struct ProcessorJob {
     text: String,
     context: ContextSnapshot,
     timings: JobTimings,
+    recording: Option<crate::history::Recording>,
 }
 
 /// Pipeline timings carried from inference through output for the final log.
@@ -134,6 +137,7 @@ struct CompletedTranscript {
     application: Option<String>,
     timings: JobTimings,
     processing: Option<ProcessingObservation>,
+    recording: Option<crate::history::Recording>,
 }
 
 enum OutputJob {
@@ -167,35 +171,12 @@ impl OutputJob {
 struct JobControl {
     cancelled: AtomicBool,
     output_started: Mutex<bool>,
-    /// A programmatic dictation's job: its owner app cancels it through the
-    /// API, so Escape never does.
-    owner_cancels: bool,
     /// A printing stop's reply; dropping the job unanswered tells it the
     /// dictation was cancelled or failed.
     print: Mutex<Option<crate::control::PrintReply>>,
 }
 
 impl JobControl {
-    fn cancel(&self) -> bool {
-        let output_started = self
-            .output_started
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if *output_started {
-            return false;
-        }
-        !self.cancelled.swap(true, Ordering::AcqRel)
-    }
-
-    /// Whether [`JobControl::cancel`] would cancel it now.
-    fn cancellable(&self) -> bool {
-        let output_started = self
-            .output_started
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        !*output_started && !self.is_cancelled()
-    }
-
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
@@ -270,20 +251,6 @@ impl WorkerState {
             return Err("dictation queue is full");
         }
         Ok(self.next_sequence)
-    }
-
-    fn cancel_latest(&self) -> Option<DictationJobId> {
-        self.jobs
-            .iter()
-            .rev()
-            .filter(|(_, control)| !control.owner_cancels)
-            .find_map(|(&job_id, control)| control.cancel().then_some(job_id))
-    }
-
-    fn has_escape_cancellable_job(&self) -> bool {
-        self.jobs
-            .values()
-            .any(|control| !control.owner_cancels && control.cancellable())
     }
 }
 
@@ -410,7 +377,6 @@ impl DictationWorker {
             return Err("dictation worker is unavailable");
         };
         let control = Arc::new(JobControl {
-            owner_cancels: matches!(target, TranscriptionTarget::Service),
             print: Mutex::new(print),
             ..JobControl::default()
         });
@@ -421,6 +387,10 @@ impl DictationWorker {
         let _capture = clip.take_capture_marker();
         let samples = clip.into_transcription_samples();
         crate::dictation::diagnostics::persist(&samples);
+        let recording = match target {
+            TranscriptionTarget::Service => None,
+            _ => crate::history::Recording::keep(&samples),
+        };
         let prepare_ms = submitted_at.elapsed().as_millis();
         let offline = {
             let control = control.clone();
@@ -449,6 +419,7 @@ impl DictationWorker {
             prepare_ms,
             target,
             context,
+            recording,
         })
         .map(|()| {
             state.next_sequence += 1;
@@ -527,26 +498,6 @@ impl DictationWorker {
             .unwrap_or_else(|error| error.into_inner())
             .jobs
             .len()
-    }
-
-    /// Whether Escape has a queued job to cancel; programmatic dictations'
-    /// jobs don't count.
-    pub fn has_escape_cancellable_job(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .has_escape_cancellable_job()
-    }
-
-    pub fn cancel_latest(&self) -> Option<DictationJobId> {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let job_id = state.cancel_latest()?;
-        drop(state);
-        let _ = self
-            .output_jobs
-            .as_ref()?
-            .try_send(OutputJob::Cancelled { job_id });
-        Some(job_id)
     }
 
     fn shutdown(&mut self) {
@@ -655,6 +606,7 @@ fn run_processor_worker(
                     application: job.context.application,
                     timings: job.timings,
                     processing: processed.observation,
+                    recording: job.recording,
                 })),
             })
             .is_err()
@@ -850,6 +802,7 @@ fn run_inference_worker(
                         text,
                         context: job.context,
                         timings,
+                        recording: job.recording,
                     })
                     .is_err()
                 {
@@ -858,12 +811,14 @@ fn run_inference_worker(
             }
             result => {
                 let application = job.context.application;
+                let recording = job.recording;
                 let result = result.map(|text| CompletedTranscript {
                     raw: text.clone(),
                     text,
                     application,
                     timings,
                     processing: None,
+                    recording,
                 });
                 if output
                     .send(OutputJob::Completed {
@@ -1006,7 +961,7 @@ fn finish_output(
                 .as_ref()
                 .ok()
                 .and_then(|result| result.processing.clone());
-            let result = result.and_then(|completed| {
+            let result = result.and_then(|mut completed| {
                 if control.is_cancelled() {
                     return Err("dictation was cancelled".into());
                 }
@@ -1039,7 +994,7 @@ fn finish_output(
                         *last_transcript = Some(completed.text.clone());
                     }
                     if let Some(history) = history {
-                        record_history(history, target, &completed);
+                        record_history(history, target, &mut completed);
                     }
                 }
                 tracing::info!(
@@ -1101,7 +1056,11 @@ fn finish_output(
 
 /// Record one successfully pasted result. History failures must never fail
 /// the paste that already happened.
-fn record_history(history: &History, target: TranscriptionTarget, completed: &CompletedTranscript) {
+fn record_history(
+    history: &History,
+    target: TranscriptionTarget,
+    completed: &mut CompletedTranscript,
+) {
     let kind = match target {
         TranscriptionTarget::Paste => HistoryKind::Dictation,
         TranscriptionTarget::RawPaste => HistoryKind::Raw,
@@ -1117,6 +1076,8 @@ fn record_history(history: &History, target: TranscriptionTarget, completed: &Co
         audio_ms: completed.timings.audio_ms,
         inference_ms: completed.timings.inference_ms as u64,
         total_ms: completed.timings.total_started.elapsed().as_millis() as u64,
+        recording: completed.recording.take(),
+        model: crate::history::dictation_model(),
     };
     if let Err(error) = history.record(draft) {
         tracing::warn!(%error, "could not record dictation history");
@@ -1356,6 +1317,7 @@ mod tests {
                 prepare_ms: 0,
                 inference_ms: 0,
             },
+            recording: None,
         }
     }
 
@@ -1548,145 +1510,6 @@ mod tests {
         assert_eq!(ready.len(), 2);
         assert!(matches!(ready[1], OutputJob::Cancelled { .. }));
         assert!(outputs.push(completed(1)).is_empty());
-    }
-
-    #[test]
-    fn a_job_can_only_be_cancelled_once() {
-        let control = JobControl::default();
-        assert!(control.cancel());
-        assert!(!control.cancel());
-        assert!(control.is_cancelled());
-    }
-
-    #[test]
-    fn output_commit_and_cancellation_are_mutually_exclusive() {
-        let committed = JobControl::default();
-        assert!(committed.begin_output());
-        assert!(!committed.cancel());
-        assert!(!committed.is_cancelled());
-
-        let cancelled = JobControl::default();
-        assert!(cancelled.cancel());
-        assert!(!cancelled.begin_output());
-    }
-
-    #[test]
-    fn output_stays_cancellable_through_preparation_but_not_after_mutation() {
-        use std::cell::RefCell;
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-        use crate::history::{HistoryRetention, HistoryStore};
-        use crate::paste::commit_prepared_paste;
-
-        let completed = |text: &str| CompletedTranscript {
-            text: text.into(),
-            raw: text.into(),
-            application: None,
-            timings: JobTimings {
-                total_started: Instant::now(),
-                queue_ms: 0,
-                audio_ms: 1_000,
-                prepare_ms: 0,
-                inference_ms: 0,
-            },
-            processing: None,
-        };
-        for cancel_during_preparation in [true, false] {
-            let path = std::env::temp_dir().join(format!(
-                "hex-output-cancellation-{}-{}.json",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            let history = History::new(HistoryStore::open(
-                path.clone(),
-                HistoryRetention::Forever,
-                crate::history::now_ms(),
-            ));
-            record_history(&history, TranscriptionTarget::Paste, &completed("previous"));
-            let saved_history = std::fs::read(&path).unwrap();
-            let mut last_transcript = Some("previous".into());
-            let clipboard = RefCell::new("original clipboard".to_string());
-            let pasted = RefCell::new(Vec::new());
-            let control = Arc::new(JobControl::default());
-            let (blocked, blocking) = mpsc::channel();
-            let (resume, resumed) = mpsc::channel();
-            let cancelling = control.clone();
-            let cancellation = thread::spawn(move || {
-                blocking.recv_timeout(Duration::from_secs(5)).unwrap();
-                let accepted = cancelling.cancel();
-                resume.send(()).unwrap();
-                accepted
-            });
-            let pause = || {
-                blocked.send(()).unwrap();
-                resumed.recv_timeout(Duration::from_secs(5)).unwrap();
-            };
-            let event = finish_output(
-                OutputJob::Completed {
-                    job_id: DictationJobId(0),
-                    control: control.clone(),
-                    target: TranscriptionTarget::Paste,
-                    result: Box::new(Ok(completed("new output"))),
-                },
-                &mut |text, mode, commit| {
-                    assert!(matches!(mode, PasteMode::Continue));
-                    commit_prepared_paste(
-                        || {
-                            // Model a blocked restore lock or lazy clipboard provider.
-                            if cancel_during_preparation {
-                                pause();
-                            }
-                            Ok(clipboard.borrow().clone())
-                        },
-                        commit,
-                        |_previous| {
-                            *clipboard.borrow_mut() = text.into();
-                            if !cancel_during_preparation {
-                                pause();
-                            }
-                            pasted.borrow_mut().push(text.to_string());
-                            Ok(())
-                        },
-                    )?;
-                    Ok(())
-                },
-                &mut last_transcript,
-                Some(&history),
-            );
-
-            assert_eq!(cancellation.join().unwrap(), cancel_during_preparation);
-            assert_eq!(control.is_cancelled(), cancel_during_preparation);
-            if cancel_during_preparation {
-                assert!(matches!(
-                    event,
-                    WorkerEvent::Cancelled {
-                        job_id: DictationJobId(0)
-                    }
-                ));
-                assert_eq!(*clipboard.borrow(), "original clipboard");
-                assert!(pasted.borrow().is_empty());
-                assert_eq!(last_transcript.as_deref(), Some("previous"));
-                assert_eq!(history.search("").len(), 1);
-                assert_eq!(std::fs::read(&path).unwrap(), saved_history);
-            } else {
-                assert!(matches!(
-                    event,
-                    WorkerEvent::Completed { result: Ok(ref text), .. } if text == "new output"
-                ));
-                assert_eq!(*clipboard.borrow(), "new output");
-                assert_eq!(*pasted.borrow(), ["new output"]);
-                assert_eq!(last_transcript.as_deref(), Some("new output"));
-                let entries = history.search("");
-                assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].final_text, "new output");
-                assert_eq!(entries[0].kind, HistoryKind::Dictation);
-            }
-            drop(history);
-            std::fs::remove_file(path).unwrap();
-        }
     }
 
     /// Replays recordings into the production engine as capture would (160 ms
@@ -1948,64 +1771,6 @@ mod tests {
         // fails instead of keeping it alive.
         drop(engine);
         assert!(transcribe_with_words(&weak, &Default::default(), vec![0.1; 16]).is_err());
-    }
-
-    #[test]
-    fn repeated_cancellation_walks_back_through_pending_jobs() {
-        let jobs = [0, 1, 2]
-            .into_iter()
-            .map(|sequence| (DictationJobId(sequence), Arc::new(JobControl::default())))
-            .collect();
-        let state = WorkerState {
-            next_sequence: 3,
-            jobs,
-            pending_pastes: 0,
-        };
-
-        assert_eq!(state.cancel_latest(), Some(DictationJobId(2)));
-        assert_eq!(state.cancel_latest(), Some(DictationJobId(1)));
-        assert_eq!(state.cancel_latest(), Some(DictationJobId(0)));
-        assert_eq!(state.cancel_latest(), None);
-    }
-
-    #[test]
-    fn escape_skips_programmatic_dictation_jobs() {
-        let owned = || {
-            Arc::new(JobControl {
-                owner_cancels: true,
-                ..JobControl::default()
-            })
-        };
-        let state = WorkerState {
-            next_sequence: 2,
-            jobs: BTreeMap::from([
-                (DictationJobId(0), Arc::new(JobControl::default())),
-                (DictationJobId(1), owned()),
-            ]),
-            pending_pastes: 0,
-        };
-        assert!(state.has_escape_cancellable_job());
-        assert_eq!(state.cancel_latest(), Some(DictationJobId(0)));
-        assert_eq!(state.cancel_latest(), None);
-        assert!(!state.has_escape_cancellable_job());
-        assert!(!state.jobs[&DictationJobId(1)].is_cancelled());
-
-        // A job whose output has started can no longer be cancelled.
-        let pasting = WorkerState {
-            next_sequence: 1,
-            jobs: BTreeMap::from([(DictationJobId(0), Arc::new(JobControl::default()))]),
-            pending_pastes: 0,
-        };
-        assert!(pasting.jobs[&DictationJobId(0)].begin_output());
-        assert!(!pasting.has_escape_cancellable_job());
-        assert_eq!(pasting.cancel_latest(), None);
-
-        let only_owned = WorkerState {
-            next_sequence: 1,
-            jobs: BTreeMap::from([(DictationJobId(0), owned())]),
-            pending_pastes: 0,
-        };
-        assert!(!only_owned.has_escape_cancellable_job());
     }
 
     #[test]

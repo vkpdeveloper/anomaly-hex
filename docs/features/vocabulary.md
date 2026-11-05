@@ -14,6 +14,11 @@ General › Vocabulary   // vocabulary.settings; after Language
 │   Underdog Bark, Whisper, and Qwen3-ASR (QwenCleo too) show none
 ├── Parakeet-based model with Labs › Vocabulary biasing off -> the sheet says
 │   transcription uses the terms only with it on
+├── Selected model reads fewer terms than the list holds -> muted line under
+│   the sheet's description: "This model reads the first 38 of 52 terms"
+│   (dictation::vocabulary::terms_read: Parakeet's 64-term cap or the
+│   prompt's character budget, the same count transcription takes; scene
+│   vocabulary-budget)
 ├── Sheet description -> what the list does, then "Terms with spaces match
 │   only when said in full" (a term is matched whole; "Dax Rad" doesn't help
 │   "Dax" said alone, so a name also said alone gets its own row)
@@ -32,7 +37,7 @@ General › Vocabulary   // vocabulary.settings; after Language
     `hex settings set vocabulary_boost off|light|normal|strong`
     (settings.json `vocabulary_boost`)  // vocabulary.boost
 
-Transcription (Parakeet: RNN-T and TDT, Underdog Bark too)  // vocabulary.transcription; transcription::gguf_session::with_vocabulary
+Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too)  // vocabulary.transcription; transcription::gguf_session::with_vocabulary
 ├── Only with Labs › Vocabulary biasing on (`labs.vocabulary_biasing`, off by
 │   default; labs.md) -> off: no run takes the list; the sheet says so, and
 │   rewriting and search still use it
@@ -53,15 +58,18 @@ Transcription (Parakeet: RNN-T and TDT, Underdog Bark too)  // vocabulary.transc
 ├── Left alone: case-only differences, inflections ("Cappuccinos"), and addresses
 │   and paths ("opencode.ai"); rescoring also skips terms under 5 letters
 │   without a spelling, which the RNN-T decoder can still write ("Kip" -> Kit)
-└── SenseVoice, Cohere, Apple Speech -> no vocabulary in transcription
+└── SenseVoice, Cohere, GigaAM, Granite, Apple Speech -> no vocabulary in transcription
 
-Context prompt (Whisper incl. ivrit.ai, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
+Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
 ├── Always on (not Labs): replaced the per-model Recognition hints box (#129)
 ├── Every whole-clip run reads the list at its start: dictation, meetings,
 │   captures, the local API; live streams run without it
-├── "Term, Term, …": the first terms in list order, at most 64, as many as
-│   fit 500 characters (Whisper: its prompt slot holds 223 tokens and trims
-│   an overlong one from the front) or 1,000 (Qwen3-ASR's system message)
+├── "Term, Term, …": the first terms in list order, as many as fit 500
+│   characters (Whisper: its prompt slot holds 223 tokens and trims an
+│   overlong one from the front) or 1,000 (Qwen3-ASR's system message); the
+│   64-term cap is Parakeet's bias array only (#1246)
+├── The sheet says how many terms the selected model reads when that is
+│   fewer than the list; the 64-term vs full-budget hit rate is unmeasured
 ├── Whisper: transcribe.cpp's generic context prompt in the <|startofprev|>
 │   slot; Qwen3-ASR: the system message
 ├── Output that only repeats the prompt (two or more terms) is dropped, as
@@ -83,6 +91,18 @@ hex vocabulary                           // vocabulary.cli
 ├── remove <term> -> Any case
 └── Running Hex saves and reloads settings; an open window adopts the change
 
+A mode's own vocabulary                  // vocabulary.modes; DictationMode::vocabulary
+├── settings.json `dictation_processing.modes[].vocabulary`, same entries; no
+│   window editor yet (Output lists it as the mode's first step; Edit with
+│   agent's prompt explains it)
+├── Its terms come first, then the shared list's, each term once (any case),
+│   so the 64-term cap keeps them
+├── OpenCode rewriting -> every OS, the mode chosen for the dictation
+└── Transcription -> macOS dictation only: the mode of the app and page last
+    seen by the context monitor (≤ 0.5 s old) when the stream or whole-clip run
+    starts; meetings, captures, the local API, Linux, and Windows hear with
+    the shared list
+
 OpenCode rewriting (Modes)               // vocabulary.prompt
 └── Prompt gains "Vocabulary (spell these exactly when the speaker means them):
     term (may be transcribed as a, b); …" before the foreground application
@@ -90,6 +110,12 @@ OpenCode rewriting (Modes)               // vocabulary.prompt
 Live meeting chapters (experiment live-chapters)  // vocabulary.chapters
 └── Chapter passes and the boundary pass start with "Names and terms that may
     appear: a, b, …" (first 30 terms, no spellings), read on each call
+
+Meeting notes (Labs › Vocabulary in meeting notes)  // vocabulary.notes
+├── Off (default) -> notes prompts are unchanged
+└── On -> the final title and summary prompt (automatic notes and Regenerate
+    summary) starts with the same line, read at each generation, ahead of the
+    calendar event; it shares the transcript's excerpt budget (#1154)
 
 Search                                   // vocabulary.search
 ├── hex meetings search, MCP search_transcripts, hex history --search
@@ -100,8 +126,10 @@ Search                                   // vocabulary.search
 └── Aliases never count as exact; exact hits always rank first
 ```
 
-The list lives in `settings.json` as `vocabulary: [{term, sounds_like?}]`,
-written only when non-empty, so older files load unchanged and are not
+The list lives in `settings.json` as `vocabulary`, each entry a plain term
+(`"Rune"`) or `{term, sounds_like}`; both load, and Hex writes a term without
+spellings as a plain string. `hex vocabulary list --json` keeps the object form.
+It is written only when non-empty, so older files load unchanged and are not
 rewritten. Terms are unique ignoring case; at most 500 terms, 64 characters
 each, and 16 spellings per term. Read-only commands (`hex history`,
 `hex meetings`, `hex mcp`) read the field straight from the file and never load
@@ -137,7 +165,9 @@ Sources: [dictation/vocabulary.rs](../../src/dictation/vocabulary.rs),
 
 Checks: `dictation::vocabulary::tests` (dedupe and merge, clamping, case-insensitive removal,
 comma splitting, reading the saved list without settings, the
-first 64 terms and their spellings reaching transcription, the bounded prompt,
+first 64 terms and their spellings reaching transcription, the prompt bounded
+by characters alone (`the_prompt_keeps_the_first_terms_that_fit`), the
+sheet's count matching both (`terms_read_counts_exactly_what_transcription_takes`),
 folding hints, boost names);
 `loading_folds_saved_recognition_hints_into_the_vocabulary_once` in
 [app_settings.rs](../../src/app_settings.rs);

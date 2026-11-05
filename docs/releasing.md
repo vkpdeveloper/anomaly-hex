@@ -38,6 +38,10 @@ Release (push to dev: dev channel; workflow_dispatch: ref + channel check | dev 
 ├─ sign-windows             Azure Artifact Signing of both hex.exe, Authenticode check                [release]
 ├─ installers               windows-installers.yml: Setup.exe around them, tested on x64 + ARM64      [build]
 ├─ sign-windows-installers  Azure Artifact Signing of both Setup.exe                                  [release]
+├─ check-linux, -macos,     stable, check: the full suites on the candidate (check-<os>.yml, called   [build]
+│  -windows                 here; pull requests only compile, dev pushes run no checks)
+├─ onboarding               stable, check: scripts/check-onboarding.sh (scene goldens + a first run   [build]
+│                           in a clean data folder, Linux). Stable publishes only once these four pass
 ├─ publish                  OIDC: every signed target, then the release (release-service.sh); Nix     [release]
 ├─ github                   last: tag v<version> on the released commit (tag-release.sh), then the    [contents: write]
 │                           GitHub release mirror (publish-github-release.sh); GITHUB_TOKEN only.
@@ -170,8 +174,8 @@ secrets; the `homebrew` job pushes that verified file with the tap deploy key
   and refuses a version already tagged `v<version>` or `app-v<version>`.
   Tags trigger nothing. Only last, once every platform and the release
   service published, the `github` job tags `v<version>` on the released
-  commit with `GITHUB_TOKEN` and the GitHub release `v<version>` (kept off
-  "Latest", which the SDK uses) mirrors the files. A failed run leaves no tag. Releases through
+  commit with `GITHUB_TOKEN` and the GitHub release `v<version>` (GitHub's
+  "Latest"; SDK releases never take it) mirrors the files. A failed run leaves no tag. Releases through
   2.3.1 used `app-v<version>` tags, which stay as history. Deploy the
   production site afterwards with Site.
 
@@ -187,7 +191,9 @@ fast-forward from `dev`; nobody commits to it directly, and its ruleset
 refuses force pushes and deletion.
 
 1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add
-   `docs/releases/<version>.md`, push to `dev`.
+   `docs/releases/<version>.md`, push to `dev`. Run
+   `scripts/check-onboarding.sh` on that commit and give Dax its result and
+   scene images with the go/no-go; stable releases need his explicit go-ahead.
 2. Let the push to `dev` publish its dev-channel build
    (`https://anoma.ly/release/hex/desktop/dev.json`) and try it on an install
    set to the Dev update channel.
@@ -321,7 +327,11 @@ app (new updater, and on macOS a new bundle ID), so:
   https://anoma.ly/hex (no enclosure, so Sparkle installs nothing). The item
   is prepared with the macOS client work; upload it with the Legacy appcast
   workflow (`.github/workflows/legacy-appcast.yml`, dispatch from `production`),
-  which replaces only `appcast.xml`.
+  which replaces only `appcast.xml`. Superseded (Kit, 2026-11-02): the 2.3.1
+  and Swift feeds offer the released ZIP itself, signed with their old Sparkle
+  key, so Install Update moves those Macs onto the new Hex
+  (docs/plans/swift-app-handoff.md, "Legacy Update"). Keep `SUPublicEDKey` in
+  `app/Info.plist`.
 - **Windows signer:** the updater accepts only a Valid Authenticode signature
   whose signer is `AUTHENTICODE_SIGNER` in `src/updater/windows.rs` (OpenCode's
   Artifact Signing subject). Check the first Azure-signed Hex build's subject
@@ -418,9 +428,13 @@ never self-updates; Settings says
 source checkout".
 
 Both Linux architectures build natively on Ubuntu 24.04 runners
-(`ubuntu-24.04`, `ubuntu-24.04-arm`), so every Linux file needs glibc 2.39
-(Ubuntu 24.04, Debian 13, Fedora 40, current Arch) instead of the newest
-glibc of an Arch build. ARM64 keeps the Vulkan backend like x64; ggml's CPU
+(`ubuntu-24.04`, `ubuntu-24.04-arm`) inside a Debian 12 image
+(`scripts/build-linux-release.sh`, `packaging/linux/build.Dockerfile`, with
+Vulkan headers and glslc from Vulkan SDK 1.4.341), so every Linux file needs
+only glibc 2.36 and GCC 12's libstdc++ (Debian 12, Ubuntu 23.04, Fedora 37,
+current Arch). `.github/release/check-glibc-floor.sh` fails the build if the
+executable needs a newer symbol, and the build installs the `.deb` and runs
+the executables on Debian 12. ARM64 keeps the Vulkan backend like x64; ggml's CPU
 kernels stay portable (`GGML_NATIVE=OFF`, baseline ARMv8-A). There is no
 AppImage: the bare executable already runs without installing, and Hex's
 systemd user unit and updater want a stable executable path that an AppImage

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hex</string>
+    <string name="service_label">Hex dictation</string>
+    <string name="service_description">Shows the Hex button beside the text field you are typing in. Tap it to dictate; your computer running Hex turns the speech into text and Hex types it into the field.</string>
+</resources>
