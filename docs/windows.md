@@ -57,8 +57,8 @@ driver Hex still starts and decodes on the CPU, and Settings › Speech engine
 says so. **ARM64** decodes on the CPU. Both are
 self-contained: no Visual C++ Redistributable is required. Hex then keeps
 itself current through the signed update feed. Uninstalling removes every
-installed version, the shortcut, and Launch at login, and keeps settings, logs,
-history, and models in `%APPDATA%\hex`.
+installed version, the shortcut, and Launch at login, and keeps settings and
+history in `%APPDATA%\hex` and logs and models in `%LOCALAPPDATA%\hex`.
 
 The installer and the script below create the same managed layout, so either
 can replace the other. For a scripted install:
@@ -139,8 +139,8 @@ cargo run -- devices
 cargo run -- model devices
 ```
 
-Install the selected model (with Hex stopped, `model install` downloads in
-this process), load it, and transcribe a WAV file:
+Install the selected model (with Hex stopped, `model install` downloads and
+selects it in this process), load it, and transcribe a WAV file:
 
 ```powershell
 cargo run -- model install
@@ -183,7 +183,12 @@ cargo run -- listen --model parakeet_v3 --language pl
 Press Enter once to start, then again to stop. Captures shorter than 300 ms are
 discarded. `--device` accepts a case-insensitive fragment from `devices`.
 
-Runtime data is stored under `%APPDATA%\hex`. Observations are in
+Runtime data is stored under `%APPDATA%\hex`, except logs and speech models,
+which belong to this computer and live in `%LOCALAPPDATA%\hex`: on managed
+networks Windows copies the Roaming folder to a server at every sign-in, which
+hundreds of megabytes of models would slow down. An older Hex's `logs` and
+`models` move there once (`app_paths::machine_local`); while a running Hex
+holds them, the Roaming copy stays in use. Observations are in
 `logs\live.ndjson`, and native/runtime diagnostics are in `logs\process.log`,
 including every panic with its thread and backtrace. A worker that stops
 unexpectedly leaves its cause there. `hex.exe` is a GUI program, so a launch
@@ -331,7 +336,7 @@ current-user startup registry, UI Automation, and Windows capture APIs.
 | Web-domain mode rules and browser context via UI Automation | Implemented; the page URL comes from the browser's UIA document element, bounded so a hung provider degrades to application-only context |
 | Managed installer with Start Menu integration and clean uninstall | Implemented as `.github/release/install-windows.ps1`; it creates the self-updating versions layout, and updates retarget the managed shortcut and Launch-at-login entry |
 | First-run onboarding | Implemented; a fresh install picks a dictation language, downloads its recommended model with live progress, and starts listening only once setup is recorded — the shared first-run story, with a Microphone page only while the privacy switch is off and the practice game on the real shortcut |
-| Activity pane with the live session and recent transcripts | Implemented in developer builds; the shared read-only pane |
+| Activity pane with the live session and recent dictations | Implemented in developer builds; the shared read-only pane (phases and timing; the event log keeps no dictated text) |
 | Developer Meetings, live drafts, and meeting paste | Missing |
 | Local transcription API and public TypeScript SDK host lifecycle on Windows | Missing; see Local Transcription Service |
 | Streaming finish with whole-clip fallback | Implemented on GPU devices with Parakeet Unified English |
@@ -346,7 +351,13 @@ through the same `dictation/processor` and `personal_commands` modules as
 macOS, and Windows reaches the running OpenCode service the same way: its
 registration file and loopback HTTP, never a CLI. Like macOS,
 an unset OpenCode model tries the ranked recommended models before the
-OpenCode default.
+OpenCode default. An OpenCode service running inside WSL2 is found only with
+Labs › OpenCode in WSL on: WSL2 forwards its loopback URL, and the lab adds
+the default distribution's registration and a Linux workspace path for
+`x-opencode-directory`. Annotate's capture sends use the same service: the
+prompt's "Recorded at" line names the capture folder as a Linux `/mnt/…` path
+while the summary header keeps the Windows path. Off, Hex reads only the
+Windows registration and an OpenCode in WSL isn't found.
 Remaining panes should be added only with their complete Windows behavior;
 empty look-alike screens do not count as parity.
 

@@ -25,6 +25,7 @@ use scrawl_capture::{Router, RouterConfig, RouterDirs, RuleKind, Undone};
 
 use super::{SharedOutcomes, lock};
 
+mod opencode;
 mod preparation;
 mod session_name;
 
@@ -92,7 +93,8 @@ pub struct RouteDest {
     pub directory: Option<PathBuf>,
 }
 
-/// `recent` is every other session the look read, newest first.
+/// `recent` is every other session the look read, newest first as first
+/// listed; a later answer keeps listed rows in place and adds new ones last.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RouteAnswer {
     /// Written; the router is still working.
@@ -174,7 +176,7 @@ pub fn router() -> Router {
         Some(support.join("routing-decisions.jsonl")),
         Some(settings.captures_dir()),
     );
-    Router::new(config, dirs)
+    let router = Router::new(config, dirs)
         .with_log(|line| {
             if line.starts_with("deliver:") || line.starts_with("routing time:") {
                 tracing::info!(line, "capture router");
@@ -182,7 +184,10 @@ pub fn router() -> Router {
                 tracing::debug!(line, "capture router");
             }
         })
-        .with_summary(scrawl_capture::sketch::summary_markdown)
+        .with_summary(scrawl_capture::sketch::summary_markdown);
+    #[cfg(target_os = "windows")]
+    let router = router.with_opencode(std::sync::Arc::new(opencode::Wsl));
+    router
 }
 
 fn sends(config: &RouterConfig) -> bool {
@@ -1121,9 +1126,8 @@ const AUTH_REFUSED: &str = "OpenCode needs a password Hex doesn't have";
 /// password itself.
 const AUTH_HINT: &str = "OpenCode refused Hex's password. Hex reads it from OpenCode's \
                          service.json under this user's ~/.local/state/opencode (or \
-                         OPENCODE_PASSWORD); an OpenCode running in WSL keeps its registration \
-                         inside WSL, which Hex on Windows can't read. The capture is saved and \
-                         copied either way";
+                         OPENCODE_PASSWORD); on Windows, turn on Labs › OpenCode in WSL \
+                         when OpenCode runs there. The capture is saved and copied either way";
 
 /// Whether a failed request (`{err:#}`) was OpenCode refusing the
 /// credentials.
@@ -2327,6 +2331,83 @@ mod tests {
             assert!(worker.current.as_ref().unwrap().sent.is_none());
             std::fs::remove_dir_all(first.parent().unwrap()).unwrap();
             std::fs::remove_dir_all(second.parent().unwrap()).unwrap();
+        }
+
+        /// Kit's Nov 5 report: the list appeared, then a later judgement put
+        /// its pick on top and re-sorted the recent sessions, so a click
+        /// landed on another session. Rows already listed stay where they
+        /// are; a session new to the list comes last.
+        #[test]
+        fn a_later_judgement_never_moves_a_listed_row() {
+            let (look, found) = held_look(router_with(|_| {}), look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            let (updates, pending) = preparation::fed();
+            worker.pending = Some(pending);
+            drop(found);
+            let rows = |worker: &Worker| -> Vec<String> {
+                listed(&worker.current.as_ref().unwrap().route.answer)
+                    .iter()
+                    .map(|dest| dest.session.clone())
+                    .collect()
+            };
+            let live = |candidates| look::Live {
+                candidates,
+                ..Default::default()
+            };
+            updates
+                .send(preparation::Update::judged(
+                    live(vec![
+                        candidate("ses_board", "BOARD", 30),
+                        candidate("ses_home", "HOME", 20),
+                        candidate("ses_hex", "HEX", 10),
+                    ]),
+                    smart::Judgement {
+                        decision: smart::Decision::Keep {
+                            reason: String::new(),
+                        },
+                        ranking: Vec::new(),
+                    },
+                ))
+                .unwrap();
+            worker.prepared();
+            assert_eq!(rows(&worker), ["ses_board", "ses_home", "ses_hex"]);
+            // The model picks the last row; meanwhile HEX moved and a new
+            // session opened.
+            let pick = scored_by(
+                "ses_hex",
+                "HEX",
+                smart::Basis::Clue(smart::Source::Named),
+                "mentioned",
+            );
+            updates
+                .send(preparation::Update::judged(
+                    live(vec![
+                        candidate("ses_hex", "HEX", 40),
+                        candidate("ses_board", "BOARD", 30),
+                        candidate("ses_home", "HOME", 20),
+                        candidate("ses_new", "NEW", 50),
+                    ]),
+                    smart::Judgement {
+                        decision: smart::Decision::Offer {
+                            choices: vec![pick],
+                        },
+                        ranking: Vec::new(),
+                    },
+                ))
+                .unwrap();
+            worker.prepared();
+            assert_eq!(
+                rows(&worker),
+                ["ses_board", "ses_home", "ses_hex", "ses_new"]
+            );
+            let answer = &worker.current.as_ref().unwrap().route.answer;
+            assert!(matches!(answer, RouteAnswer::Guess { .. }), "{answer:?}");
+            worker.pending = None;
+            std::fs::remove_dir_all(bundle.parent().unwrap()).ok();
         }
 
         #[test]

@@ -59,8 +59,10 @@ pub(crate) const FULL_SCREEN: &str = "Full screen · Click to record";
 const HIDE_AFTER_S: f64 = 0.35;
 /// A pick that started no capture this long after shows the picker again.
 const RETRY_AFTER_S: f64 = 2.0;
-/// How often the open picker looks for the pointer on another display.
-const DISPLAY_EVERY: Duration = Duration::from_millis(100);
+/// How often the open picker looks for the pointer on another display. The
+/// capsule, pinned to a measured screen, re-reads it on the same cadence so
+/// the two cross displays together.
+pub(super) const DISPLAY_EVERY: Duration = Duration::from_millis(100);
 
 // ─── Geometry ────────────────────────────────────────────────────────────────
 
@@ -981,6 +983,14 @@ impl PickerOverlay {
         if mode == Some(Mode::Window) {
             (self.act)(Action::Start(CaptureTarget::Window { id: 0 }));
             return;
+        }
+        // On Wayland without layer-shell (GNOME) the picker takes clicks, so
+        // it floats on XWayland only by Labs › Annotate on GNOME, decided at
+        // each show like the capsule's.
+        #[cfg(target_os = "linux")]
+        if mode.is_some() {
+            self.overlay
+                .set_xwayland_input(crate::linux::annotate_overlays::on_xwayland());
         }
         self.overlay.update(move |s, tx| {
             s.want = mode;

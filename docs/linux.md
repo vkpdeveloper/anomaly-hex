@@ -22,6 +22,45 @@ elsewhere (KDE, GNOME). Shortcuts are general: the desktop's GlobalShortcuts por
 your desktop's own keybindings running `hex` commands (see
 [Shortcuts](#shortcuts)).
 
+With **Labs › Live typing** on (`labs.live_typing`, off by default), a hotkey
+dictation's provisional words are an underlined input-method preedit in the
+focused text field and the final text is committed through
+`zwp_input_method_v2`, so it lands without the clipboard and Ctrl-V.
+`zwp_input_method_manager_v2` is a wlroots-family protocol (Sway, Hyprland,
+and other wlroots compositors); KWin and Mutter do not offer it, so KDE and
+GNOME use the paste above. Hex takes the input method when the capture
+becomes intentional (the hold threshold, or at once in Toggle) and gives the
+seat back at Finish or Cancel, including post-release processing; short taps
+and chords create none. It falls back to the paste above when the compositor
+does not offer the protocol, another input method (fcitx, ibus) holds the
+seat, the focused field has no active text input, the final text is
+multi-line, or the compositor does not answer in time. A CPU engine or a
+model that cannot stream shows no provisional words while speaking, but the
+final text still goes in through the input method. It has **not** been
+verified on a real compositor yet; only its unit tests and the build ran.
+
+With **Labs › Transform typed text** on (`labs.typed_text`, off by default),
+Settings › Output adds a **Typed text** section whose shortcut
+(`typed_text_hotkey`) is unbound until you record one. Pressing it while
+nothing records clears the clipboard, sends Ctrl+A and Ctrl+C to the focused
+field, runs the focused app's Output steps on the copied text, clears and
+copies again to check the field still holds that text, then sends Ctrl+V to
+replace it. Spoken formatting, spoken symbols, and filler words are
+dictation-only and do not run on typed text. It takes the clipboard for the
+job, including any paste still waiting to restore, and puts the saved
+clipboard back 500 ms after the paste unless something newer replaced it. If
+Hex could not snapshot the clipboard, the result stays on it. Without
+data-control on GNOME, text is read through `wl-paste`, the clipboard is
+cleared through `wl-copy --clear`, and a result Hex could not snapshot stays
+on the clipboard. Because it sends Ctrl+A and Ctrl+C, it is not meant for
+terminals. With **Terminal paste** on, it refuses before sending any
+key: its Ctrl+V would become Ctrl+Shift+V. Select-all replaces the whole
+field, so mixed formatting is not preserved, and on GNOME `wl-paste` may
+briefly take focus. With the lab off, Output and the listener are unchanged
+and the shortcut is not registered; `hex typed-text` runs the same job from a
+desktop keybinding, and refuses clearly when the lab is off, Terminal paste
+shortcut is on, or Hex isn't listening.
+
 For Nix/NixOS, use the [Nix guide](nix.md). Nix owns updates to that installation;
 Hex's signed updater owns only the direct-install layout below.
 
@@ -36,8 +75,13 @@ StatusNotifierItem host, such as Waybar, KDE, or Omarchy's bar), Hex shows a
 tray icon: click it to open the window, or use its menu: **Show Hex**,
 **Paste last dictation**, the downloaded speech models, the update once one
 is ready (**Restart to update**), **Enable / Disable Hex**, and **Quit Hex**;
-while Hex records or transcribes, the menu and tooltip say so. Without a
-tray, quit with **Quit Hex** at the bottom of the window's sidebar, the launcher's **Quit Hex** action, or `hex quit`.
+while Hex records or transcribes, the menu and tooltip say so. The mark is white,
+and black when the desktop's color scheme prefers light; Hex reads that setting
+when it creates the tray, so a later switch applies at the next launch. KDE's
+portal takes the scheme from the window palette, so a mixed theme with light
+windows and a dark panel (such as Breeze Twilight) gets a black mark on a dark
+panel. Without a tray, quit with **Quit Hex** at the bottom of the window's
+sidebar, the launcher's **Quit Hex** action, or `hex quit`.
 
 The window opens at 980×760 logical pixels and floats on tiling window
 managers with no window rule: it maps with its minimum size equal to its
@@ -90,8 +134,21 @@ a reboot strands the old path) is replaced at startup by the user manager's
 current value, or dropped so Xlib uses `~/.Xauthority`. A unit started with no
 display at all (the desktop never imported its environment into systemd) adopts
 the user manager's `WAYLAND_DISPLAY`, else the newest Wayland socket of yours in
-`XDG_RUNTIME_DIR` that answers. Hyprland imports nothing by default; add this to
-its config so the service, its paste helpers, and the HUD get your session:
+`XDG_RUNTIME_DIR` that answers. One started with only Xwayland's `DISPLAY` does
+the same when `XDG_SESSION_TYPE` is `wayland` (from Hex's environment, else the
+user manager's): it takes the manager's live `WAYLAND_DISPLAY`, else the newest
+answering socket. Any other explicit session type (`x11`, `tty` from startx,
+`mir`, …) keeps its X display even when the user manager still names a nested
+compositor or another login's display, so paste keeps reaching X11 apps; only
+an absent type adopts a live manager display. Launchers (`hex`, `hex start`,
+`hex restart`) make the same decision before they write `session.env`, so the
+service and the launcher agree on the session; a launcher never adopts without
+a display, and when it would start the unit with nothing to write it still
+refuses with "Start Hex from your graphical login session". Without the
+adoption, a Wayland desktop's paste goes through XWayland, which native Wayland
+windows never see, and restoring the clipboard clears the compositor's.
+Hyprland imports nothing by default; add this to its config so the service, its
+paste helpers, and the HUD get your session:
 
 ```ini
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
@@ -119,7 +176,11 @@ time, so a client's dictation and the shortcut never end each other.
 
 For development, run `cargo run --release`. `hex dictate` remains an explicit
 foreground diagnostic listener without the window or HUD and cannot coexist
-with Hex's listener. With
+with Hex's listener. Like `hex service`, it adopts the session's Wayland
+display when its shell has none, or only Xwayland's `DISPLAY` on a Wayland
+login (#756, #1506). `hex` commands reach only the
+service listener, so a foreground `hex dictate` receives none and says so at
+startup when no shortcut is bound. With
 `HEX_APPLICATION_SUPPORT_DIR` set, launches never start, stop, or restart the
 installed user unit; they forward to the Hex using that data directory or
 become it. `HEX_SYSTEMD_UNIT` names another unit for isolated tests.
@@ -167,6 +228,12 @@ sh install-linux.sh
 ~/.local/bin/hex model install
 ~/.local/bin/hex
 ```
+
+When `wl-copy` is missing, the installer prints the commands to install the
+Wayland helpers: on Debian or Ubuntu, `sudo apt install wl-clipboard wtype`; on
+Fedora, `sudo dnf install wl-clipboard wtype`; on Arch, `sudo pacman -S --needed
+wl-clipboard wtype`. `wtype` is only needed on wlroots compositors and niri,
+where Hex uses it; GNOME and KDE paste through their RemoteDesktop portal.
 
 The installer verifies the signed release feed, exact artifact size, and
 SHA-256 before installing. It uses no root access. It creates the managed
@@ -417,8 +484,10 @@ dictation rules:
   (#1023). Hex still logs the
   paste as sent. Ctrl+Space or a key without modifiers works.
   Hyprland names each shortcut `anomaly.hex:<shortcut>`: `anomaly.hex:dictation`,
-  `anomaly.hex:paste-last`, `anomaly.hex:capture` (Annotate), and
-  `anomaly.hex:raw-dictation` (Dictate without processing). The names stay the
+  `anomaly.hex:paste-last`, `anomaly.hex:capture` (Annotate),
+  `anomaly.hex:raw-dictation` (Dictate without processing), and
+  `anomaly.hex:terminal-paste` (Labs › Terminal paste shortcut, while on).
+  The names stay the
   same when you record another key in Settings (#1376), so a bind keeps
   working; `hyprctl globalshortcuts` lists them while Hex runs. For example:
 
@@ -441,17 +510,19 @@ hl.bind("F10", hl.dsp.global("anomaly.hex:paste-last"))
   `bind = , End, exec, hex dictation start` with
   `bindr = , End, exec, hex dictation stop`, or one
   `bind = , End, exec, hex dictation toggle`. Pasting into a terminal needs
-  **Terminal paste shortcut** (Ctrl+Shift+V) unless the terminal accepts
+  **Terminal paste** (Ctrl+Shift+V) unless the terminal accepts
   Ctrl+V.
 - **Wayland without the portal** (for example Sway): nothing registers global
   shortcuts. Settings lists these commands; bind them in your desktop's own
-  keyboard configuration:
+  keyboard configuration. They reach only the listener `hex start` or
+  `hex service` runs; a foreground `hex dictate` can't receive them:
 
 ```sh
 hex dictation start     # bind to a key's press: start recording
 hex dictation stop      # bind to the same key's release: stop and transcribe
 hex dictation toggle    # one key: start, then stop and transcribe
 hex paste-last          # paste the last dictation again
+hex typed-text          # Labs › Transform typed text: replace the focused field's text
 hex dictation toggle --raw  # dictate without processing: paste the words as heard
 ```
 
@@ -468,7 +539,8 @@ GNOME 46 and older (Ubuntu 24.04) have no shortcuts portal. There, Settings ›
 Desktop shortcuts › **Add GNOME keyboard shortcuts** writes Hex's own entries
 into GNOME Settings › Keyboard › Custom Shortcuts with your shortcuts:
 `hex dictation toggle` (GNOME runs custom shortcuts on the key press only, so
-dictation toggles), `hex paste-last`, and `hex annotate toggle` while Annotate
+dictation toggles), `hex paste-last`, `hex typed-text` while Transform typed
+text is on and its shortcut is bound, and `hex annotate toggle` while Annotate
 is on. Hex removes them while it's disabled and puts them back when you enable
 it; **Remove** takes them out for good. Keys you change in GNOME Settings stay.
 Hex never touches your other custom shortcuts.
@@ -527,7 +599,13 @@ and in `hex dictate`. **Recording indicator** places it at the top or bottom of 
 screen, or turns it off.
 
 Insertion uses the clipboard and **Ctrl-V** for new installations. Enable
-**Terminal paste shortcut** in Settings for targets that require **Ctrl-Shift-V**.
+**Terminal paste** in Settings for targets that require **Ctrl-Shift-V**.
+Labs › Terminal paste shortcut (`hex labs on terminal-paste-shortcut`, off by
+default) adds a second dictation shortcut whose paste is always Ctrl-Shift-V,
+while the main shortcut keeps this setting. On X11 Hex grabs it like the other
+dictation shortcuts; on Wayland it needs the desktop's shortcuts portal (Hex
+asks for `anomaly.hex:terminal-paste`). There is no `hex` command for it, so
+without X11 grabs or the portal the shortcut cannot be registered.
 Existing X11 settings retain their previous Ctrl-Shift-V behavior until changed.
 The target application must accept the selected binding.
 
@@ -539,9 +617,10 @@ again from Hex until something else copies. It restores only if nothing newer
 replaced the transcript in the meantime: a later dictation, a copy, or another
 application. An empty clipboard stays empty. A larger or unreadable clipboard
 is left holding the transcript, and Hex's log says why. When automatic paste
-fails, the transcript stays on the clipboard for Ctrl+V. Nothing confirms the
-target read the paste, so a target stalled past the delay can paste the
-restored clipboard instead (see [#24](https://github.com/anomalyco/hex/issues/24)).
+fails after `wl-copy` has taken the transcript, it stays on the clipboard for
+Ctrl+V. Nothing confirms the target read the paste, so a target stalled past
+the delay can paste the restored clipboard instead (see
+[#24](https://github.com/anomalyco/hex/issues/24)).
 On Wayland, restoring needs the compositor's `ext-data-control` protocol
 (KDE Plasma 6, recent wlroots compositors) or `wlr-data-control` (wlroots
 compositors, niri, Hyprland); without either the transcript stays, and
@@ -565,9 +644,11 @@ approved, so you're asked only once.
 - Export the compositor's nonempty `WAYLAND_DISPLAY` in the launch environment.
   Hex and its window (winit) select the same native backend even when XWayland's
   `DISPLAY` is also present. `XDG_SESSION_TYPE` alone does not select Wayland.
-- Install `wl-clipboard`. Hex copies each transcript, then sends Ctrl+V (or
-  Ctrl+Shift+V with terminal paste) through one of two general paths, chosen at
-  the first paste:
+- Install `wl-clipboard`. Every Wayland copy and paste runs `wl-copy`; without
+  it, Settings and `hex status` warn while the listener runs, and a dictation
+  fails naming the package to install. Hex copies each transcript, then sends
+  Ctrl+V (or Ctrl+Shift+V with terminal paste) through one of two general
+  paths, chosen at the first paste:
   - `wtype`, when the compositor offers the virtual keyboard protocol
     (`zwp_virtual_keyboard_manager_v1`; wlroots compositors and niri) and
     `wtype` is installed.
@@ -577,12 +658,13 @@ approved, so you're asked only once.
     token (`remote-desktop-token` in Hex's data folder), so it asks once. Revoke
     it in the desktop's settings.
   - With neither, the dictation fails with "Copied to the clipboard; press
-    Ctrl+V to paste" and the transcript stays on the clipboard.
+    Ctrl+V to paste" and, with `wl-copy` installed, the transcript stays on the
+    clipboard.
 
   There is no silent XWayland, direct-typing, uinput, or privileged
   input-injection fallback; the only XWayland uses besides the HUD are the
-  opt-in clipboard restore above and the opt-in floating meeting capsules
-  below. Transcript text travels on stdin, not command-line
+  opt-in clipboard restore above, the opt-in floating meeting capsules
+  below, and the opt-in Annotate overlays below. Transcript text travels on stdin, not command-line
   arguments.
 - The overlay uses layer-shell. Without it (GNOME), only the HUD opens on
   XWayland as an override-redirect, click-through window that never takes
@@ -591,8 +673,14 @@ approved, so you're asked only once.
   on GNOME (`hex labs on gnome-meeting-capsules`, off by default): the offer
   and recording capsule then float over the call on XWayland, taking clicks
   on their buttons but never keyboard focus. It works only while XWayland is
-  already running; Hex never starts it. With neither, Settings reports that the HUD is unavailable rather than
-  presenting a normal focus-taking window as an overlay.
+  already running; Hex never starts it. Annotate's capsule and ink take
+  clicks too, so a capture records with no capsule unless you opt in to Labs ›
+  Annotate on GNOME (`hex labs on gnome-annotate`, off by default): the
+  capsule and ink then float on XWayland the same way. Esc can't stop drawing
+  there, so use the capsule's pen button or let go of a held Annotate key (a
+  tap of it stops the recording). With neither, Settings reports that the HUD
+  is unavailable rather than presenting a normal focus-taking window as an
+  overlay.
 - Shortcuts come from the GlobalShortcuts portal or from your own keybindings
   for the `hex` commands ([Shortcuts](#shortcuts)). Hex reads no input devices
   and needs no `input` group membership or other device permission. If the

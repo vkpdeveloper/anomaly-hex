@@ -170,8 +170,10 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
                 id: id.clone(),
                 title: title.clone(),
                 chapters: Vec::new(),
+                warning: None,
             };
         }
+        ControllerEvent::SourceWarning { warning } => state.source_warning(*warning),
         ControllerEvent::Retitled { title } => {
             if let MeetingMenuState::Recording { title: shown, .. } = &mut *state {
                 shown.clone_from(title);
@@ -203,6 +205,15 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
             let message = format!("{title}: {error}");
             window.update(move |ui, tx| {
                 crate::rune_ui::meeting_failed(ui, message);
+                crate::rune_ui::show(ui, Destination::Meetings(None), tx);
+            });
+            window.open();
+        }
+        ControllerEvent::ImportFailed { error } => {
+            tracing::error!(%error, "meeting audio import failed");
+            let message = error.clone();
+            window.update(move |ui, tx| {
+                crate::rune_ui::meeting_import_failed(ui, message);
                 crate::rune_ui::show(ui, Destination::Meetings(None), tx);
             });
             window.open();

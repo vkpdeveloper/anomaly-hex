@@ -24,6 +24,9 @@ mod meeting_folder;
 mod meetings;
 mod persistence;
 mod screenshots;
+#[cfg(target_os = "linux")]
+pub(crate) use persistence::LaunchLoad;
+pub(crate) use persistence::LaunchNote;
 mod shortcut_repair;
 
 #[cfg(hex_capture)]
@@ -49,12 +52,13 @@ static SHORTCUT_TOGGLE: AtomicBool = AtomicBool::new(false);
 static MEETINGS_ENABLED: AtomicBool = AtomicBool::new(false);
 static PAUSE_BROWSER_MEDIA: AtomicBool = AtomicBool::new(false);
 static HEX_MICROPHONE_ENABLED: AtomicBool = AtomicBool::new(false);
-static MEETING_NOTES_ENABLED: AtomicBool = AtomicBool::new(true);
-static MEETING_NOTES_OPENCODE: AtomicBool = AtomicBool::new(false);
+static MEETING_SUMMARIES: AtomicU8 = AtomicU8::new(MeetingSummaries::platform_default() as u8);
 static MEETING_INDICATOR_ENABLED: AtomicBool = AtomicBool::new(true);
 static MEETING_INDICATOR_CORNER: AtomicU8 = AtomicU8::new(0);
 /// [`MeetingRetention::encode`]d; [`RETENTION_UNSET`] until settings apply.
 static MEETING_RETENTION: AtomicU8 = AtomicU8::new(RETENTION_UNSET);
+/// [`MeetingRetention::encode`]d; [`RETENTION_UNSET`] until settings apply.
+static MEETING_AUDIO_RETENTION: AtomicU8 = AtomicU8::new(RETENTION_UNSET);
 const RETENTION_UNSET: u8 = u8::MAX;
 static MEETING_OUTPUT_FOLDER: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 static MEETING_PROVIDERS: OnceLock<RwLock<Vec<MeetingProviderChoice>>> = OnceLock::new();
@@ -271,10 +275,18 @@ pub struct AppSettings {
     /// Dictate without processing: records like the dictation shortcut and
     /// pastes the transcript as heard. Unbound by default.
     pub raw_dictation_hotkey: Option<HotkeyBinding>,
+    /// Labs › Transform typed text (Linux): runs the focused app's Output
+    /// steps on the text already typed in the focused field and replaces it.
+    /// Unbound by default and ignored while its Labs toggle is off.
+    pub typed_text_hotkey: Option<HotkeyBinding>,
     /// Labs › Second dictation shortcut: another shortcut that dictates
     /// exactly as `dictation_hotkey` does (macOS). Unbound by default and
     /// ignored while its Labs toggle is off.
     pub second_dictation_hotkey: Option<HotkeyBinding>,
+    /// Labs › Terminal paste shortcut: another shortcut that dictates like
+    /// `dictation_hotkey` and always pastes with Ctrl+Shift+V (Windows,
+    /// Linux). Unbound by default and ignored while its Labs toggle is off.
+    pub terminal_paste_hotkey: Option<HotkeyBinding>,
     pub show_dock_icon: bool,
     pub transcription: TranscriptionSelection,
     /// Where the speech model runs (Linux and Windows).
@@ -358,12 +370,14 @@ const MIGRATIONS: &[&str] = &[
     ANNOTATE_DEFAULT_MIGRATION,
     ANOMALY_IDENTITY_MIGRATION,
     MEETING_RETENTION_DEFAULT_MIGRATION,
+    MEETING_SUMMARIES_MIGRATION,
 ];
 #[cfg(not(hex_capture))]
 const MIGRATIONS: &[&str] = &[
     STREAMING_ENGLISH_MIGRATION,
     ANOMALY_IDENTITY_MIGRATION,
     MEETING_RETENTION_DEFAULT_MIGRATION,
+    MEETING_SUMMARIES_MIGRATION,
 ];
 /// Scrawl's settings were read into `capture` once. Left out of
 /// `MIGRATIONS` so new settings import them too.
@@ -376,6 +390,9 @@ const SCRAWL_ROUTING_IMPORT_MIGRATION: &str = "scrawl-routing-settings";
 /// Meeting retention first saved `forever` as its default; that default is
 /// now unchosen (24 hours for new meetings, older ones kept).
 const MEETING_RETENTION_DEFAULT_MIGRATION: &str = "meeting-retention-default";
+/// Summarize with Apple Intelligence and Summarize with OpenCode became one
+/// choice, `meetings.summaries`.
+const MEETING_SUMMARIES_MIGRATION: &str = "meeting-summaries-choice";
 
 fn deserialize_retired_value<'de, D>(
     deserializer: D,
@@ -407,7 +424,9 @@ impl Default for AppSettings {
             paste_last_hotkey: Some(HotkeyBinding::paste_last_default()),
             cancel_hotkey: HotkeyBinding::cancel_default(),
             raw_dictation_hotkey: None,
+            typed_text_hotkey: None,
             second_dictation_hotkey: None,
+            terminal_paste_hotkey: None,
             show_dock_icon: true,
             transcription: default_transcription(),
             transcription_device: TranscriptionDevice::Auto,
@@ -775,11 +794,7 @@ impl AppSettings {
             self.experimental.hex_microphone_comfort_noise,
             self.experimental.hex_microphone_strength,
         );
-        MEETING_NOTES_ENABLED.store(
-            self.meetings.summarize_with_apple_intelligence,
-            Ordering::Release,
-        );
-        MEETING_NOTES_OPENCODE.store(self.meetings.summarize_with_opencode, Ordering::Release);
+        MEETING_SUMMARIES.store(self.meetings.summaries as u8, Ordering::Release);
         crate::meeting::generator::set_summary_model(self.meetings.opencode_model.as_deref());
         MEETING_INDICATOR_ENABLED.store(self.meetings.show_recording_indicator, Ordering::Release);
         MEETING_INDICATOR_CORNER.store(
@@ -788,6 +803,10 @@ impl AppSettings {
         );
         MEETING_RETENTION.store(
             MeetingRetention::encode(self.meetings.retention),
+            Ordering::Release,
+        );
+        MEETING_AUDIO_RETENTION.store(
+            MeetingRetention::encode(self.meetings.audio_retention),
             Ordering::Release,
         );
         *MEETING_OUTPUT_FOLDER
@@ -890,11 +909,27 @@ impl AppSettings {
             self.migrations
                 .push(MEETING_RETENTION_DEFAULT_MIGRATION.into());
         }
+        self.migrate_meeting_summaries();
         #[cfg(hex_capture)]
         if !self.has_migration(ANNOTATE_DEFAULT_MIGRATION) {
             self.capture.enabled = true;
             self.migrations.push(ANNOTATE_DEFAULT_MIGRATION.into());
         }
+    }
+
+    /// The two retired summary switches become `meetings.summaries` once.
+    pub(super) fn migrate_meeting_summaries(&mut self) {
+        if !self.has_migration(MEETING_SUMMARIES_MIGRATION) {
+            self.meetings.summaries = MeetingSummaries::from_retired(
+                self.meetings
+                    .summarize_with_apple_intelligence
+                    .unwrap_or(true),
+                self.meetings.summarize_with_opencode.unwrap_or(false),
+            );
+            self.migrations.push(MEETING_SUMMARIES_MIGRATION.into());
+        }
+        self.meetings.summarize_with_apple_intelligence = None;
+        self.meetings.summarize_with_opencode = None;
     }
 
     fn has_migration(&self, id: &str) -> bool {
@@ -986,6 +1021,7 @@ impl AppSettings {
                 .raw_dictation_hotkey
                 .as_ref()
                 .map(HotkeyBinding::runtime),
+            typed_text: self.active_typed_text_hotkey().map(HotkeyBinding::runtime),
             second_dictation: self
                 .active_second_dictation_hotkey()
                 .map(HotkeyBinding::runtime),
@@ -1010,6 +1046,34 @@ impl AppSettings {
         self.second_dictation_hotkey
             .as_ref()
             .filter(|binding| !self.hotkey_in_use(HotkeySlot::SecondDictation, binding))
+    }
+
+    /// Labs › Transform typed text's binding while it takes effect: Linux,
+    /// its toggle on, bound, and sharing no key with another active
+    /// shortcut. Otherwise the listener registers nothing for it.
+    pub fn active_typed_text_hotkey(&self) -> Option<&HotkeyBinding> {
+        if !cfg!(target_os = "linux") || !self.labs.typed_text {
+            return None;
+        }
+        self.typed_text_hotkey
+            .as_ref()
+            .filter(|binding| !self.hotkey_in_use(HotkeySlot::TypedText, binding))
+    }
+
+    /// Labs › Terminal paste shortcut's binding while it takes effect:
+    /// Windows or Linux, its toggle on, bound, and sharing no key with
+    /// another active shortcut. Otherwise Hex registers, matches, and
+    /// checks nothing for it.
+    #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
+    pub fn active_terminal_paste_hotkey(&self) -> Option<&HotkeyBinding> {
+        if !cfg!(any(target_os = "windows", target_os = "linux"))
+            || !self.labs.terminal_paste_shortcut
+        {
+            return None;
+        }
+        self.terminal_paste_hotkey
+            .as_ref()
+            .filter(|binding| !self.hotkey_in_use(HotkeySlot::TerminalPaste, binding))
     }
 
     /// Annotate is on: the person hasn't turned it off.
@@ -1065,12 +1129,28 @@ impl AppSettings {
             self.raw_dictation_hotkey = None;
         }
         if self
+            .typed_text_hotkey
+            .as_ref()
+            .is_some_and(HotkeyBinding::is_bare_primary_click)
+        {
+            tracing::warn!("cleared a left-click typed text shortcut");
+            self.typed_text_hotkey = None;
+        }
+        if self
             .second_dictation_hotkey
             .as_ref()
             .is_some_and(HotkeyBinding::is_bare_primary_click)
         {
             tracing::warn!("cleared a left-click second dictation shortcut");
             self.second_dictation_hotkey = None;
+        }
+        if self
+            .terminal_paste_hotkey
+            .as_ref()
+            .is_some_and(HotkeyBinding::is_bare_primary_click)
+        {
+            tracing::warn!("cleared a left-click terminal paste shortcut");
+            self.terminal_paste_hotkey = None;
         }
         #[cfg(hex_capture)]
         if self.capture.hotkey.is_bare_primary_click() {
@@ -1105,6 +1185,8 @@ pub enum HotkeySlot {
     Dictation,
     PasteLast,
     RawDictation,
+    /// Labs › Transform typed text's shortcut (Linux).
+    TypedText,
     #[cfg(hex_capture)]
     Capture,
     /// Labs › Annotate 15 s replay shortcut (macOS 27+).
@@ -1112,6 +1194,8 @@ pub enum HotkeySlot {
     CaptureReplay,
     /// Labs › Second dictation shortcut (macOS).
     SecondDictation,
+    /// Labs › Terminal paste shortcut (Windows, Linux).
+    TerminalPaste,
     /// Toggle mode's cancel shortcut.
     Cancel,
     /// Labs › Screenshots (macOS).
@@ -1138,6 +1222,13 @@ impl AppSettings {
         {
             others.push(raw.clone());
         }
+        if slot != HotkeySlot::TypedText
+            && cfg!(target_os = "linux")
+            && self.labs.typed_text
+            && let Some(typed) = &self.typed_text_hotkey
+        {
+            others.push(typed.clone());
+        }
         if slot != HotkeySlot::Cancel {
             others.push(self.cancel_hotkey.clone());
         }
@@ -1147,6 +1238,13 @@ impl AppSettings {
             && let Some(second) = &self.second_dictation_hotkey
         {
             others.push(second.clone());
+        }
+        if slot != HotkeySlot::TerminalPaste
+            && cfg!(any(target_os = "windows", target_os = "linux"))
+            && self.labs.terminal_paste_shortcut
+            && let Some(terminal) = &self.terminal_paste_hotkey
+        {
+            others.push(terminal.clone());
         }
         if cfg!(target_os = "macos") && self.meetings.available() {
             others.push(HotkeyBinding::paste_meeting_default());
@@ -1438,6 +1536,64 @@ mod tests {
         assert!(!settings.capture.enabled, "only once");
     }
 
+    /// The two retired summary switches become one choice once; On this Mac
+    /// wins over the old OpenCode fallback.
+    #[test]
+    fn retired_summary_switches_become_one_choice_once() {
+        let migrated = |meetings: &str| {
+            let mut settings: AppSettings =
+                serde_json::from_str(&format!(r#"{{"meetings":{meetings}}}"#)).unwrap();
+            settings.apply_one_time_migrations_with(|_| true);
+            assert!(settings.has_migration(MEETING_SUMMARIES_MIGRATION));
+            let written = serde_json::to_value(&settings).unwrap();
+            assert!(written["meetings"].get("summarize_with_opencode").is_none());
+            assert!(
+                written["meetings"]
+                    .get("summarize_with_apple_intelligence")
+                    .is_none()
+            );
+            settings.meetings.summaries
+        };
+        let mac = |or: MeetingSummaries| {
+            if cfg!(target_os = "macos") {
+                MeetingSummaries::Mac
+            } else {
+                or
+            }
+        };
+        use MeetingSummaries::{Off, OpenCode};
+        assert_eq!(migrated("{}"), mac(Off));
+        assert_eq!(
+            migrated(
+                r#"{"summarize_with_apple_intelligence":true,"summarize_with_opencode":true}"#
+            ),
+            mac(OpenCode)
+        );
+        assert_eq!(
+            migrated(
+                r#"{"summarize_with_apple_intelligence":false,"summarize_with_opencode":true}"#
+            ),
+            OpenCode
+        );
+        assert_eq!(
+            migrated(r#"{"summarize_with_opencode":true}"#),
+            mac(OpenCode)
+        );
+        assert_eq!(
+            migrated(r#"{"summarize_with_apple_intelligence":false}"#),
+            Off
+        );
+
+        // Later choices stick.
+        let mut settings: AppSettings = serde_json::from_str(
+            r#"{"meetings":{"summaries":"off","summarize_with_opencode":true},"migrations":["meeting-summaries-choice"]}"#,
+        )
+        .unwrap();
+        settings.apply_one_time_migrations_with(|_| true);
+        assert_eq!(settings.meetings.summaries, Off);
+        assert!(AppSettings::default().has_migration(MEETING_SUMMARIES_MIGRATION));
+    }
+
     #[test]
     fn keyboard_model_switching_is_opt_in_and_source_mappings_round_trip() {
         let mut settings: AppSettings = serde_json::from_str("{}").unwrap();
@@ -1561,6 +1717,91 @@ mod tests {
         assert!(settings.hotkey_in_use(HotkeySlot::SecondDictation, &dictation));
         settings.second_dictation_hotkey = Some(dictation);
         assert_eq!(settings.runtime_hotkeys().second_dictation, None);
+    }
+
+    /// Labs › Transform typed text: its binding takes effect only on Linux
+    /// with its toggle on, never sharing a key with another shortcut, and
+    /// the other shortcuts' checks count it while it is active.
+    #[test]
+    fn the_typed_text_shortcut_needs_its_lab_and_its_own_keys() {
+        let function = HotkeyBinding {
+            modifiers: HotkeyModifiers {
+                function: true,
+                ..HotkeyModifiers::default()
+            },
+            key: None,
+        };
+        let mut settings = AppSettings {
+            typed_text_hotkey: Some(function.clone()),
+            ..AppSettings::default()
+        };
+        assert!(!settings.labs.typed_text);
+        assert_eq!(settings.runtime_hotkeys().typed_text, None);
+        assert!(!settings.hotkey_in_use(HotkeySlot::RawDictation, &function));
+
+        settings.labs.typed_text = true;
+        let active = settings.runtime_hotkeys().typed_text;
+        if cfg!(target_os = "linux") {
+            assert_eq!(active, Some(function.runtime()));
+            assert!(settings.hotkey_in_use(HotkeySlot::RawDictation, &function));
+            assert!(settings.hotkey_in_use(HotkeySlot::Dictation, &function));
+        } else {
+            assert_eq!(active, None);
+        }
+
+        // The dictation shortcut's own keys are refused, and a saved overlap
+        // is dropped rather than matched twice.
+        let dictation = settings.dictation_hotkey.clone();
+        assert!(settings.hotkey_in_use(HotkeySlot::TypedText, &dictation));
+        settings.typed_text_hotkey = Some(dictation);
+        assert_eq!(settings.runtime_hotkeys().typed_text, None);
+    }
+
+    /// Labs › Terminal paste shortcut: its binding takes effect only on
+    /// Windows and Linux with its toggle on, never sharing a key with
+    /// another shortcut, and off it stays saved but inactive.
+    #[test]
+    fn the_terminal_paste_shortcut_needs_its_lab_and_its_own_keys() {
+        let binding = HotkeyBinding {
+            modifiers: HotkeyModifiers {
+                control: Some(crate::app_settings::ModifierSide::Either),
+                shift: Some(crate::app_settings::ModifierSide::Either),
+                ..HotkeyModifiers::default()
+            },
+            key: Some(crate::app_settings::HotkeyKey::named("t")),
+        };
+        let mut settings = AppSettings {
+            terminal_paste_hotkey: Some(binding.clone()),
+            ..AppSettings::default()
+        };
+        assert!(!settings.labs.terminal_paste_shortcut);
+        assert_eq!(settings.active_terminal_paste_hotkey(), None);
+        assert!(!settings.hotkey_in_use(HotkeySlot::RawDictation, &binding));
+
+        settings.labs.terminal_paste_shortcut = true;
+        let active = settings.active_terminal_paste_hotkey();
+        if cfg!(any(target_os = "windows", target_os = "linux")) {
+            assert_eq!(active, Some(&binding));
+            assert!(settings.hotkey_in_use(HotkeySlot::RawDictation, &binding));
+            assert!(settings.hotkey_in_use(HotkeySlot::Dictation, &binding));
+        } else {
+            assert_eq!(active, None);
+        }
+
+        // The dictation shortcut's own keys are refused, and a saved overlap
+        // is dropped rather than matched twice.
+        let dictation = settings.dictation_hotkey.clone();
+        assert!(settings.hotkey_in_use(HotkeySlot::TerminalPaste, &dictation));
+        settings.terminal_paste_hotkey = Some(dictation);
+        assert_eq!(settings.active_terminal_paste_hotkey(), None);
+
+        // The binding survives a save and load while the lab is off.
+        settings.labs.terminal_paste_shortcut = false;
+        settings.terminal_paste_hotkey = Some(binding.clone());
+        let decoded: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.terminal_paste_hotkey, Some(binding));
+        assert_eq!(decoded.active_terminal_paste_hotkey(), None);
     }
 
     #[test]
@@ -1704,7 +1945,10 @@ mod tests {
         );
         assert!(!settings.meetings.enabled);
         assert_eq!(settings.meetings.output_folder, None);
-        assert!(settings.meetings.summarize_with_apple_intelligence);
+        assert_eq!(
+            settings.meetings.summaries,
+            MeetingSummaries::platform_default()
+        );
         assert!(settings.meetings.show_recording_indicator);
         assert_eq!(
             settings.meetings.recording_indicator_corner,
@@ -1801,7 +2045,10 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"meetings":{"enabled":true}}"#).unwrap();
         assert!(settings.meetings.enabled);
-        assert!(settings.meetings.summarize_with_apple_intelligence);
+        assert_eq!(
+            settings.meetings.summaries,
+            MeetingSummaries::platform_default()
+        );
         assert!(settings.meetings.show_recording_indicator);
         assert_eq!(
             settings.meetings.recording_indicator_corner,
@@ -1984,7 +2231,7 @@ mod tests {
             "sound_effects": false,
             "history_retention": null,
             "show_dock_icon": "sometimes",
-            "meetings": {"enabled": true, "retention": "quarterly"},
+            "meetings": {"enabled": true, "retention": "quarterly", "audio_retention": "never"},
             "recording_duck_volume": 7.0
         }"#;
         fs::write(&dir.path, file).unwrap();
@@ -1995,6 +2242,7 @@ mod tests {
         assert_eq!(settings.history_retention, defaults.history_retention);
         assert_eq!(settings.show_dock_icon, defaults.show_dock_icon);
         assert_eq!(settings.meetings.retention, None);
+        assert_eq!(settings.meetings.audio_retention, None);
         assert_eq!(
             settings.recording_duck_volume,
             defaults.recording_duck_volume
@@ -2007,16 +2255,25 @@ mod tests {
 
         // `null` reads as unchosen, and unchosen is never written as `null`,
         // which 3.1.0 can't read.
-        fs::write(&dir.path, r#"{"meetings": {"retention": null}}"#).unwrap();
-        assert_eq!(
-            AppSettings::load_from(&dir.path)
-                .unwrap()
-                .meetings
-                .retention,
-            None
-        );
+        fs::write(
+            &dir.path,
+            r#"{"meetings": {"retention": null, "audio_retention": null}}"#,
+        )
+        .unwrap();
+        let settings = AppSettings::load_from(&dir.path).unwrap();
+        assert_eq!(settings.meetings.retention, None);
+        assert_eq!(settings.meetings.audio_retention, None);
         let saved = serde_json::to_value(AppSettings::default()).unwrap();
         assert!(saved["meetings"].get("retention").is_none());
+        assert!(saved["meetings"].get("audio_retention").is_none());
+
+        // A chosen audio retention survives a save and load.
+        fs::write(&dir.path, r#"{"meetings": {"audio_retention": "week"}}"#).unwrap();
+        let settings = AppSettings::load_from(&dir.path).unwrap();
+        assert_eq!(
+            settings.meetings.audio_retention,
+            Some(crate::app_settings::MeetingRetention::Week)
+        );
 
         // Even malformed JSON defaults in memory and stays in place.
         fs::write(&dir.path, "{ not json").unwrap();
@@ -2333,6 +2590,30 @@ mod tests {
             settings.dictation_processing.default_mode.name,
             "Unsaved mode"
         );
+    }
+
+    #[test]
+    fn saving_a_selection_persists_it_and_keeps_other_settings() {
+        let dir = TestSettingsDir::new("save-selection");
+        let mut settings = AppSettings {
+            sound_effects: false,
+            microphone: Some("Test microphone".into()),
+            ..AppSettings::default()
+        };
+        let previous = settings.transcription.clone();
+        let selection = TranscriptionSelection {
+            model: TranscriptionModelId::WhisperLargeV3Turbo,
+            language: "fr".into(),
+        };
+        settings
+            .save_transcription_with(selection.clone(), |next| next.write_to(&dir.path))
+            .unwrap();
+
+        let (persisted, _) = AppSettings::read_from(&dir.path).unwrap();
+        assert_eq!(persisted.transcription, selection);
+        assert_eq!(persisted.microphone.as_deref(), Some("Test microphone"));
+        assert!(!persisted.sound_effects);
+        assert!(persisted.transcription_recents.contains(&previous));
     }
 
     #[test]

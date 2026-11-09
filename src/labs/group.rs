@@ -52,6 +52,8 @@ impl Feature {
     pub const fn group(self) -> Group {
         match self {
             Self::LiveText
+            | Self::FailureNotices
+            | Self::LiveTyping
             | Self::NotchIndicator
             | Self::VocabularyBiasing
             | Self::PauseBrowser
@@ -59,6 +61,9 @@ impl Feature {
             | Self::VoiceFilter
             | Self::HideMenuBarIcon
             | Self::PhoneDictation
+            | Self::QuitClosesWindow
+            | Self::SettingsSearch
+            | Self::ReleaseNotesLink
             | Self::Playground => Group::Dictation,
             Self::SmartSpacing
             | Self::SpokenFormatting
@@ -67,29 +72,35 @@ impl Feature {
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::GnomeClipboardRestore
+            | Self::TypedText
             | Self::TerminalPaste
-            | Self::OutputFixes => Group::Output,
+            | Self::OutputFixes
+            | Self::OpenCodeInWsl => Group::Output,
             Self::KeepRecordings | Self::HistoryStats | Self::RecentDictations => Group::History,
             Self::Meetings
             | Self::LiveChapters
             | Self::SubtitleExport
             | Self::StopWhenCallEnds
             | Self::MovableMeetingCapsules
-            | Self::MeetingSummaryModel
             | Self::MeetingNotesVocabulary
             | Self::MeetingFinishedEvent
-            | Self::MeetingPlatformIcons
             | Self::FollowLiveTranscript
-            | Self::GnomeMeetingCapsules => Group::Meetings,
-            Self::Screenshots | Self::AnnotateReplay => Group::Annotate,
+            | Self::MoreCallApps
+            | Self::GnomeMeetingCapsules
+            | Self::MeetingImport
+            | Self::MeetingDescriptiveFilenames
+            | Self::ExpireMeetingAudio => Group::Meetings,
+            Self::Screenshots | Self::AnnotateReplay | Self::GnomeAnnotate => Group::Annotate,
             Self::MouseShortcuts
             | Self::SecondDictationShortcut
+            | Self::TerminalPasteShortcut
             | Self::SidedChords
             | Self::TapOrHold
             | Self::RestoreShortcutDefault
             | Self::StandaloneSpecialKeys
             | Self::SectionKeyAlone
-            | Self::ShareShortcut => Group::Shortcuts,
+            | Self::ShareShortcut
+            | Self::CapsLockDictation => Group::Shortcuts,
             Self::KeyboardModelSwitching
             | Self::UnloadIdle
             | Self::PickerSortFilter
@@ -97,7 +108,8 @@ impl Feature {
             | Self::PickerActiveFirst
             | Self::ModelInPlace
             | Self::PickerDownloaded
-            | Self::ParakeetUltra => Group::Models,
+            | Self::ParakeetUltra
+            | Self::TranscribeFiles => Group::Models,
         }
     }
 }

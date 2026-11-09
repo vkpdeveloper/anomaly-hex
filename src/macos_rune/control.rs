@@ -169,6 +169,10 @@ impl Pump {
             ControlCommand::Dictation { .. } | ControlCommand::PasteLast => {
                 unreachable!("listener_command answers it")
             }
+            ControlCommand::TypedText => Some(ControlReply::error(
+                "unsupported",
+                "Transform typed text is Linux only",
+            )),
             ControlCommand::Screenshot { pick } => screenshot(pick, reply),
             ControlCommand::MeetingRecord { title } => self.meeting(false, title, reply),
             ControlCommand::MeetingStop => self.meeting(true, None, reply),
@@ -991,6 +995,10 @@ mod tests {
             preparation,
             recognition_start: None,
             listener_failure: Default::default(),
+            event_reader: crate::desktop::events::EventReader::open(""),
+            activity: Default::default(),
+            last_completed_at: None,
+            started_at: 0,
         };
         let selection = TranscriptionSelection {
             model: TranscriptionModelId::WhisperLargeV3Turbo,

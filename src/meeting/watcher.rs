@@ -18,7 +18,7 @@ use crate::meeting::detection::{
     AutoStop, BrowserPageMemory, CallPresence, Detection, MeetingCandidate, MeetingDetector,
     candidate_from_microphone,
 };
-use crate::meeting::{self, MeetingCalendar, MeetingRequest, MeetingStart};
+use crate::meeting::{self, MeetingCalendar, MeetingRequest, MeetingStart, TrackWarning};
 use crate::microphone_activity::{ActiveMicrophoneApplication, active_microphone_applications};
 
 pub(crate) enum ControllerCommand {
@@ -28,6 +28,8 @@ pub(crate) enum ControllerCommand {
     /// offered again once its app releases and retakes the microphone.
     OfferTimedOut,
     Stop,
+    /// Import a local audio file as a meeting (macOS; Labs › Import audio).
+    Import(PathBuf),
     Open(String),
     Summarize(String),
     /// Record a calendar meeting from its reminder, first opening its call
@@ -73,6 +75,10 @@ pub(crate) enum ControllerEvent {
     },
     /// The recording's live chapters so far (Labs).
     Chapters(Vec<meeting::Chapter>),
+    /// The microphone became digitally silent, or its audio returned.
+    SourceWarning {
+        warning: Option<TrackWarning>,
+    },
     OpenMeeting(String),
     Transcribing,
     /// `auto_stop` when the recording stops on its own after
@@ -85,6 +91,10 @@ pub(crate) enum ControllerEvent {
     Finished(Box<meeting::MeetingManifest>),
     Failed {
         title: String,
+        error: String,
+    },
+    /// An audio file could not be imported as a meeting (macOS).
+    ImportFailed {
         error: String,
     },
     NotesStarted,
@@ -116,8 +126,20 @@ pub enum MeetingMenuState {
         title: String,
         /// Live chapters, for Copy Section (Labs).
         chapters: Vec<meeting::Chapter>,
+        /// The microphone is digitally silent, as a call app holding it with
+        /// voice processing leaves it (#1518).
+        warning: Option<TrackWarning>,
     },
     Transcribing,
+}
+
+impl MeetingMenuState {
+    /// Sets the recording's microphone warning; other states have none.
+    pub(crate) fn source_warning(&mut self, warning: Option<TrackWarning>) {
+        if let Self::Recording { warning: shown, .. } = self {
+            *shown = warning;
+        }
+    }
 }
 
 pub struct ListenerConfig {
@@ -133,6 +155,7 @@ pub(crate) fn controller_loop(
 ) -> Result<()> {
     let mut detector = MeetingDetector::default();
     let mut recording: Option<ActiveRecording> = None;
+    let mut importing: Option<ImportWorker> = None;
     let mut reminders = Reminders::default();
     let mut observed_microphone_apps = Vec::new();
     let mut browser = BrowserWatch::new(ContextSnapshot::capture_for_meeting);
@@ -142,6 +165,7 @@ pub(crate) fn controller_loop(
 
     while !shutdown.load(Ordering::Relaxed) {
         let enabled = crate::app_settings::meetings_enabled();
+        poll_import(&mut importing, &events);
         let requested_commands = meeting_requests
             .try_iter()
             .take(8)
@@ -151,10 +175,12 @@ pub(crate) fn controller_loop(
                 }
                 MeetingRequest::Stop => ControllerCommand::Stop,
                 MeetingRequest::Summarize(id) => ControllerCommand::Summarize(id),
+                MeetingRequest::Import(path) => ControllerCommand::Import(path),
             });
         for command in commands.try_iter().take(8).chain(requested_commands) {
             handle_command(
                 &mut recording,
+                &mut importing,
                 &mut detector,
                 &mut reminders,
                 command,
@@ -208,6 +234,22 @@ pub(crate) fn controller_loop(
             .join()
             .map_err(|_| eyre!("meeting recorder panicked"))??;
     }
+    if let Some(importing) = importing {
+        // A failed import during shutdown is reported, not propagated: it
+        // must not skip joining the pending finals below.
+        match importing.worker.join() {
+            Ok(Ok(manifest)) => {
+                tracing::info!(
+                    meeting = manifest.id,
+                    "audio import finished while shutting down"
+                );
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "audio import did not finish before shutdown");
+            }
+            Err(_) => tracing::error!("meeting import panicked"),
+        }
+    }
     pending_finals.join();
     Ok(())
 }
@@ -217,24 +259,33 @@ const EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Moves meetings past their retention to the Trash: at launch, then
 /// hourly, and soon after the setting changes. Meetings off still expires
-/// what was recorded, since kept meetings are a liability.
+/// what was recorded, since kept meetings are a liability. A separate audio
+/// retention runs after the whole-meeting pass, and only while its Labs
+/// feature is on.
 #[derive(Default)]
 struct MeetingExpiry {
-    last: Option<(Instant, Option<crate::app_settings::MeetingRetention>)>,
+    last: Option<(
+        Instant,
+        Option<crate::app_settings::MeetingRetention>,
+        Option<crate::app_settings::MeetingRetention>,
+    )>,
 }
 
 impl MeetingExpiry {
     fn poll(&mut self) {
         let retention = crate::app_settings::meeting_retention();
-        if self
-            .last
-            .is_some_and(|(at, last)| last == retention && at.elapsed() < EXPIRY_INTERVAL)
-        {
+        let audio = crate::app_settings::meeting_audio_retention();
+        if self.last.is_some_and(|(at, last, last_audio)| {
+            last == retention && last_audio == audio && at.elapsed() < EXPIRY_INTERVAL
+        }) {
             return;
         }
-        self.last = Some((Instant::now(), retention));
+        self.last = Some((Instant::now(), retention, audio));
         if let Err(error) = meeting::expire(retention) {
             tracing::warn!(%error, "could not expire old meetings");
+        }
+        if let Err(error) = meeting::expire_audio(audio) {
+            tracing::warn!(%error, "could not expire old meeting audio");
         }
     }
 }
@@ -248,6 +299,8 @@ const ENGINE_GRACE: Duration = Duration::from_secs(30);
 /// model rather than loading a second copy.
 struct PendingFinals {
     since: Instant,
+    /// The launch sweep for abandoned import folders ran.
+    swept: bool,
     checked: bool,
     worker: Option<JoinHandle<()>>,
 }
@@ -256,12 +309,19 @@ impl PendingFinals {
     fn new() -> Self {
         Self {
             since: Instant::now(),
+            swept: false,
             checked: false,
             worker: None,
         }
     }
 
     fn poll(&mut self, enabled: bool, recording: bool, events: &SyncSender<ControllerEvent>) {
+        // Before the pending pass, and whatever the Meetings opt-in, remove
+        // folders a crashed or quitting import left without a manifest.
+        if !self.swept {
+            self.swept = true;
+            meeting::sweep::remove_orphaned_imports();
+        }
         if self.checked
             || !enabled
             || recording
@@ -284,11 +344,20 @@ impl PendingFinals {
                         return;
                     }
                     match meeting::finish_pending(&id) {
-                        Ok(Some(manifest)) => {
+                        Ok(Some(manifest))
+                            if manifest.status == meeting::MeetingStatus::Complete =>
+                        {
                             tracing::info!(meeting = id, "finished a pending meeting transcript");
                             if meeting::notes_wanted() {
                                 start_notes(manifest.id, &events);
                             }
+                        }
+                        Ok(Some(manifest)) => {
+                            tracing::info!(
+                                meeting = id,
+                                status = ?manifest.status,
+                                "left a pending meeting for the next launch"
+                            );
                         }
                         Ok(None) => {}
                         Err(error) => {
@@ -312,6 +381,7 @@ impl PendingFinals {
 
 fn handle_command(
     recording: &mut Option<ActiveRecording>,
+    importing: &mut Option<ImportWorker>,
     detector: &mut MeetingDetector,
     reminders: &mut Reminders,
     command: ControllerCommand,
@@ -322,6 +392,16 @@ fn handle_command(
         ControllerCommand::Record(_) | ControllerCommand::RecordMeeting { .. } if !enabled => {
             tracing::warn!("ignored a meeting recording request while meetings are off");
         }
+        ControllerCommand::Import(_) if !enabled => {
+            tracing::warn!("ignored an audio import while meetings are off");
+        }
+        ControllerCommand::Import(_) if !crate::labs::meeting_import() => {
+            tracing::warn!("ignored an audio import while Labs › Import audio is off");
+            let _ = events.send(ControllerEvent::ImportFailed {
+                error: "Labs › Import audio is off".into(),
+            });
+        }
+        ControllerCommand::Import(path) => start_import(recording, importing, path, events),
         ControllerCommand::Record(candidate) if recording.is_none() => {
             let start = reminders.start_for(&candidate);
             start_recording(recording, reminders, start, false, events);
@@ -587,6 +667,95 @@ fn records_automatically(
         })
 }
 
+/// An audio file being transcribed as a meeting on its own worker thread
+/// (macOS; Labs › Import audio).
+struct ImportWorker {
+    worker: JoinHandle<Result<meeting::MeetingManifest>>,
+}
+
+/// Starts importing `path`, refusing while a recording or another import
+/// runs. Failures reach the Meetings pane as an import error.
+fn start_import(
+    recording: &mut Option<ActiveRecording>,
+    importing: &mut Option<ImportWorker>,
+    path: PathBuf,
+    events: &SyncSender<ControllerEvent>,
+) {
+    if recording.is_some() {
+        let _ = events.send(ControllerEvent::ImportFailed {
+            error: "Stop the recording before importing audio".into(),
+        });
+        return;
+    }
+    if importing.is_some() {
+        let _ = events.send(ControllerEvent::ImportFailed {
+            error: "An audio import is already running".into(),
+        });
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        let _ = events.send(ControllerEvent::ImportFailed {
+            error: "Importing audio is only available on macOS".into(),
+        });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let started = thread::Builder::new()
+            .name("meeting-import".into())
+            .spawn(move || meeting::import::import(&path));
+        match started {
+            Ok(worker) => *importing = Some(ImportWorker { worker }),
+            Err(error) => {
+                let _ = events.send(ControllerEvent::ImportFailed {
+                    error: error.to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Finishes an import worker, starting notes as a finished recording would.
+fn poll_import(importing: &mut Option<ImportWorker>, events: &SyncSender<ControllerEvent>) {
+    if !importing
+        .as_ref()
+        .is_some_and(|worker| worker.worker.is_finished())
+    {
+        return;
+    }
+    let Some(worker) = importing.take() else {
+        return;
+    };
+    match worker.worker.join() {
+        Ok(Ok(manifest)) if manifest.status == meeting::MeetingStatus::Complete => {
+            tracing::info!(meeting = manifest.id, "imported audio was transcribed");
+            if meeting::notes_wanted() {
+                start_notes(manifest.id, events);
+            }
+        }
+        Ok(Ok(manifest)) => {
+            tracing::info!(
+                meeting = manifest.id,
+                status = ?manifest.status,
+                "left an imported meeting for the next launch"
+            );
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "could not import audio as a meeting");
+            let _ = events.send(ControllerEvent::ImportFailed {
+                error: format!("{error:#}"),
+            });
+        }
+        Err(_) => {
+            tracing::error!("an audio import panicked");
+            let _ = events.send(ControllerEvent::ImportFailed {
+                error: "the audio import stopped".into(),
+            });
+        }
+    }
+}
+
 fn start_recording(
     recording: &mut Option<ActiveRecording>,
     reminders: &mut Reminders,
@@ -652,6 +821,9 @@ fn poll_recording(
                 }
                 meeting::RecordingUpdate::Chapters(chapters) => {
                     let _ = events.send(ControllerEvent::Chapters(chapters));
+                }
+                meeting::RecordingUpdate::SourceWarning { warning } => {
+                    let _ = events.send(ControllerEvent::SourceWarning { warning });
                 }
                 meeting::RecordingUpdate::Transcribing => {
                     if !active.stop.swap(true, Ordering::Relaxed) {
@@ -784,8 +956,16 @@ fn call_app_playing(application: &str) -> bool {
     }
 }
 
-/// How often a browser's tabs are queried while it holds the microphone.
+/// How often a browser's tabs are queried while it has just started holding
+/// the microphone: enough to find a call's site within the 20 s unknown-page
+/// threshold (`detection::BROWSER_STABLE_FOR`).
 const TAB_QUERY_INTERVAL: Duration = Duration::from_secs(1);
+/// How long that one-second burst lasts after a browser starts holding the
+/// microphone.
+const TAB_QUERY_BURST: Duration = Duration::from_secs(30);
+/// How often they are queried after the burst; `BrowserPageMemory` (60 s)
+/// carries the page between answers.
+const TAB_QUERY_BACKOFF: Duration = Duration::from_secs(30);
 /// A tab query that finished longer ago than this no longer says what the
 /// browser shows.
 const TAB_QUERY_MAX_AGE: Duration = Duration::from_secs(5);
@@ -812,6 +992,9 @@ struct TabProbe {
     running: Option<InFlight>,
     generation: u64,
     started: Option<Instant>,
+    /// The browser this watch began for, and when: its first 30 s ask every
+    /// second, then every 30 s.
+    burst: Option<(String, Instant)>,
     latest: Option<(String, ContextSnapshot, Instant)>,
 }
 
@@ -822,6 +1005,7 @@ impl TabProbe {
             running: None,
             generation: 0,
             started: None,
+            burst: None,
             latest: None,
         }
     }
@@ -844,10 +1028,11 @@ impl TabProbe {
             Some((_, Err(mpsc::TryRecvError::Disconnected))) => self.running = None,
             Some((_, Err(mpsc::TryRecvError::Empty))) | None => {}
         }
+        let interval = self.interval(bundle_id, now);
         if self.running.is_none()
             && self
                 .started
-                .is_none_or(|started| now.saturating_duration_since(started) >= TAB_QUERY_INTERVAL)
+                .is_none_or(|started| now.saturating_duration_since(started) >= interval)
         {
             self.started = Some(now);
             let (sender, receiver) = mpsc::sync_channel(1);
@@ -886,10 +1071,34 @@ impl TabProbe {
     /// Nothing is watched: an answer, finished or still being read, must not
     /// outlive the call. A query in flight is not abandoned (it ends by its
     /// own timeout, and no second one starts beside it); its answer is
-    /// dropped.
+    /// dropped. The next call starts with a fresh one-second burst.
     fn reset(&mut self) {
         self.latest = None;
+        self.burst = None;
         self.generation += 1;
+    }
+
+    /// How far apart this browser's tab queries are: one second through the
+    /// first 30 s it holds the microphone, then every 30 s.
+    fn interval(&mut self, bundle_id: &str, now: Instant) -> Duration {
+        let bursting = match &self.burst {
+            Some((watching, since)) if watching.as_str() == bundle_id => {
+                now.saturating_duration_since(*since) < TAB_QUERY_BURST
+            }
+            _ => true,
+        };
+        if self
+            .burst
+            .as_ref()
+            .is_none_or(|(watching, _)| watching.as_str() != bundle_id)
+        {
+            self.burst = Some((bundle_id.to_string(), now));
+        }
+        if bursting {
+            TAB_QUERY_INTERVAL
+        } else {
+            TAB_QUERY_BACKOFF
+        }
     }
 }
 
@@ -967,15 +1176,16 @@ fn detect_meeting(
         tracing::info!(?applications, "microphone application activity changed");
         *observed_microphone_apps = observed;
     }
+    let more_call_apps = crate::labs::more_call_apps();
     let application = microphone_apps
         .into_iter()
-        .filter(|application| application.is_supported_meeting_app())
+        .filter(|application| application.is_supported_meeting_app(more_call_apps))
         .min_by_key(|application| application.detection_priority());
     let context = browser.context(application.as_ref(), |bundle_id| {
         detector.is_application_snoozed(bundle_id)
     });
-    let candidate =
-        application.and_then(|application| candidate_from_microphone(&application, &context));
+    let candidate = application
+        .and_then(|application| candidate_from_microphone(&application, &context, more_call_apps));
     let detection = detector.detect(candidate, choices);
     if let Some(Detection::Offer(candidate)) = &detection {
         tracing::info!(
@@ -1006,7 +1216,7 @@ pub fn probe() -> Result<()> {
         println!(
             "{}\t{}\t{}\t{}",
             application.pid,
-            if application.is_supported_meeting_app() {
+            if application.is_supported_meeting_app(crate::labs::more_call_apps()) {
                 "meeting"
             } else {
                 "other"
@@ -1053,6 +1263,7 @@ mod tests {
         }
         handle_command(
             &mut recording,
+            &mut None,
             &mut MeetingDetector::default(),
             &mut Reminders::default(),
             ControllerCommand::KeepRecording,
@@ -1062,6 +1273,53 @@ mod tests {
         let active = recording.as_mut().unwrap();
         assert!(!active.auto_stop.disarm(), "nothing is left to stop");
         assert!(!active.stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn an_import_is_refused_while_a_recording_runs_or_another_import_does() {
+        let (events, received) = mpsc::sync_channel(4);
+        let (_update_sender, updates) = mpsc::sync_channel(1);
+        let mut recording = Some(ActiveRecording {
+            title: "Zoom call".into(),
+            application: None,
+            app_label: "Zoom".into(),
+            automatic: false,
+            presence: CallPresence::default(),
+            auto_stop: AutoStop::default(),
+            stop: Arc::new(AtomicBool::new(false)),
+            updates,
+            reported_started: true,
+            worker: thread::spawn(|| Err(eyre!("not recording"))),
+        });
+        start_import(
+            &mut recording,
+            &mut None,
+            PathBuf::from("/tmp/call.m4a"),
+            &events,
+        );
+        match received.try_recv() {
+            Ok(ControllerEvent::ImportFailed { error }) => {
+                assert!(error.contains("Stop the recording"), "{error}");
+            }
+            _ => panic!("a recording did not refuse the import"),
+        }
+
+        let mut recording = None;
+        let mut importing = Some(ImportWorker {
+            worker: thread::spawn(|| Err(eyre!("not imported"))),
+        });
+        start_import(
+            &mut recording,
+            &mut importing,
+            PathBuf::from("/tmp/call.m4a"),
+            &events,
+        );
+        match received.try_recv() {
+            Ok(ControllerEvent::ImportFailed { error }) => {
+                assert!(error.contains("already running"), "{error}");
+            }
+            _ => panic!("a running import did not refuse another"),
+        }
     }
 
     fn banshee_tab() -> ContextSnapshot {
@@ -1179,6 +1437,62 @@ mod tests {
     }
 
     #[test]
+    fn tab_queries_back_off_after_the_first_thirty_seconds_and_reset() {
+        use std::sync::atomic::AtomicUsize;
+        static QUERIES: AtomicUsize = AtomicUsize::new(0);
+        fn counted(_: &str) -> Result<ContextSnapshot> {
+            QUERIES.fetch_add(1, Ordering::SeqCst);
+            Ok(banshee_tab())
+        }
+        // A query runs on its own thread, so wait with a deadline until its
+        // answer is received: polling at the query's own start time can never
+        // start another one, so this only drains the answer.
+        let settle = |probe: &mut TabProbe, at: Instant, expected: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while QUERIES.load(Ordering::SeqCst) < expected || probe.running.is_some() {
+                assert!(Instant::now() < deadline, "the tab query never finished");
+                probe.page("com.brave.Browser", at);
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(QUERIES.load(Ordering::SeqCst), expected);
+        };
+        let mut probe = TabProbe::new(counted);
+        let started = Instant::now();
+        // The first 30 s ask every second; `started` records the query
+        // synchronously, so a backed-off call is proven by it not moving.
+        probe.page("com.brave.Browser", started);
+        assert_eq!(probe.started, Some(started));
+        settle(&mut probe, started, 1);
+        let at_1 = started + Duration::from_secs(1);
+        probe.page("com.brave.Browser", at_1);
+        assert_eq!(probe.started, Some(at_1));
+        settle(&mut probe, at_1, 2);
+
+        // From then on they are 30 s apart; an answer waits that long.
+        let at_29 = started + Duration::from_secs(29);
+        probe.page("com.brave.Browser", at_29);
+        assert_eq!(probe.started, Some(at_29));
+        settle(&mut probe, at_29, 3);
+        probe.page("com.brave.Browser", started + Duration::from_secs(31));
+        assert_eq!(
+            probe.started,
+            Some(at_29),
+            "a backed-off query started early"
+        );
+        let at_59 = started + Duration::from_secs(59);
+        probe.page("com.brave.Browser", at_59);
+        assert_eq!(probe.started, Some(at_59));
+        settle(&mut probe, at_59, 4);
+
+        // A reset starts a fresh burst at once.
+        probe.reset();
+        let at_61 = started + Duration::from_secs(61);
+        probe.page("com.brave.Browser", at_61);
+        assert_eq!(probe.started, Some(at_61));
+        settle(&mut probe, at_61, 5);
+    }
+
+    #[test]
     fn a_cold_tab_query_then_its_answer_leads_to_a_banshee_offer() {
         fn banshee(_: &str) -> Result<ContextSnapshot> {
             thread::sleep(Duration::from_millis(300));
@@ -1196,7 +1510,7 @@ mod tests {
                 assert_eq!(context, ContextSnapshot::default());
                 first = false;
             }
-            let candidate = candidate_from_microphone(&brave(), &context);
+            let candidate = candidate_from_microphone(&brave(), &context, false);
             if let Some(detection) = detector.detect(candidate, &[]) {
                 break detection;
             }

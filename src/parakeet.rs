@@ -19,7 +19,7 @@ use crate::paste::{PasteMode, Paster};
 use crate::suppression::InputActivity;
 use crate::transcription::WarmTranscriber;
 use crate::transcription::engine::{PendingTranscript, TranscriptionEngine};
-use crate::transcription::gguf_session::OfflineGgufSession;
+use crate::transcription::gguf_session::{OfflineGgufSession, output_truncated};
 use crate::transcription::models::{
     TranscriptionModelId, TranscriptionSelection, model_path, validate,
 };
@@ -106,6 +106,8 @@ struct InferenceJob {
     prepare_ms: u128,
     target: TranscriptionTarget,
     context: ContextSnapshot,
+    /// The language the model was asked for at submission.
+    language: String,
     /// The clip, kept for History while Labs › Keep recordings is on.
     recording: Option<crate::history::Recording>,
 }
@@ -116,6 +118,7 @@ struct ProcessorJob {
     target: TranscriptionTarget,
     text: String,
     context: ContextSnapshot,
+    language: String,
     timings: JobTimings,
     recording: Option<crate::history::Recording>,
 }
@@ -273,21 +276,37 @@ impl DictationWorker {
             pending_pastes: 0,
         }));
 
-        let engine = match TranscriptionEngine::start(WarmTranscriber::default()) {
+        let (_, selection) = crate::app_settings::transcription_selection();
+        // Labs › Unload model when idle parks a GGUF model at launch too:
+        // the first dictation reloads it, so memory stays free until then.
+        // Apple Speech holds no model of Hex's and stays loaded.
+        let parked = crate::labs::unload_idle().is_some()
+            && matches!(
+                validate(&selection).map(|definition| definition.runtime),
+                Ok(crate::transcription::models::ModelRuntime::Gguf(_))
+            );
+        let engine = if parked {
+            TranscriptionEngine::start_parked(selection)
+        } else {
+            TranscriptionEngine::start(WarmTranscriber::default())
+        };
+        let engine = match engine {
             Ok(engine) => {
-                let events = event_sender.clone();
-                let _ = engine.run(move |model| {
-                    prioritize_inference_thread();
-                    match WarmTranscriber::load() {
-                        Ok(loaded) => {
-                            tracing::info!("transcription model loaded");
-                            *model = loaded;
+                if !parked {
+                    let events = event_sender.clone();
+                    let _ = engine.run(move |model| {
+                        prioritize_inference_thread();
+                        match WarmTranscriber::load() {
+                            Ok(loaded) => {
+                                tracing::info!("transcription model loaded");
+                                *model = loaded;
+                            }
+                            Err(error) => {
+                                let _ = events.send(WorkerEvent::ModelFailed(error.to_string()));
+                            }
                         }
-                        Err(error) => {
-                            let _ = events.send(WorkerEvent::ModelFailed(error.to_string()));
-                        }
-                    }
-                });
+                    });
+                }
                 let engine = Arc::new(engine);
                 engine.share();
                 Some(engine)
@@ -381,6 +400,7 @@ impl DictationWorker {
             ..JobControl::default()
         });
         let (_, selection) = crate::app_settings::transcription_selection();
+        let language = selection.language.clone();
         let submitted_at = Instant::now();
         let audio_ms = clip.duration_ms();
         let stream = clip.take_stream();
@@ -419,6 +439,7 @@ impl DictationWorker {
             prepare_ms,
             target,
             context,
+            language,
             recording,
         })
         .map(|()| {
@@ -581,7 +602,12 @@ fn run_processor_worker(
                     stage: DictationJobStage::Processing,
                 });
             });
-        processed.apply_transformations(transformations, &job.context, &job.control.cancelled);
+        processed.apply_transformations(
+            transformations,
+            &job.context,
+            &job.control.cancelled,
+            crate::dictation::processor::Source::Dictation,
+        );
         if job.control.is_cancelled() {
             let _ = output.send(OutputJob::Cancelled { job_id: job.job_id });
             continue;
@@ -626,7 +652,13 @@ fn process_job_text(
     if profiles.processes(&job.context) {
         processing();
     }
-    profiles.process_cancellable(&job.text, &job.context, &job.control.cancelled)
+    profiles.process_cancellable(
+        &job.text,
+        &job.language,
+        &job.context,
+        &job.control.cancelled,
+        crate::dictation::processor::Source::Dictation,
+    )
 }
 
 /// The longest audio the capture path hands the model at once; longer
@@ -801,6 +833,7 @@ fn run_inference_worker(
                         target,
                         text,
                         context: job.context,
+                        language: job.language,
                         timings,
                         recording: job.recording,
                     })
@@ -1252,8 +1285,26 @@ impl Parakeet {
         let started = Instant::now();
         let mut silence = Vec::new();
         pad_for_parakeet(&mut silence);
-        self.transcribe(&silence)
-            .wrap_err("could not prewarm transcription model")?;
+        // No vocabulary: with it, a decoder such as Qwen3-ASR 1.7B reads a
+        // long term list back to its output cap on every warm-up (#1568).
+        let result = self
+            .session
+            .warm(&silence, &self.options)
+            .map(drop)
+            .wrap_err("could not prewarm transcription model");
+        match result {
+            // Backstop: a decode that still runs to its generation cap on
+            // silence (Qwen3-ASR 1.7B, #968) ran the whole graph on the
+            // device, so that is a warm model, not a failed selection; Linux
+            // and Windows accept it the same way.
+            Err(error) if output_truncated(&error) => {
+                tracing::info!(
+                    error = format!("{error:#}"),
+                    "the warm-up run on silence hit the output limit; the model is warm"
+                );
+            }
+            result => result?,
+        }
         tracing::info!(
             prewarm_ms = started.elapsed().as_millis(),
             "prewarmed transcription model"
@@ -1310,6 +1361,7 @@ mod tests {
             target,
             text: "raw instruction".into(),
             context: ContextSnapshot::default(),
+            language: "en".into(),
             timings: JobTimings {
                 total_started: Instant::now(),
                 queue_ms: 0,

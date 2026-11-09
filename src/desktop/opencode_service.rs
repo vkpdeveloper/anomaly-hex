@@ -4,7 +4,14 @@
 //! authenticated HTTP over `TcpStream`. Hex never runs an OpenCode
 //! executable; when no service answers, OpenCode isn't running, and when
 //! one answers `/api/info` with 404 it predates the current OpenCode 2.
+//!
+//! On Windows, Labs › OpenCode in WSL also reads the default WSL
+//! distribution's registration when no Windows one answers; that service
+//! gets Hex's workspace as a Linux path.
 
+mod wsl;
+
+use self::wsl::WslHome;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
@@ -33,6 +40,8 @@ const WRITE_CHUNK: usize = 64 * 1024;
 pub(crate) struct Service {
     address: SocketAddr,
     password: Option<String>,
+    /// Set when the registration lives in WSL's filesystem (Windows).
+    wsl: Option<WslHome>,
 }
 
 #[derive(Debug)]
@@ -60,9 +69,69 @@ impl Missing {
 }
 
 /// The running service, or why there is none. Reads only registration files
-/// and asks each registered service for `/api/info`.
+/// and asks each registered service for `/api/info`. On Windows it also
+/// looks in WSL while Labs › OpenCode in WSL is on.
 pub(crate) fn find() -> Result<Service, Missing> {
-    find_in(&state_dir().ok_or(Missing::NotRunning)?)
+    let found = match state_dir() {
+        Some(state) => find_in(&state),
+        None => Err(Missing::NotRunning),
+    };
+    with_wsl(found, None, &AtomicBool::new(false))
+}
+
+/// [`find`] within the caller's own budget: every `/api/info` confirmation
+/// shares `deadline` (still capped by [`INFO_DEADLINE`]) and stops when
+/// `cancelled` is set, so a rewrite never waits past its deadline here. The
+/// WSL fallback gets only what the Windows search has left.
+pub(crate) fn find_cancellable(
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<Service, Missing> {
+    let started = Instant::now();
+    let found = match state_dir() {
+        Some(state) => find_in_cancellable(&state, deadline, cancelled),
+        None => Err(Missing::NotRunning),
+    };
+    with_wsl(
+        found,
+        Some(deadline.saturating_sub(started.elapsed())),
+        cancelled,
+    )
+}
+
+/// The Windows result, or a WSL service when Labs › OpenCode in WSL is on
+/// and no Windows registration confirmed one. A confirmed service wins; with
+/// neither, "update OpenCode" is the more useful answer.
+fn with_wsl(
+    found: Result<Service, Missing>,
+    budget: Option<Duration>,
+    cancelled: &AtomicBool,
+) -> Result<Service, Missing> {
+    #[cfg(target_os = "windows")]
+    if crate::labs::opencode_in_wsl() {
+        if found.is_err() {
+            return prefer_wsl(found, wsl::discover(budget, cancelled));
+        }
+    } else {
+        wsl::clear_cache();
+    }
+    let _ = (budget, cancelled);
+    found
+}
+
+/// Whether `found` or the WSL search names the service to use: a confirmed
+/// service wins, and with neither, "update OpenCode" is more useful than
+/// "isn't running".
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn prefer_wsl(
+    found: Result<Service, Missing>,
+    wsl: Result<Service, Missing>,
+) -> Result<Service, Missing> {
+    match (found, wsl) {
+        (Ok(service), _) | (_, Ok(service)) => Ok(service),
+        (Err(Missing::Outdated), _) | (_, Err(Missing::Outdated)) => Err(Missing::Outdated),
+        (Err(Missing::NotRunning), Err(Missing::NotRunning)) => Err(Missing::NotRunning),
+    }
 }
 
 /// Whether a service answers now; a short loopback check for availability.
@@ -83,6 +152,29 @@ fn state_dir() -> Option<PathBuf> {
 /// `service.json` (the stable, beta and dev channels) first, then other
 /// channels' `service-<channel>.json`; the first that answers wins.
 fn find_in(state: &Path) -> Result<Service, Missing> {
+    discover(state, None, &AtomicBool::new(false), None)
+}
+
+/// [`find_in`] bounded by the caller's remaining time: `Some` stops the whole
+/// search once it is spent, so a stalled service can't outlive the rewrite.
+fn find_in_cancellable(
+    state: &Path,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<Service, Missing> {
+    discover(state, Some(deadline), cancelled, None)
+}
+
+/// `budget` is the caller's whole remaining time, or `None` for one
+/// [`INFO_DEADLINE`] per registration (the Settings and availability paths).
+/// `wsl` marks every confirmed service as one whose files live in WSL.
+fn discover(
+    state: &Path,
+    budget: Option<Duration>,
+    cancelled: &AtomicBool,
+    wsl: Option<&WslHome>,
+) -> Result<Service, Missing> {
+    let started = Instant::now();
     let mut others: Vec<PathBuf> = fs::read_dir(state)
         .map_err(|_| Missing::NotRunning)?
         .flatten()
@@ -101,7 +193,20 @@ fn find_in(state: &Path) -> Result<Service, Missing> {
         .take(MAX_REGISTRATIONS)
         .filter_map(|path| read_registration(&path))
     {
-        match confirm(&registration) {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Missing::NotRunning);
+        }
+        let deadline = match budget {
+            Some(budget) => {
+                let remaining = budget.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(Missing::NotRunning);
+                }
+                remaining.min(INFO_DEADLINE)
+            }
+            None => INFO_DEADLINE,
+        };
+        match confirm(&registration, deadline, cancelled, wsl) {
             Ok(service) => return Ok(service),
             Err(Missing::Outdated) => missing = Missing::Outdated,
             Err(Missing::NotRunning) => {}
@@ -158,13 +263,19 @@ fn open_private(path: &Path) -> Option<fs::File> {
 
 /// The service a registration names, when it is on loopback and the process
 /// answering `/api/info` is the registered one.
-fn confirm(registration: &Registration) -> Result<Service, Missing> {
+fn confirm(
+    registration: &Registration,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+    wsl: Option<&WslHome>,
+) -> Result<Service, Missing> {
     let service = Service {
         address: loopback_address(&registration.url).ok_or(Missing::NotRunning)?,
         password: registration
             .password
             .clone()
             .filter(|password| !password.is_empty()),
+        wsl: wsl.cloned(),
     };
     #[derive(Deserialize)]
     struct Info {
@@ -172,14 +283,7 @@ fn confirm(registration: &Registration) -> Result<Service, Missing> {
         version: String,
     }
     let response = service
-        .request(
-            "GET",
-            "/api/info",
-            None,
-            None,
-            INFO_DEADLINE,
-            &AtomicBool::new(false),
-        )
+        .request("GET", "/api/info", None, None, deadline, cancelled)
         .map_err(|_| Missing::NotRunning)?;
     if response.status == 404 {
         tracing::warn!(
@@ -227,10 +331,58 @@ fn loopback_address(url: &str) -> Option<SocketAddr> {
 }
 
 impl Service {
+    /// Whether this service's registration and files live in the default WSL
+    /// distribution.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn is_wsl(&self) -> bool {
+        self.wsl.is_some()
+    }
+
+    /// `host` as this service's WSL server sees it, or `None` for a Windows
+    /// service and for a path the distribution can't reach.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn wsl_directory(&self, host: &Path) -> Option<String> {
+        self.wsl.as_ref()?.directory(host)
+    }
+
+    /// Hex's OpenCode workspace as this service sees it: a Linux path inside
+    /// WSL, else the host path.
+    fn workspace(&self, directory: &Path) -> Result<String> {
+        match &self.wsl {
+            Some(wsl) => wsl.workspace(),
+            None => host_workspace(directory),
+        }
+    }
+
     /// One request. `directory` scopes it to an OpenCode workspace (created
     /// when first used). HTTP error statuses return normally; transport
-    /// failures, cancellation and the deadline are errors.
+    /// failures, cancellation and the deadline are errors. A scoped request
+    /// to a WSL service that fails makes the next one create the workspace
+    /// again.
     pub(crate) fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        directory: Option<&Path>,
+        deadline: Duration,
+        cancelled: &AtomicBool,
+    ) -> Result<Response> {
+        let scoped = directory.is_some();
+        let result = self.request_inner(method, path, body, directory, deadline, cancelled);
+        if scoped
+            && let Some(wsl) = &self.wsl
+            && match &result {
+                Ok(response) => response.status == 404,
+                Err(_) => true,
+            }
+        {
+            wsl.forget_workspace();
+        }
+        result
+    }
+
+    fn request_inner(
         &self,
         method: &str,
         path: &str,
@@ -270,7 +422,7 @@ impl Service {
         if let Some(directory) = directory {
             head.push_str(&format!(
                 "x-opencode-directory: {}\r\n",
-                encode_uri_component(&workspace(directory)?)
+                encode_uri_component(&self.workspace(directory)?)
             ));
         }
         if let Some(body) = body {
@@ -459,7 +611,7 @@ fn poll_millis(timeout: Duration) -> i32 {
 
 /// Creates Hex's OpenCode workspace on first use and returns the path
 /// OpenCode should see.
-fn workspace(directory: &Path) -> Result<String> {
+fn host_workspace(directory: &Path) -> Result<String> {
     fs::create_dir_all(directory).wrap_err_with(|| {
         format!(
             "could not create OpenCode workspace {}",
@@ -629,6 +781,7 @@ pub(crate) mod tests {
         Service {
             address: loopback_address(url).unwrap(),
             password: Some("fixture-password".into()),
+            wsl: None,
         }
     }
 
@@ -688,6 +841,51 @@ pub(crate) mod tests {
         drop(closed);
         register(&state, "service.json", &url, 42);
         assert_eq!(find_in(&state), Err(Missing::NotRunning));
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_service_search_is_bounded_by_the_callers_deadline() {
+        let state = state_root("search-deadline");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        register(&state, "service.json", &url, 42);
+        let started = Instant::now();
+        assert_eq!(
+            find_in_cancellable(&state, Duration::from_millis(100), &AtomicBool::new(false)),
+            Err(Missing::NotRunning)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_service_search_stops_when_the_caller_cancels() {
+        let state = state_root("search-cancel");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        register(&state, "service.json", &url, 42);
+        let cancelled = AtomicBool::new(false);
+        let started = Instant::now();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(100));
+                cancelled.store(true, Ordering::Release);
+            });
+            assert_eq!(
+                find_in_cancellable(&state, Duration::from_secs(30), &cancelled),
+                Err(Missing::NotRunning)
+            );
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
         fs::remove_dir_all(state).unwrap();
     }
 
@@ -776,7 +974,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         // The drive form on Windows, without canonicalize's verbatim prefix.
-        let workspace = workspace(&root).unwrap();
+        let workspace = host_workspace(&root).unwrap();
         assert!(!workspace.starts_with(r"\\?\"));
         let headers = server.join().unwrap();
         assert!(headers.contains(&format!(
@@ -786,6 +984,166 @@ pub(crate) mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"hello world");
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_wsl_service_maps_a_capture_folder_into_its_distribution() {
+        let root = state_root("wsl-directory");
+        let service = Service {
+            wsl: Some(WslHome::for_test(root.join("home"), "/home/dax")),
+            ..fixture("http://127.0.0.1:1/")
+        };
+        assert!(service.is_wsl());
+        assert_eq!(
+            service.wsl_directory(Path::new(r"C:\Users\dax\captures\a.scrawl")),
+            Some("/mnt/c/Users/dax/captures/a.scrawl".into())
+        );
+        assert_eq!(service.wsl_directory(Path::new(r"\\server\share\a")), None);
+        let windows = fixture("http://127.0.0.1:1/");
+        assert!(!windows.is_wsl());
+        assert_eq!(windows.wsl_directory(Path::new(r"C:\a")), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_wsl_service_gets_the_workspace_its_linux_server_can_use() {
+        let root = state_root("wsl-workspace");
+        let (url, server) = serve(vec![("GET /api/model".into(), 200, "{}".into())]);
+        let service = Service {
+            wsl: Some(WslHome::for_test(root.join("home"), "/home/dax")),
+            ..fixture(&url)
+        };
+        let windows = root.join("windows");
+        let response = service
+            .request(
+                "GET",
+                "/api/model",
+                None,
+                Some(&windows),
+                Duration::from_secs(5),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let (headers, _) = server.join().unwrap().remove(0);
+        let linux = "/home/dax/.local/share/hex/opencode";
+        assert!(headers.contains(&format!(
+            "x-opencode-directory: {}\r\n",
+            encode_uri_component(linux)
+        )));
+        assert!(root.join("home/.local/share/hex/opencode").is_dir());
+        assert!(!windows.exists(), "the Windows workspace stays untouched");
+        assert_eq!(response.status, 200);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_wsl_request_forgets_the_workspace() {
+        let root = state_root("wsl-retry-error");
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", closed.local_addr().unwrap());
+        drop(closed);
+        let service = Service {
+            wsl: Some(WslHome::for_test(root.join("home"), "/home/dax")),
+            ..fixture(&url)
+        };
+        let windows = root.join("windows");
+        let request = || {
+            service.request(
+                "GET",
+                "/api/model",
+                None,
+                Some(&windows),
+                Duration::from_millis(500),
+                &AtomicBool::new(false),
+            )
+        };
+        assert!(request().is_err());
+        let workspace = root.join("home/.local/share/hex/opencode");
+        assert!(workspace.is_dir());
+        fs::remove_dir_all(&workspace).unwrap();
+        assert!(request().is_err());
+        assert!(
+            workspace.is_dir(),
+            "a failed request creates the workspace again"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_not_found_wsl_request_forgets_the_workspace() {
+        let root = state_root("wsl-retry-404");
+        let (url, server) = serve(vec![
+            ("GET /api/model".into(), 404, "{}".into()),
+            ("GET /api/model".into(), 404, "{}".into()),
+        ]);
+        let service = Service {
+            wsl: Some(WslHome::for_test(root.join("home"), "/home/dax")),
+            ..fixture(&url)
+        };
+        let windows = root.join("windows");
+        let request = || {
+            service
+                .request(
+                    "GET",
+                    "/api/model",
+                    None,
+                    Some(&windows),
+                    Duration::from_secs(5),
+                    &AtomicBool::new(false),
+                )
+                .unwrap()
+                .status
+        };
+        assert_eq!(request(), 404);
+        let workspace = root.join("home/.local/share/hex/opencode");
+        assert!(workspace.is_dir());
+        fs::remove_dir_all(&workspace).unwrap();
+        assert_eq!(request(), 404);
+        assert!(workspace.is_dir(), "a 404 creates the workspace again");
+        server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_wsl_service_is_a_fallback_only_without_a_windows_one() {
+        let service = fixture("http://127.0.0.1:1/");
+        let wsl = || Service {
+            wsl: Some(WslHome::for_test(
+                PathBuf::from(r"\\wsl.localhost\Ubuntu\home\dax"),
+                "/home/dax",
+            )),
+            ..service.clone()
+        };
+        assert_ne!(wsl(), service, "a WSL service is not the Windows one");
+        assert_eq!(
+            prefer_wsl(Ok(service.clone()), Ok(wsl())),
+            Ok(service.clone()),
+            "a Windows service wins"
+        );
+        assert_eq!(
+            prefer_wsl(Err(Missing::NotRunning), Ok(wsl())),
+            Ok(wsl()),
+            "with no Windows service, the WSL one is used"
+        );
+        assert_eq!(
+            prefer_wsl(Err(Missing::Outdated), Ok(wsl())),
+            Ok(wsl()),
+            "a working WSL service is used over a Windows update notice"
+        );
+        assert_eq!(
+            prefer_wsl(Err(Missing::Outdated), Err(Missing::NotRunning)),
+            Err(Missing::Outdated),
+            "a Windows service that needs an update is still reported"
+        );
+        assert_eq!(
+            prefer_wsl(Err(Missing::NotRunning), Err(Missing::Outdated)),
+            Err(Missing::Outdated),
+            "a WSL service that needs an update is reported too"
+        );
+        assert_eq!(
+            prefer_wsl(Err(Missing::NotRunning), Err(Missing::NotRunning)),
+            Err(Missing::NotRunning)
+        );
     }
 
     #[test]
