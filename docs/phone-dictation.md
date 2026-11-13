@@ -49,7 +49,7 @@ accept.
 model's own rate; other WAVs are converted.
 
 ```ts
-200 {"transcript": "…", "durationMs": 4048}    raw trimmed transcript; no modes, History, or paste
+200 {"transcript": "…", "durationMs": 4048}    trimmed transcript after Global's Output steps; no History or paste
 401 wrong-code       411 length-required        413 resource-exhausted
 415 unsupported-audio 400 invalid-audio          408 upload-timeout
 409 model-not-ready  429 busy / queue-full       503 service-gone
@@ -57,6 +57,13 @@ model's own rate; other WAVs are converted.
 
 A clip up to 30 s runs on the dictation engine's loaded model when it is the
 selected one; otherwise the transcription service loads its own.
+
+The transcript then goes through the same Output steps as a desktop
+dictation, in the same order on each OS (`phone::process`): replacements,
+Labs' spoken formatting and filler words, the OpenCode rewrite, and
+transformations. No desktop app or page is behind the phone's text field, so
+the Global mode applies, never an app or website mode. A step that fails or
+misses its deadline keeps the text before it, as on the desktop.
 
 ## Security
 

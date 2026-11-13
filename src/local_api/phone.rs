@@ -13,6 +13,9 @@
 //! Only the app process serves: each OS's app holds a [`PhoneDictation`],
 //! and settings loads and saves hand it the wanted state ([`apply`]), so a
 //! CLI process that saves settings never opens a port.
+//!
+//! A phone's transcript goes through the same Output steps a desktop
+//! dictation does before it is sent back ([`process`]).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -123,12 +126,64 @@ pub(crate) fn apply(settings: &AppSettings) {
         // the listener runs in its place.
         selection: crate::transcription::custom_models::runnable(&settings.transcription),
     });
+    #[cfg(not(target_os = "macos"))]
+    {
+        *MODES.write().unwrap_or_else(|error| error.into_inner()) = wanted
+            .is_some()
+            .then(|| crate::dictation::modes::ModeRuntime::from_settings(settings));
+    }
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
         desired.wanted = wanted;
         desired.generation += 1;
         CHANGED.notify_all();
     }
+}
+
+/// Linux and Windows processing, as their listeners build it from settings.
+/// macOS reads the listener's own profiles (`dictation::config`) instead.
+#[cfg(not(target_os = "macos"))]
+static MODES: RwLock<Option<crate::dictation::modes::ModeRuntime>> = RwLock::new(None);
+
+/// Runs a phone transcript through what a desktop dictation gets before it
+/// pastes: replacements, the OpenCode rewrite, and transformations, in each
+/// OS's own order. No desktop app or page is behind a phone's text field, so
+/// the Global mode applies. Any step that fails keeps the text before it.
+fn process(raw: String, language: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let context = crate::dictation::context::ContextSnapshot::default();
+    let transformations = crate::personal_commands::hosted_client();
+    let source = crate::dictation::processor::Source::Dictation;
+    #[cfg(target_os = "macos")]
+    let processed = {
+        let cancelled = AtomicBool::new(false);
+        let mut processed = crate::dictation::config::dictation_profiles()
+            .process_cancellable(raw, language, &context, &cancelled, source);
+        processed.apply_transformations(&transformations, &context, &cancelled, source);
+        processed
+    };
+    #[cfg(not(target_os = "macos"))]
+    let processed = {
+        let modes = MODES
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let Some(modes) = modes else {
+            return raw.to_owned();
+        };
+        modes.process(raw, language, &context, &transformations, source)
+    };
+    if let Some(error) = processed
+        .observation
+        .as_ref()
+        .and_then(|observation| observation.fallback.as_ref())
+    {
+        tracing::warn!(%error, "phone dictation processing fell back to the previous step's text");
+    }
+    processed.text.trim().to_owned()
 }
 
 /// The relay's current state, for the window.
@@ -595,7 +650,8 @@ fn transcribe(
     let Some(admission) = shared.transcription.admit_audio() else {
         return Some(HttpResponse::code(429, "busy"));
     };
-    super::transcribe_audio(
+    let language = selection.language.clone();
+    let transcribed = super::transcribe_upload(
         stream,
         selection,
         content_length,
@@ -603,7 +659,14 @@ fn transcribe(
         &shared.transcription,
         &shared.stop,
         admission,
-    )
+    );
+    match transcribed {
+        Ok(heard) => Some(super::transcript_response(
+            &process(heard.transcript, &language),
+            heard.duration_ms,
+        )),
+        Err(response) => response,
+    }
 }
 
 /// Whether `peer` is on a network Hex answers: loopback, link-local, the

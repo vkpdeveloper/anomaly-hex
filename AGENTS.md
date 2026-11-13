@@ -230,7 +230,8 @@ substitute for source inspection or a second roadmap.
   and transcribes through `transcription/service` like the local API.
   `android/` is Hex for Android in Kotlin: an accessibility-service button
   over focused text fields that records 16 kHz audio, sends it on a
-  pre-picked route (Tailscale first), and inserts the raw transcript.
+  pre-picked route (Tailscale first), and inserts the transcript, which
+  went through Global's Output steps as a desktop dictation does.
   Contract: [`docs/phone-dictation.md`](docs/phone-dictation.md).
 - `sdk/typescript`: Promise and Effect v4 host wrappers for direct-child
   lifecycle, authenticated model preparation, and host-audio transcription.

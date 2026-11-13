@@ -1015,11 +1015,56 @@ fn transcribe_audio(
     stream: &mut TcpStream,
     selection: crate::transcription::models::TranscriptionSelection,
     content_length: usize,
-    mut body: Vec<u8>,
+    body: Vec<u8>,
     transcription: &crate::transcription::service::TranscriptionServiceHandle,
     shutdown: &AtomicBool,
     admission: crate::transcription::service::AudioAdmission,
 ) -> Option<HttpResponse> {
+    let transcribed = transcribe_upload(
+        stream,
+        selection,
+        content_length,
+        body,
+        transcription,
+        shutdown,
+        admission,
+    );
+    match transcribed {
+        Ok(Transcribed {
+            transcript,
+            duration_ms,
+        }) => Some(transcript_response(&transcript, duration_ms)),
+        Err(response) => response,
+    }
+}
+
+/// A finished upload's transcript as the model heard it.
+struct Transcribed {
+    transcript: String,
+    duration_ms: u64,
+}
+
+fn transcript_response(transcript: &str, duration_ms: u64) -> HttpResponse {
+    HttpResponse::json(
+        200,
+        &serde_json::json!({
+            "transcript": transcript,
+            "durationMs": duration_ms,
+        }),
+    )
+}
+
+/// Reads, decodes, and transcribes an uploaded WAV. `Err` carries the reply
+/// for a failure, or `None` when there is no one left to answer.
+fn transcribe_upload(
+    stream: &mut TcpStream,
+    selection: crate::transcription::models::TranscriptionSelection,
+    content_length: usize,
+    mut body: Vec<u8>,
+    transcription: &crate::transcription::service::TranscriptionServiceHandle,
+    shutdown: &AtomicBool,
+    admission: crate::transcription::service::AudioAdmission,
+) -> std::result::Result<Transcribed, Option<HttpResponse>> {
     if let Err(error) = read_body_bounded(
         stream,
         content_length,
@@ -1028,7 +1073,7 @@ fn transcribe_audio(
         MAX_AUDIO_BYTES,
         UPLOAD_DEADLINE,
     ) {
-        return Some(match error {
+        return Err(Some(match error {
             BodyReadError::ResourceExhausted => HttpResponse::code(413, "resource-exhausted"),
             BodyReadError::Invalid => HttpResponse::code(400, "invalid-audio"),
             BodyReadError::Io(error) => {
@@ -1036,42 +1081,39 @@ fn transcribe_audio(
                 HttpResponse::code(400, "invalid-audio")
             }
             BodyReadError::Deadline => HttpResponse::code(408, "upload-timeout"),
-            BodyReadError::Shutdown => return None,
-        });
+            BodyReadError::Shutdown => return Err(None),
+        }));
     }
     let clip = match crate::transcription::service::AudioClip::decode_wav(Cursor::new(body)) {
         Ok(clip) => clip,
         Err(crate::transcription::service::AudioError::ResourceExhausted) => {
-            return Some(HttpResponse::code(413, "resource-exhausted"));
+            return Err(Some(HttpResponse::code(413, "resource-exhausted")));
         }
         Err(crate::transcription::service::AudioError::Unsupported) => {
-            return Some(HttpResponse::code(415, "unsupported-audio"));
+            return Err(Some(HttpResponse::code(415, "unsupported-audio")));
         }
         Err(crate::transcription::service::AudioError::Invalid) => {
-            return Some(HttpResponse::code(400, "invalid-audio"));
+            return Err(Some(HttpResponse::code(400, "invalid-audio")));
         }
     };
     let duration_ms = clip.duration_ms;
     let job = match transcription.transcribe(selection, clip, admission) {
         Ok(job) => job,
-        Err(error) => return Some(transcription_error(error)),
+        Err(error) => return Err(Some(transcription_error(error))),
     };
     loop {
         match job.wait_timeout(TRANSCRIPTION_POLL_INTERVAL) {
             Ok(Some(Ok(transcript))) => {
-                return Some(HttpResponse::json(
-                    200,
-                    &serde_json::json!({
-                        "transcript": transcript,
-                        "durationMs": duration_ms,
-                    }),
-                ));
+                return Ok(Transcribed {
+                    transcript,
+                    duration_ms,
+                });
             }
-            Ok(Some(Err(error))) | Err(error) => return Some(transcription_error(error)),
+            Ok(Some(Err(error))) | Err(error) => return Err(Some(transcription_error(error))),
             Ok(None) => {
                 if shutdown.load(Ordering::Acquire) || client_aborted(stream) {
                     job.cancel();
-                    return None;
+                    return Err(None);
                 }
             }
         }

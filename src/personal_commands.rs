@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -383,6 +383,9 @@ impl PersonalCommands {
             tracing::info!("{}", lock.refusal());
             return None;
         }
+        *HOSTED_CLIENT
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Arc::downgrade(&transformations);
         let (request_sender, requests) = mpsc::sync_channel(32);
         let stop = Arc::new(AtomicBool::new(false));
         let (done_sender, worker_done) = mpsc::sync_channel(1);
@@ -750,6 +753,20 @@ struct RegisteredTransformation {
     description: Option<String>,
     /// Milliseconds; the default depends on what the config can reach.
     timeout: Option<u64>,
+}
+
+/// The client the most recently started host feeds, so work outside the
+/// listener (the phone relay) runs the same transformations dictation does.
+static HOSTED_CLIENT: RwLock<Weak<TransformationClient>> = RwLock::new(Weak::new());
+
+/// The listener's transformation client while it lives, else an empty one
+/// that still runs the built-in transformations.
+pub fn hosted_client() -> Arc<TransformationClient> {
+    HOSTED_CLIENT
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .upgrade()
+        .unwrap_or_default()
 }
 
 #[derive(Default)]

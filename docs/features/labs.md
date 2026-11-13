@@ -148,7 +148,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        keeps a rolling 15 s SCClipBufferingOutput screen buffer for hex capture replay and the replay shortcut;
 │                                        macOS keeps its screen-recording dot lit the whole time it is on
 ├── Phone dictation no   labs.phone_dictation + labs.phone_dictation_port (0 = automatic)
-│                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi (docs/phone-dictation.md)
+│                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi, with Global's Output steps (docs/phone-dictation.md)
 ├── Terminal paste  no    paste_with_shift             (Windows) paste with Ctrl+Shift+V (#477/#478; Linux keeps it in General);
 │                                         Java games (javaw/java, e.g. Minecraft) still get Ctrl+V (#1362)
 │                                         // check: terminal_paste_sends_plain_control_v_to_java_games (windows/paste.rs)
