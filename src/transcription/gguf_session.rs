@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use crate::transcription::models::{
     AUTO_LANGUAGE, ModelDefinition, ModelRuntime, TranscriptionSelection,
 };
+use crate::transcription::transcript::TimestampLevel;
 
 /// 8 s of audio reaches every stream window shape a dictation can use (the
 /// left context grows to 5.6 s), so the GPU driver compiles those kernels
@@ -166,6 +168,9 @@ pub(crate) struct OfflineGgufSession {
     last_run: Option<Instant>,
     /// How runs take the vocabulary.
     vocabulary: VocabularySlot,
+    /// The file's architecture, read once: Whisper trims its near-silent
+    /// edges before a run.
+    architecture: String,
 }
 
 impl OfflineGgufSession {
@@ -181,12 +186,14 @@ impl OfflineGgufSession {
         let options = session_options(model.device()?.device_type);
         let session = model.session_with(&options)?;
         let vocabulary = VocabularySlot::of(&model);
+        let architecture = model.arch();
         Ok(Self {
             model,
             session: Some(session),
             options,
             last_run: None,
             vocabulary,
+            architecture,
         })
     }
 
@@ -407,12 +414,37 @@ impl OfflineGgufSession {
         }
     }
 
+    /// The audio a whole-clip run gets, and where it starts in `samples`.
+    /// Whisper decodes a whole 30 s window and fills a near-silent opening or
+    /// tail with text nobody said (a Turkish "thanks for watching", #1770), so
+    /// its clip keeps only the speech the detector hears plus
+    /// [`WHISPER_EDGE_MARGIN_SAMPLES`]. Another model, a detector that is
+    /// unavailable, and a clip it hears no speech in all keep every sample.
+    fn whisper_audio<'a>(&self, samples: &'a [f32]) -> (Cow<'a, [f32]>, usize) {
+        let bounds = if self.architecture == "whisper" {
+            crate::transcription::speech_detector::speech_bounds(samples)
+        } else {
+            None
+        };
+        let (audio, trimmed) = trimmed_audio(samples, &self.architecture, bounds);
+        if let Cow::Owned(audio) = &audio {
+            tracing::info!(
+                trimmed_ms = trimmed / 16,
+                kept_ms = audio.len() / 16,
+                "trimmed near-silent edges before a Whisper run"
+            );
+        }
+        (audio, trimmed)
+    }
+
     pub(crate) fn transcribe_chunked(
         &mut self,
         samples: &[f32],
         options: &transcribe_cpp::RunOptions,
         max_audio_samples: Option<usize>,
     ) -> Result<String> {
+        let (audio, _) = self.whisper_audio(samples);
+        let samples = audio.as_ref();
         let Some(max_samples) =
             max_audio_samples.filter(|&max_samples| samples.len() > max_samples)
         else {
@@ -422,7 +454,8 @@ impl OfflineGgufSession {
                 .wrap_err("transcription failed");
         };
         let mut output = Vec::new();
-        for samples in samples.chunks(max_samples) {
+        for range in chunk_ranges(samples, max_samples) {
+            let samples = &samples[range];
             if job_cancel().is_some_and(|cancel| cancel.is_cancelled()) {
                 return Err(eyre!("transcription was cancelled"));
             }
@@ -443,13 +476,246 @@ impl OfflineGgufSession {
         }
         Ok(output.join(" "))
     }
+
+    /// [`Self::transcribe_chunked`] with the model's own segment and word
+    /// times, moved onto the clip's timeline by each chunk's sample position.
+    /// Text is joined exactly as the untimed run joins it.
+    pub(crate) fn transcribe_chunked_timed(
+        &mut self,
+        samples: &[f32],
+        options: &transcribe_cpp::RunOptions,
+        max_audio_samples: Option<usize>,
+    ) -> Result<crate::transcription::transcript::Transcript> {
+        let (audio, trimmed) = self.whisper_audio(samples);
+        let samples = audio.as_ref();
+        let Some(max_samples) =
+            max_audio_samples.filter(|&max_samples| samples.len() > max_samples)
+        else {
+            let transcript = self
+                .run(samples, options)
+                .wrap_err("transcription failed")?;
+            return Ok(timed(transcript, chunk_offset_ms(trimmed, 0)));
+        };
+        let mut timed = crate::transcription::transcript::Transcript::default();
+        let mut texts = Vec::new();
+        for range in chunk_ranges(samples, max_samples) {
+            let offset = chunk_offset_ms(trimmed, range.start);
+            let samples = &samples[range];
+            if job_cancel().is_some_and(|cancel| cancel.is_cancelled()) {
+                return Err(eyre!("transcription was cancelled"));
+            }
+            if !chunk_may_hold_speech(samples) {
+                tracing::info!(
+                    chunk_ms = samples.len() / 16,
+                    "skipped a chunk of a long clip with no speech"
+                );
+                continue;
+            }
+            let mut chunk = samples.to_vec();
+            crate::dictation::pad_for_parakeet(&mut chunk);
+            let transcript = self.run(&chunk, options).wrap_err("transcription failed")?;
+            let text = transcript.text.trim();
+            if !text.is_empty() {
+                texts.push(text.to_string());
+            }
+            // The offset comes from where the range sits in the clip, never
+            // from how many chunks produced text.
+            let spans = timed_spans(transcript, offset);
+            timed.segments.extend(spans.segments);
+            timed.words.extend(spans.words);
+        }
+        timed.text = texts.join(" ");
+        Ok(timed)
+    }
 }
 
-/// Whether one chunk of a long clip goes to the model. The clip as a whole
-/// held speech, but a chunk of it can be only silence (a locked dictation
-/// left waiting before the words), and models such as Cohere invent long,
-/// repeating text for that (#1194). Without the detector every chunk runs.
-fn chunk_may_hold_speech(samples: &[f32]) -> bool {
+/// A whole clip's segments and words, from its single run.
+fn timed(
+    transcript: transcribe_cpp::Transcript,
+    offset_ms: i64,
+) -> crate::transcription::transcript::Transcript {
+    let text = transcript.text.clone();
+    let spans = timed_spans(transcript, offset_ms);
+    crate::transcription::transcript::Transcript {
+        text,
+        segments: spans.segments,
+        words: spans.words,
+    }
+}
+
+/// The native timing level a run options timestamp kind asks for.
+pub(crate) fn timestamp_level(kind: transcribe_cpp::TimestampKind) -> TimestampLevel {
+    match kind {
+        transcribe_cpp::TimestampKind::Word | transcribe_cpp::TimestampKind::Token => {
+            TimestampLevel::Word
+        }
+        transcribe_cpp::TimestampKind::Segment | transcribe_cpp::TimestampKind::Auto => {
+            TimestampLevel::Segment
+        }
+        transcribe_cpp::TimestampKind::None => TimestampLevel::None,
+    }
+}
+
+/// 100 ms at 16 kHz: the span a long clip is cut through.
+const QUIET_SPAN_SAMPLES: usize = 1_600;
+/// How far back from a window's end the quietest span is looked for.
+const QUIET_SEARCH_SAMPLES: usize = 5 * 16_000;
+
+/// Where a window is cut into the next one: the middle of the quietest 100 ms
+/// in its last five seconds (or its last half, when that is shorter), never
+/// its first sample. `samples` must hold at least `max_samples`, and only
+/// those are read, so a streaming reader can cut before it has read the rest
+/// of the clip.
+pub(crate) fn quiet_cut(samples: &[f32], max_samples: usize) -> usize {
+    let max_samples = max_samples.max(1);
+    let search = QUIET_SEARCH_SAMPLES.min(max_samples / 2).max(1);
+    let span = QUIET_SPAN_SAMPLES.min(search);
+    let quiet =
+        max_samples - search + quietest_span(&samples[max_samples - search..max_samples], span);
+    quiet.max(1)
+}
+
+/// Splits a clip into consecutive ranges of at most `max_samples`, cutting
+/// each window at the middle of the quietest 100 ms in its last five seconds
+/// (or half the window, when that is shorter), adapted from Cohere's reference
+/// processor. An exact sample cut lands mid-word, and each slice starts a
+/// fresh sentence with a capital and a closing full stop, so a long dictation
+/// reads as many sentences instead of one. Each cut is [`quiet_cut`]'s.
+///
+/// Every sample is covered exactly once by a non-empty range. Ties pick the
+/// latest span, so the ranges are deterministic. The search is energy-based,
+/// so continuous speech with no quieter stretch there still cuts at its
+/// quietest point, which can land inside a word.
+pub(crate) fn chunk_ranges(samples: &[f32], max_samples: usize) -> Vec<Range<usize>> {
+    let max_samples = max_samples.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < samples.len() {
+        if samples.len() - start <= max_samples {
+            ranges.push(start..samples.len());
+            break;
+        }
+        let cut = start + quiet_cut(&samples[start..], max_samples);
+        ranges.push(start..cut);
+        start = cut;
+    }
+    ranges
+}
+
+/// The midpoint of the quietest `span` samples, the latest one on a tie.
+fn quietest_span(samples: &[f32], span: usize) -> usize {
+    if samples.is_empty() {
+        return 0;
+    }
+    let span = span.clamp(1, samples.len());
+
+    let sample_energy = |sample: f32| f64::from(sample) * f64::from(sample);
+    let mut energy = samples[..span]
+        .iter()
+        .copied()
+        .map(sample_energy)
+        .sum::<f64>();
+    let mut quietest = energy;
+    let mut quietest_start = 0;
+    for next in 1..=samples.len() - span {
+        let leaving = sample_energy(samples[next - 1]);
+        let entering = sample_energy(samples[next + span - 1]);
+        energy += entering - leaving;
+        // Ties keep the latest span.
+        if energy <= quietest {
+            quietest = energy;
+            quietest_start = next;
+        }
+    }
+    quietest_start + span / 2
+}
+
+/// Where `sample` sits in the clip, in whole milliseconds.
+pub(crate) fn sample_offset_ms(sample: usize) -> i64 {
+    i64::try_from(sample / 16).unwrap_or(i64::MAX)
+}
+
+/// Where a chunk starting at `chunk_start` in the trimmed audio sits in the
+/// original clip, in whole milliseconds. A trimmed clip's segment and word
+/// times move by this, so they stay on the clip's timeline; the whole clip is
+/// the chunk that starts at 0.
+fn chunk_offset_ms(trim_start: usize, chunk_start: usize) -> i64 {
+    sample_offset_ms(trim_start.saturating_add(chunk_start))
+}
+
+fn timed_spans(
+    transcript: transcribe_cpp::Transcript,
+    offset_ms: i64,
+) -> crate::transcription::transcript::Transcript {
+    use crate::transcription::transcript::TranscriptSegment;
+    let span = |start_ms: i64, end_ms: i64, text: String| {
+        let text = text.trim().to_owned();
+        let start_ms = start_ms.max(0);
+        (!text.is_empty()).then(|| TranscriptSegment {
+            start_ms: start_ms.saturating_add(offset_ms),
+            end_ms: end_ms.max(start_ms).saturating_add(offset_ms),
+            text,
+        })
+    };
+    crate::transcription::transcript::Transcript {
+        segments: transcript
+            .segments
+            .into_iter()
+            .filter_map(|segment| span(segment.t0_ms, segment.t1_ms, segment.text))
+            .collect(),
+        words: transcript
+            .words
+            .into_iter()
+            .filter_map(|word| span(word.t0_ms, word.t1_ms, word.text))
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// How much audio a trimmed Whisper run keeps around the speech the detector
+/// hears, on each side.
+const WHISPER_EDGE_MARGIN_SAMPLES: usize = 8_000;
+
+/// The span of a clip of `len` samples a whole-clip run keeps. A Whisper clip
+/// loses everything outside its detected speech plus
+/// [`WHISPER_EDGE_MARGIN_SAMPLES`]; any other model, and a clip without speech
+/// bounds, keeps every sample.
+fn whisper_span(len: usize, architecture: &str, bounds: Option<Range<usize>>) -> Range<usize> {
+    match (architecture, bounds) {
+        ("whisper", Some(bounds)) => crate::transcription::speech_detector::edge_bounds(
+            len,
+            bounds,
+            WHISPER_EDGE_MARGIN_SAMPLES,
+        ),
+        _ => 0..len,
+    }
+}
+
+/// `samples` for a whole-clip run: the span [`whisper_span`] keeps, padded to
+/// the minimum duration every chunk and every caller pads to, and where that
+/// span starts in `samples`. A clip the span covers whole is borrowed, never
+/// copied or padded.
+fn trimmed_audio<'a>(
+    samples: &'a [f32],
+    architecture: &str,
+    bounds: Option<Range<usize>>,
+) -> (Cow<'a, [f32]>, usize) {
+    let span = whisper_span(samples.len(), architecture, bounds);
+    if span.start == 0 && span.end == samples.len() {
+        return (Cow::Borrowed(samples), 0);
+    }
+    let mut audio = samples[span.clone()].to_vec();
+    crate::dictation::pad_for_parakeet(&mut audio);
+    (Cow::Owned(audio), span.start)
+}
+
+/// Whether one chunk of a long clip, or one piece of a long file, goes to the
+/// model. The recording as a whole held speech, but a chunk of it can be only
+/// silence (a locked dictation left waiting before the words, or a pause
+/// between two pieces), and models such as Cohere and Whisper invent long,
+/// repeating text for that (#1194, #1770), or run to their generation cap
+/// (#968). Without the detector every chunk runs.
+pub(crate) fn chunk_may_hold_speech(samples: &[f32]) -> bool {
     crate::transcription::speech_detector::contains_speech(samples) != Some(false)
 }
 
@@ -634,6 +900,135 @@ mod tests {
     }
 
     #[test]
+    fn a_chunks_times_move_onto_the_clips_timeline_by_sample_position() {
+        // Offsets come from where a range starts, never from how many chunks
+        // produced text.
+        assert_eq!(sample_offset_ms(0), 0);
+        assert_eq!(sample_offset_ms(2 * 30 * 16_000), 60_000);
+        assert_eq!(sample_offset_ms(1_600), 100);
+
+        let shifted = timed_spans(
+            transcribe_cpp::Transcript {
+                text: "hello".into(),
+                segments: vec![transcribe_cpp::Segment {
+                    text: " hello ".into(),
+                    t0_ms: 0,
+                    t1_ms: 480,
+                    ..Default::default()
+                }],
+                words: vec![
+                    transcribe_cpp::Word {
+                        text: "hello".into(),
+                        t0_ms: 10,
+                        t1_ms: 480,
+                        ..Default::default()
+                    },
+                    transcribe_cpp::Word {
+                        text: "  ".into(),
+                        t0_ms: 500,
+                        t1_ms: 600,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            sample_offset_ms(2 * 30 * 16_000),
+        );
+        assert_eq!(shifted.segments.len(), 1);
+        assert_eq!(
+            (
+                shifted.segments[0].start_ms,
+                shifted.segments[0].end_ms,
+                shifted.segments[0].text.as_str()
+            ),
+            (60_000, 60_480, "hello")
+        );
+        assert_eq!(shifted.words.len(), 1, "an empty word is dropped");
+        assert_eq!(
+            (shifted.words[0].start_ms, shifted.words[0].end_ms),
+            (60_010, 60_480)
+        );
+    }
+
+    #[test]
+    fn long_clip_ranges_cover_every_sample_once_within_the_limit() {
+        let samples = vec![0.2_f32; 3 * 16_000 + 123];
+        let max_samples = 16_000;
+        let ranges = chunk_ranges(&samples, max_samples);
+        assert_eq!(ranges.first().map(|range| range.start), Some(0));
+        assert_eq!(ranges.last().map(|range| range.end), Some(samples.len()));
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "the ranges are contiguous");
+        }
+        for range in &ranges {
+            assert!(!range.is_empty(), "{range:?}");
+            assert!(range.len() <= max_samples, "{range:?}");
+        }
+        assert_eq!(
+            ranges.iter().map(|range| range.len()).sum::<usize>(),
+            samples.len()
+        );
+    }
+
+    #[test]
+    fn a_long_clip_is_cut_inside_a_silence_near_the_window_end() {
+        // Cohere's 35 s window, and a silent second inside the 5 s a cut is
+        // searched for at the end of the first window.
+        let max_samples = 35 * 16_000;
+        let mut samples = vec![0.25_f32; 44 * 16_000];
+        let gap = 31 * 16_000..32 * 16_000;
+        samples[gap.clone()].fill(0.0);
+        let ranges = chunk_ranges(&samples, max_samples);
+        assert_eq!(ranges.len(), 2);
+        let cut = ranges[0].end;
+        assert!(gap.contains(&cut), "cut at {cut} is outside {gap:?}");
+        assert_eq!(ranges[1].start, cut);
+    }
+
+    #[test]
+    fn a_clip_without_silence_still_cuts_in_the_search_region() {
+        let max_samples = 35 * 16_000;
+        let samples = vec![0.25_f32; 40 * 16_000];
+        let ranges = chunk_ranges(&samples, max_samples);
+        assert_eq!(ranges.len(), 2);
+        let cut = ranges[0].end;
+        assert!(
+            (max_samples - QUIET_SEARCH_SAMPLES..max_samples).contains(&cut),
+            "cut at {cut} is outside the last 5 s of the first window"
+        );
+        assert_eq!(
+            cut,
+            max_samples - QUIET_SPAN_SAMPLES / 2,
+            "every span is equally quiet, so the latest one wins"
+        );
+        assert!(ranges[1].len() <= max_samples);
+    }
+
+    #[test]
+    fn a_clip_that_fits_one_window_is_not_cut() {
+        let samples = vec![0.1_f32; 16_000];
+        assert_eq!(chunk_ranges(&samples, 30 * 16_000), vec![0..16_000]);
+        assert_eq!(chunk_ranges(&samples, 16_000), vec![0..16_000]);
+        assert!(chunk_ranges(&[], 16_000).is_empty());
+    }
+
+    #[test]
+    fn a_models_timestamp_kind_names_its_finest_level() {
+        for (kind, level) in [
+            (transcribe_cpp::TimestampKind::Word, TimestampLevel::Word),
+            (transcribe_cpp::TimestampKind::Token, TimestampLevel::Word),
+            (
+                transcribe_cpp::TimestampKind::Segment,
+                TimestampLevel::Segment,
+            ),
+            (transcribe_cpp::TimestampKind::Auto, TimestampLevel::Segment),
+            (transcribe_cpp::TimestampKind::None, TimestampLevel::None),
+        ] {
+            assert_eq!(timestamp_level(kind), level, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn only_a_completed_run_inside_the_window_counts_as_recent() {
         let now = Instant::now();
         let window = Duration::from_secs(60);
@@ -698,6 +1093,75 @@ mod tests {
         })
         .wrap_err("transcription failed");
         assert!(!output_truncated(&repeating.unwrap_err()));
+    }
+
+    #[test]
+    fn a_whisper_clip_is_trimmed_to_its_speech_plus_a_margin() {
+        // 10 s clip, speech from 5 s to 9 s.
+        assert_eq!(
+            whisper_span(160_000, "whisper", Some(80_000..144_000)),
+            72_000..152_000
+        );
+        // Speech up to an edge keeps that edge.
+        assert_eq!(
+            whisper_span(160_000, "whisper", Some(0..100_000)),
+            0..108_000
+        );
+        assert_eq!(
+            whisper_span(160_000, "whisper", Some(60_000..160_000)),
+            52_000..160_000
+        );
+        // Only Whisper trims, and only with speech bounds from the detector.
+        assert_eq!(
+            whisper_span(160_000, "cohere_asr", Some(80_000..144_000)),
+            0..160_000
+        );
+        assert_eq!(whisper_span(160_000, "whisper", None), 0..160_000);
+    }
+
+    #[test]
+    fn a_whisper_clip_is_trimmed_and_padded_to_a_chunks_minimum() {
+        // 10 s clip, speech from 9.0 s to 9.2 s. The 500 ms margin leaves
+        // 1.2 s, which every chunk pads to the 1.5 s minimum.
+        let samples = vec![0.25_f32; 160_000];
+        let (audio, start) = trimmed_audio(&samples, "whisper", Some(144_000..147_200));
+        assert_eq!(start, 136_000);
+        assert_eq!(audio.len(), 24_000);
+        assert!(audio[..19_200].iter().all(|&sample| sample == 0.25));
+        assert!(audio[19_200..].iter().all(|&sample| sample == 0.0));
+        // Another model, no detector, or speech reaching both edges: the clip
+        // is borrowed unchanged, with no copy or padding.
+        for (architecture, bounds) in [
+            ("cohere_asr", Some(144_000..147_200)),
+            ("whisper", None),
+            ("whisper", Some(0..160_000)),
+        ] {
+            let label = format!("{architecture} {bounds:?}");
+            let (audio, start) = trimmed_audio(&samples, architecture, bounds);
+            assert!(matches!(audio, Cow::Borrowed(_)), "{label}");
+            assert_eq!((start, audio.len()), (0, samples.len()));
+        }
+    }
+
+    #[test]
+    fn a_trimmed_chunks_times_stay_on_the_clips_timeline() {
+        // `transcribe_chunked_timed` asks `chunk_offset_ms` for the whole clip
+        // and for each chunk of the trimmed audio; this clip starts 8.5 s in,
+        // so its first chunk reports 8.5 s. The end-to-end timed run needs a
+        // model and is not run here.
+        let samples = vec![0.1_f32; 160_000];
+        let (audio, start) = trimmed_audio(&samples, "whisper", Some(144_000..147_200));
+        assert_eq!(start, 136_000);
+        assert_eq!(chunk_offset_ms(start, 0), 8_500);
+        let ranges = chunk_ranges(&audio, 16_000);
+        assert_eq!(ranges.len(), 2, "the padded clip is cut into two windows");
+        for range in &ranges {
+            assert_eq!(
+                chunk_offset_ms(start, range.start),
+                8_500 + sample_offset_ms(range.start),
+                "{range:?}"
+            );
+        }
     }
 
     #[test]

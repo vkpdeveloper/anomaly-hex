@@ -189,9 +189,10 @@ struct Registry {
     /// The folder and modification time the entries were read at.
     stamp: Option<(PathBuf, Option<SystemTime>)>,
     entries: Vec<Entry>,
-    /// Definitions built so far, by ID and name: a rename or re-import
-    /// builds one, and every other read reuses it.
-    built: HashMap<(CustomModelId, String), &'static ModelDefinition>,
+    /// Definitions built so far, by ID, name, and the file it uses: a
+    /// rename, an in-place change, or a re-import builds one, and every
+    /// other read reuses it.
+    built: HashMap<(CustomModelId, String, Option<PathBuf>), &'static ModelDefinition>,
     placeholders: HashMap<CustomModelId, &'static ModelDefinition>,
 }
 
@@ -250,7 +251,7 @@ impl Registry {
                 };
                 let definition = *self
                     .built
-                    .entry((id, manifest.name.clone()))
+                    .entry((id, manifest.name.clone(), manifest.path.clone()))
                     .or_insert_with(|| build(id, &manifest));
                 let receipt = fs::read(receipt_path(&model_file(&directory, id)))
                     .ok()
@@ -437,13 +438,38 @@ pub fn imported() -> Vec<Imported> {
         .collect()
 }
 
+/// Why the listener runs [`fallback`] in place of a saved selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FallbackReason {
+    /// The import's file or manifest is gone.
+    Missing,
+    /// The import's file is not the one imported.
+    Changed,
+    /// Parakeet Ultra with its Labs toggle off.
+    LabsOff,
+}
+
+/// Why `selection` can't run now, if it can't.
+pub fn fallback_reason(selection: &TranscriptionSelection) -> Option<FallbackReason> {
+    match selection.model {
+        TranscriptionModelId::Custom(id) => match status(id) {
+            Status::Ready => None,
+            Status::Missing => Some(FallbackReason::Missing),
+            Status::Changed => Some(FallbackReason::Changed),
+        },
+        TranscriptionModelId::ParakeetUltra => {
+            (!crate::labs::parakeet_ultra()).then_some(FallbackReason::LabsOff)
+        }
+        _ => None,
+    }
+}
+
 /// The selection the listener runs for `selection`: the same one, unless it
-/// names an import that can't run or Parakeet Ultra with its toggle off,
-/// when it is a downloaded fallback. The saved
-/// choice stays as it is until the person fixes it or picks another.
+/// can't run ([`fallback_reason`]), when it is a downloaded fallback. The
+/// saved choice stays as it is until the person fixes it or picks another.
 pub fn runnable(selection: &TranscriptionSelection) -> TranscriptionSelection {
-    let gated = selection.model.is_labs_gated();
-    if gated && !super::models::definition(selection.model).available() {
+    if fallback_reason(selection).is_some() {
         fallback()
     } else {
         selection.clone()
@@ -809,7 +835,8 @@ pub fn adopt_in_place(
 /// share one file. Its header is checked, it is hashed in full once, and
 /// only Hex's receipt and record are written, in Hex's own folder. An
 /// earlier import of the same file by copy keeps its name, and Hex's copy
-/// goes. Forgetting it later leaves the file.
+/// goes once the OS shows the chosen file is a different one; choosing
+/// Hex's copy itself changes nothing. Forgetting it later leaves the file.
 pub fn add_in_place(path: &Path, canceled: &AtomicBool) -> Result<CustomModelId> {
     record_in_place(path, None, None, canceled)
 }
@@ -838,6 +865,18 @@ fn record_in_place(
         .ok()
         .and_then(|data| serde_json::from_slice::<Manifest>(&data).ok())
         .filter(|manifest| manifest.sha256 == sha256);
+    let copy = model_file(&directory, id);
+    // Hex's own copy reached through another spelling (a linked folder, a
+    // case-insensitive name, a hard link) is already imported: using it "in
+    // place" would delete the file it names.
+    if existing
+        .as_ref()
+        .is_some_and(|existing| existing.path.is_none())
+        && names_same_file(path, &copy)
+    {
+        tracing::info!(id = id.as_str(), path = %path.display(), "the file chosen to use in place is Hex's own copy; keeping the import as it is");
+        return Ok(id);
+    }
     super::models::write_json_atomically(
         &receipt_path(&model_file(&directory, id)),
         &Receipt::of(path, sha256.clone())?,
@@ -867,9 +906,9 @@ fn record_in_place(
         },
     )?;
     // The same file imported by copy before: the file in place replaces
-    // Hex's copy, which is never the file chosen.
-    let copy = model_file(&directory, id);
-    if existing.is_some_and(|existing| existing.path.is_none()) && copy != path {
+    // Hex's copy, but only once the OS shows they are two files. When it
+    // can't tell, the copy stays.
+    if existing.is_some_and(|existing| existing.path.is_none()) && independent(path, &copy) {
         match fs::remove_file(&copy) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                 tracing::warn!(%error, id = id.as_str(), "could not remove Hex's copy of a model now used in place");
@@ -879,6 +918,22 @@ fn record_in_place(
     }
     tracing::info!(id = id.as_str(), path = %path.display(), found = origin.is_some(), "using a speech model file where it is");
     Ok(id)
+}
+
+/// Whether two paths name the same file, after resolving links: the same
+/// resolved path, or the same file to the OS (device and inode, or volume
+/// and file index on Windows).
+fn names_same_file(left: &Path, right: &Path) -> bool {
+    matches!(
+        (fs::canonicalize(left), fs::canonicalize(right)),
+        (Ok(left), Ok(right)) if left == right
+    ) || matches!(same_file::is_same_file(left, right), Ok(true))
+}
+
+/// Whether two paths are positively two different files: both resolve and
+/// the OS reports different identities. Anything unreadable is not proof.
+fn independent(left: &Path, right: &Path) -> bool {
+    matches!(same_file::is_same_file(left, right), Ok(false))
 }
 
 /// Renames an import; only the picker's name changes.
@@ -1056,6 +1111,79 @@ mod tests {
         remove(id).unwrap();
         assert!(!is_registered(id));
         assert!(source.is_file(), "forgetting leaves the file");
+        super::super::models::set_test_models_dir(None);
+        fs::remove_dir_all(models).unwrap();
+    }
+
+    /// Hex's own copy chosen through a linked folder, a hard link, or
+    /// (on a case-insensitive volume) another case is that copy: using it
+    /// in place keeps the import as it is and never deletes the file.
+    #[cfg(unix)]
+    #[test]
+    fn hex_s_own_copy_chosen_through_another_path_is_never_deleted() {
+        let models = temporary_models_dir();
+        let source = models.join("primeline.gguf");
+        fs::write(&source, parakeet("Parakeet primeLine")).unwrap();
+        let id = import(&source, Some("Mine"), &AtomicBool::new(false)).unwrap();
+        let directory = directory().unwrap();
+        let copy = model_file(&directory, id);
+        let file_name = copy.file_name().unwrap();
+        let linked = models.join("linked");
+        std::os::unix::fs::symlink(&directory, &linked).unwrap();
+        let hard = models.join("hard.gguf");
+        fs::hard_link(&copy, &hard).unwrap();
+        let mut chosen = vec![linked.join(file_name), hard];
+        let other_case = models
+            .join(
+                directory
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_uppercase(),
+            )
+            .join(file_name);
+        if other_case.is_file() {
+            chosen.push(other_case);
+        }
+        for path in chosen {
+            assert_eq!(add_in_place(&path, &AtomicBool::new(false)).unwrap(), id);
+            assert!(copy.is_file(), "{} deleted Hex's copy", path.display());
+            invalidate();
+            assert_eq!(status(id), Status::Ready);
+            let model = definition(id);
+            assert_eq!(super::super::models::model_path(model).unwrap(), copy);
+            assert_eq!(model.name, "Mine");
+        }
+        super::super::models::set_test_models_dir(None);
+        fs::remove_dir_all(models).unwrap();
+    }
+
+    /// A separate file with the same bytes, here reached through a linked
+    /// folder, is a different file: it replaces Hex's copy.
+    #[cfg(unix)]
+    #[test]
+    fn an_independent_identical_file_replaces_hex_s_copy() {
+        let models = temporary_models_dir();
+        let bytes = parakeet("Parakeet primeLine");
+        let original = models.join("primeline.gguf");
+        fs::write(&original, &bytes).unwrap();
+        let id = import(&original, None, &AtomicBool::new(false)).unwrap();
+        let copy = model_file(&directory().unwrap(), id);
+        let shared = models.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("primeline.gguf"), &bytes).unwrap();
+        let linked = models.join("linked-shared");
+        std::os::unix::fs::symlink(&shared, &linked).unwrap();
+        let chosen = linked.join("primeline.gguf");
+        assert_eq!(add_in_place(&chosen, &AtomicBool::new(false)).unwrap(), id);
+        assert!(!copy.exists(), "the independent file replaces Hex's copy");
+        assert!(original.is_file() && shared.join("primeline.gguf").is_file());
+        invalidate();
+        assert_eq!(status(id), Status::Ready);
+        assert_eq!(
+            super::super::models::model_path(definition(id)).unwrap(),
+            chosen
+        );
         super::super::models::set_test_models_dir(None);
         fs::remove_dir_all(models).unwrap();
     }

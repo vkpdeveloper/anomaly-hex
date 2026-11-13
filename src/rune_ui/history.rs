@@ -1,10 +1,11 @@
 //! The History pane: retained dictations (newest first) with search, one
 //! menu for retention, Keep recordings, and two-step Clear all history, and
 //! a detail view with Copy and Delete. It shares the host's store, which the listener records into.
-//! With Labs › Keep recordings on, an entry that kept its audio offers
-//! Transcribe again with any installed model, run on a worker; Replace keeps
-//! the earlier transcripts as versions to copy or switch back to. Every
-//! entry names the model that made its text, when it is known.
+//! With Labs › Keep recordings on, an entry that kept its audio can Play it
+//! through the output device and offers Transcribe again with any installed
+//! model, run on a worker; Replace keeps the earlier transcripts as versions
+//! to copy or switch back to. Every entry names the model that made its text,
+//! when it is known.
 
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
@@ -13,12 +14,15 @@ use rune_kit::{Menu as KitMenu, MenuItem, Placement, Select, SelectAppearance, T
 
 use super::controls::{ButtonKind, Paint, button, modal_scrim_transition, modal_transition};
 use super::list_detail::{self as ld, Item};
-use super::lists::{Tone, error_panel, section_label};
+use super::lists::{Tone, error_panel, section_label, small_button};
 use super::{Menu, Ui};
 use crate::desktop::i18n::{event_age, tr, tr_fill, tr_named};
+use crate::history::playback::Playback;
 use crate::history::stats::{AppCount, HistoryStats};
 use crate::history::{History, HistoryEntry, HistoryKind, HistoryRetention, Transcript};
 use crate::transcription::models::TranscriptionModelId;
+
+mod selection;
 
 /// The stats dialog's width and padding.
 const STATS_WIDTH: f32 = 460.0;
@@ -36,12 +40,18 @@ pub(super) struct HistoryPane {
     revision: Option<u64>,
     pub(super) selected: Option<u64>,
     pub(super) clear_armed: bool,
+    /// The shown entry whose Delete… was pressed, waiting for its
+    /// confirmation.
+    pub(super) delete_armed: Option<u64>,
     pub(super) copied: Option<u64>,
     error: Option<String>,
     /// Labs › Dictation stats: every retained entry summed up, while on.
     pub(super) stats: Option<HistoryStats>,
     /// The stats dialog is open.
     pub(super) stats_open: bool,
+    /// Labs › Select multiple dictations: every selected entry, and the
+    /// Delete confirmation while the card shows one.
+    pub(super) selection: selection::Selection,
     /// Labs › Keep recordings: the installed models Transcribe again
     /// offers, read when its menu opens.
     models: Vec<(TranscriptionModelId, &'static str)>,
@@ -52,6 +62,9 @@ pub(super) struct HistoryPane {
     pub(super) pending: Option<Pending>,
     /// The version whose Copy was pressed last: entry and index.
     pub(super) version_copied: Option<(u64, usize)>,
+    /// Labs › Keep recordings: the entry playing through the output, if one
+    /// started from the card.
+    pub(super) playback: Option<Playback>,
 }
 
 /// Transcribe again's chosen model and the language for this one run.
@@ -102,13 +115,19 @@ impl HistoryPane {
     }
 
     /// Refreshes the bounded snapshot for the current query, and the stats.
+    /// A reload, as entering the pane does, stops any Delete… confirmation.
     pub(super) fn reload(&mut self) {
+        self.delete_armed = None;
         self.reload_entries();
         self.reload_stats();
     }
 
     fn reload_entries(&mut self) {
+        let requery = self.searched != self.search.text;
         self.searched = self.search.text.clone();
+        if requery {
+            self.delete_armed = None;
+        }
         let Some(store) = &self.store else {
             return;
         };
@@ -121,6 +140,25 @@ impl HistoryPane {
         {
             self.selected = None;
         }
+        // A search, a delete, or new dictations leave no selected id behind.
+        selection::prune(self);
+        if self
+            .delete_armed
+            .is_some_and(|id| self.selected != Some(id))
+        {
+            self.delete_armed = None;
+        }
+    }
+
+    /// Escape: Delete… stops asking. Returns whether it was asking.
+    pub(super) fn cancel_delete(&mut self) -> bool {
+        self.delete_armed.take().is_some()
+    }
+
+    /// Delete… asks for `id`, and stops any other confirmation.
+    pub(super) fn arm_delete(&mut self, id: u64) {
+        self.clear_armed = false;
+        self.delete_armed = Some(id);
     }
 
     /// Sums up every retained entry, only while Labs › Dictation stats is
@@ -143,9 +181,29 @@ impl HistoryPane {
     /// searches again only when the query or the store's revision changed,
     /// and sums the stats again when the entries or the toggle changed, or
     /// once when the dialog closes because the stats emptied.
-    pub(super) fn poll(&mut self, visible: bool) -> bool {
+    pub(super) fn poll(&mut self, visible: bool, keep_audio: bool, multi: bool) -> bool {
         let answered = self.poll_again();
+        // Playback's answer returns the card to Play; it is not a reason to
+        // read the stats again.
+        let played = self.poll_playback();
         let mut changed = false;
+        // Labs › Select multiple dictations off, History keeps one selected
+        // entry: the others fall away.
+        if !multi && selection::collapse(self) {
+            changed = true;
+        }
+        // A playback belongs to the card that shows its Stop: leaving the
+        // entry or History, turning the lab off, or hiding the window
+        // quietly ends it.
+        let left = self.playback.as_ref().is_some_and(|playback| {
+            playback.playing() && (!visible || !keep_audio || self.selected != Some(playback.id))
+        });
+        if left {
+            if let Some(playback) = &mut self.playback {
+                playback.stop();
+            }
+            changed = true;
+        }
         // The dialog belongs to the pane and its switch: leaving History,
         // turning Dictation stats off, or emptying the stats closes it.
         if self.stats_open
@@ -160,7 +218,7 @@ impl HistoryPane {
             changed = true;
         }
         let Some(store) = self.store.as_ref().filter(|_| visible) else {
-            return answered || changed;
+            return answered || played || changed;
         };
         let stale = self.search.text != self.searched || self.revision != Some(store.revision());
         if stale {
@@ -172,7 +230,7 @@ impl HistoryPane {
             self.reload_stats();
             return true;
         }
-        answered || changed
+        answered || played || changed
     }
 
     /// Takes Transcribe again's answer once its worker sends it.
@@ -190,8 +248,21 @@ impl HistoryPane {
         true
     }
 
+    /// Takes the playback's answer once it ends or fails.
+    fn poll_playback(&mut self) -> bool {
+        self.playback
+            .as_mut()
+            .is_some_and(|playback| playback.poll())
+    }
+
     fn entry(&self, id: u64) -> Option<&HistoryEntry> {
         self.entries.iter().find(|entry| entry.id == id)
+    }
+
+    /// Whether row `id` draws as selected: the one entry, or any of the
+    /// several Labs › Select multiple dictations holds.
+    pub(super) fn is_selected(&self, id: u64) -> bool {
+        self.selected == Some(id) || self.selection.contains(id)
     }
 
     pub(super) fn fixture() -> Self {
@@ -258,6 +329,15 @@ impl HistoryPane {
         Self::default()
     }
 
+    /// Labs › Select multiple dictations: two entries selected, for the
+    /// preview's card.
+    pub(super) fn fixture_selection() -> Self {
+        let mut pane = Self::fixture();
+        pane.selected = Some(2);
+        pane.selection.select(&[3, 2]);
+        pane
+    }
+
     /// A representative summary for the stats dialog's snapshots and tests.
     pub(super) fn fixture_stats() -> HistoryStats {
         HistoryStats {
@@ -294,15 +374,11 @@ fn set_retention(ui: &mut Ui, retention: HistoryRetention) {
     if !ui.update(|settings| settings.history_retention = retention) {
         return;
     }
-    if let Some(store) = &ui.history.store
-        && let Err(error) = store.set_retention(retention)
-    {
-        ui.history.error = Some(error.to_string());
-    }
     ui.history.reload();
 }
 
 fn clear(ui: &mut Ui) {
+    ui.history.delete_armed = None;
     if !ui.history.clear_armed {
         ui.history.clear_armed = true;
         return;
@@ -316,6 +392,7 @@ fn clear(ui: &mut Ui) {
     } else {
         ui.history.entries.clear();
         ui.history.selected = None;
+        ui.history.selection.clear();
     }
 }
 
@@ -430,6 +507,32 @@ fn transcribe_again(
     });
 }
 
+/// Labs › Keep recordings: starts entry `id`'s saved audio, or stops it
+/// while it plays.
+fn toggle_playback(ui: &mut Ui, id: u64) {
+    if let Some(playback) = &mut ui.history.playback
+        && playback.is_playing(id)
+    {
+        playback.stop();
+        return;
+    }
+    let Some(path) = ui
+        .history
+        .store
+        .as_ref()
+        .and_then(|store| store.recording_path(id))
+    else {
+        ui.history.playback = Some(Playback::failed(id, "The recording is gone."));
+        return;
+    };
+    let waker = ui.modes.waker.clone();
+    ui.history.playback = Some(Playback::start(id, &path, move || {
+        if let Some(waker) = &waker {
+            waker();
+        }
+    }));
+}
+
 /// Replaces entry `id`'s text with what Transcribe again found, keeping
 /// the current one as its newest version.
 fn replace(ui: &mut Ui, id: u64) {
@@ -476,6 +579,7 @@ fn restore(ui: &mut Ui, id: u64, index: usize) {
 }
 
 fn delete(ui: &mut Ui, id: u64) {
+    ui.history.delete_armed = None;
     if let Some(store) = &ui.history.store {
         if let Err(error) = store.delete(id) {
             ui.history.error = Some(error.to_string());
@@ -484,7 +588,14 @@ fn delete(ui: &mut Ui, id: u64) {
     } else {
         ui.history.entries.retain(|entry| entry.id != id);
         ui.history.selected = None;
+        ui.history.selection.clear();
     }
+}
+
+/// Labs › Select multiple dictations, as the pane reads it while drawing,
+/// polling, and taking a press.
+pub(super) fn multi(ui: &Ui) -> bool {
+    selection::on(ui)
 }
 
 /// The header's retention menu and the list + detail body.
@@ -514,8 +625,10 @@ pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
                     meta.push_str(" · ");
                     meta.push_str(application);
                 }
+                let selected = pane.is_selected(id);
+                let primary = pane.selected == Some(id);
                 list = list.child(
-                    ld::item(
+                    ld::item_with_press(
                         p,
                         Item {
                             key: format!("history-entry{id}"),
@@ -524,12 +637,9 @@ pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
                             meta_ink: None,
                             time: event_age(entry.timestamp_ms),
                             hover: vec![copy_action(ui, p, id, true)],
-                            selected: pane.selected == Some(id),
+                            selected,
                         },
-                        move |ui: &mut Ui| {
-                            ui.history.selected = Some(id);
-                            ui.history.clear_armed = false;
-                        },
+                        move |row| selection::gesture(row, id, primary),
                     )
                     .position_in_set(index + 1, count),
                 );
@@ -860,6 +970,9 @@ fn empty(ui: &Ui, p: Paint) -> Option<El> {
 
 fn detail(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
     let pane = &ui.history;
+    if multi(ui) && pane.selection.len() >= 2 {
+        return selection::card(ui, p);
+    }
     let Some(entry) = pane.selected.and_then(|id| pane.entry(id)) else {
         return empty(ui, p).unwrap_or_else(|| {
             ld::empty_state(
@@ -929,6 +1042,38 @@ fn detail(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
     if ui.settings.labs.keep_recordings && !entry.versions.is_empty() {
         body = body.child(versions_section(ui, p, entry));
     }
+    let armed = pane.delete_armed == Some(id);
+    let mut actions = Vec::new();
+    let confirm = armed.then(|| {
+        row()
+            .key("delete-confirm")
+            .gap(8.0)
+            .pt(14.0)
+            .child(button(
+                p,
+                "history-confirm-delete",
+                tr("Confirm delete"),
+                ButtonKind::Danger,
+                move |ui: &mut Ui, _| delete(ui, id),
+            ))
+            .child(button(
+                p,
+                "history-cancel-delete",
+                tr("Cancel"),
+                ButtonKind::Secondary,
+                |ui: &mut Ui, _| ui.history.delete_armed = None,
+            ))
+    });
+    if !armed {
+        actions.push(copy_action(ui, p, id, false));
+        actions.push(ld::ghost_icon(
+            p,
+            "history-delete",
+            ld::TRASH_ICON,
+            tr("Delete…"),
+            move |ui: &mut Ui, _| ui.history.arm_delete(id),
+        ));
+    }
     col()
         .key("history-detail")
         .grow(1.0)
@@ -936,17 +1081,9 @@ fn detail(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
         .child(ld::card_header(
             ld::card_title(p, tr(entry.kind.label())),
             vec![ld::meta_text(p, &event_age(entry.timestamp_ms))],
-            vec![
-                copy_action(ui, p, id, false),
-                ld::ghost_icon(
-                    p,
-                    "history-delete",
-                    ld::TRASH_ICON,
-                    tr("Delete"),
-                    move |ui: &mut Ui, _| delete(ui, id),
-                ),
-            ],
+            actions,
         ))
+        .children(confirm)
         .child(ld::card_scroll(p, "detail-scroll", body))
 }
 
@@ -985,8 +1122,43 @@ fn again_section(ui: &Ui, p: Paint, id: u64, layer: &mut Vec<El>) -> El {
     let mut section = col()
         .key("again")
         .gap(6.0)
-        .child(section_label(p, "label", tr("Saved recording")))
+        .child(
+            row()
+                .key("again-head")
+                .gap(8.0)
+                .center_y()
+                .child(section_label(p, "label", tr("Saved recording")).grow(1.0))
+                .child(small_button(
+                    p,
+                    "again-play",
+                    if ui
+                        .history
+                        .playback
+                        .as_ref()
+                        .is_some_and(|playback| playback.is_playing(id))
+                    {
+                        tr("Stop")
+                    } else {
+                        tr("Play")
+                    },
+                    move |ui: &mut Ui, _| toggle_playback(ui, id),
+                )),
+        )
         .child(menu);
+    if let Some(error) = ui
+        .history
+        .playback
+        .as_ref()
+        .and_then(|playback| playback.error(id))
+    {
+        section = section.child(
+            text(tr_fill("Could not play: {}", tr(error)))
+                .key("again-play-error")
+                .font(super::controls::DESCRIPTION)
+                .color(p.muted())
+                .wrap(),
+        );
+    }
     if let Some(pending) = ui
         .history
         .pending

@@ -192,14 +192,15 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
                 fallback_to_default_device: false,
                 ..crate::windows::dictation::WindowsDictationConfig::from_settings(&settings)
             };
-            let _personal_commands =
-                crate::app_settings::transformations_used(&settings.dictation_processing)
-                    .then(|| {
-                        crate::personal_commands::PersonalCommands::start(
-                            config.transformations.clone(),
-                        )
-                    })
-                    .flatten();
+            let _personal_commands = crate::personal_commands::host_needed(
+                crate::personal_commands::custom_transformations_selected(
+                    &settings.dictation_processing,
+                ),
+            )
+            .then(|| {
+                crate::personal_commands::PersonalCommands::start(config.transformations.clone())
+            })
+            .flatten();
             // Settings a foreground listener loaded stay as they are, and
             // only its shortcut drives it.
             crate::windows::dictation::run(
@@ -473,16 +474,18 @@ fn capture(
     if audio_ms < crate::dictation::MINIMUM_HOLD_DURATION.as_millis() as u64 {
         events.dictation(DictationPhase::Discarded, "")?;
         emit_state(&events, VoiceState::Stopping, &device_name)?;
-        println!("Capture shorter than 300 ms; discarded.");
+        println!(
+            "Capture shorter than {} ms; discarded.",
+            crate::dictation::MINIMUM_HOLD_DURATION.as_millis()
+        );
         return Ok(());
     }
 
     emit_state(&events, VoiceState::Transcribing, &device_name)?;
     events.dictation(DictationPhase::Transcribing, "")?;
     let started = Instant::now();
-    let mut samples = crate::dictation::resample_for_parakeet(&samples, sample_rate);
-    crate::dictation::pad_for_parakeet(&mut samples);
-    let text = match transcriber.transcribe(&samples) {
+    let samples = crate::dictation::resample_for_parakeet(&samples, sample_rate);
+    let text = match transcriber.transcribe_clip(samples) {
         Ok(text) => text.trim().to_string(),
         Err(error) => {
             fail_capture(&events, &device_name, &format!("{error:#}"))?;

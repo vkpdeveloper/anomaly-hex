@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -100,6 +100,13 @@ fn builtin_transformation(id: &str) -> Option<&'static BuiltinTransformation> {
     BUILTIN_TRANSFORMATIONS
         .iter()
         .find(|transformation| transformation.id == id)
+}
+
+/// The built-in transformations' ids, in the order they're listed.
+pub fn builtin_transformation_ids() -> impl Iterator<Item = &'static str> {
+    BUILTIN_TRANSFORMATIONS
+        .iter()
+        .map(|transformation| transformation.id)
 }
 
 pub fn is_builtin_transformation(id: &str) -> bool {
@@ -286,6 +293,27 @@ pub fn workspace_configured() -> bool {
         .is_ok_and(|workspace| matches!(find_config(&workspace), Ok(Some(_)) | Err(_)))
 }
 
+/// Built-ins run natively and never need the script host.
+pub fn custom_transformations_selected(
+    processing: &crate::app_settings::DictationProcessingSettings,
+) -> bool {
+    std::iter::once(&processing.default_mode)
+        .chain(&processing.modes)
+        .flat_map(|mode| &mode.transformations)
+        .any(|id| !is_builtin_transformation(id))
+}
+
+/// Every OS discovers a newly initialized workspace before a transformation
+/// is selected. Call on the host's coarse refresh, not an audio callback.
+pub fn host_needed(custom_selected: bool) -> bool {
+    let allowed = !crate::policy::Policy::current().locks(crate::policy::Lock::Transforms);
+    host_required(custom_selected, allowed && workspace_configured(), allowed)
+}
+
+fn host_required(custom_selected: bool, configured: bool, allowed: bool) -> bool {
+    allowed && (custom_selected || configured)
+}
+
 /// Creates the config folder with Hex's typings and agent notes, and a
 /// starter `hex.config.ts` unless a config already exists.
 pub fn initialize_workspace() -> Result<PathBuf> {
@@ -383,9 +411,6 @@ impl PersonalCommands {
             tracing::info!("{}", lock.refusal());
             return None;
         }
-        *HOSTED_CLIENT
-            .write()
-            .unwrap_or_else(|error| error.into_inner()) = Arc::downgrade(&transformations);
         let (request_sender, requests) = mpsc::sync_channel(32);
         let stop = Arc::new(AtomicBool::new(false));
         let (done_sender, worker_done) = mpsc::sync_channel(1);
@@ -755,20 +780,6 @@ struct RegisteredTransformation {
     timeout: Option<u64>,
 }
 
-/// The client the most recently started host feeds, so work outside the
-/// listener (the phone relay) runs the same transformations dictation does.
-static HOSTED_CLIENT: RwLock<Weak<TransformationClient>> = RwLock::new(Weak::new());
-
-/// The listener's transformation client while it lives, else an empty one
-/// that still runs the built-in transformations.
-pub fn hosted_client() -> Arc<TransformationClient> {
-    HOSTED_CLIENT
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .upgrade()
-        .unwrap_or_default()
-}
-
 #[derive(Default)]
 pub struct TransformationClient {
     active: RwLock<Option<ActiveTransformations>>,
@@ -1047,9 +1058,55 @@ fn bounded_status_error(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::UNIX_EPOCH;
+    use std::sync::atomic::AtomicU64;
 
     mod host_apis;
+
+    /// A temp path no other test, nextest process, or later run shares.
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{id}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn host_startup_discovers_a_config_without_selecting_a_transformation() {
+        for selected in [false, true] {
+            for configured in [false, true] {
+                assert!(!host_required(selected, configured, false), "policy wins");
+            }
+        }
+        assert!(!host_required(false, false, true));
+        assert!(
+            host_required(false, true, true),
+            "Set up discovers the new config"
+        );
+        assert!(
+            host_required(true, false, true),
+            "a missing selected script still reports its status"
+        );
+        assert!(host_required(true, true, true));
+
+        let mut processing = crate::app_settings::DictationProcessingSettings::default();
+        processing.default_mode.transformations =
+            builtin_transformation_ids().map(str::to_owned).collect();
+        assert!(!custom_transformations_selected(&processing));
+        processing.modes.push(crate::app_settings::DictationMode {
+            transformations: vec!["my-script".into()],
+            ..Default::default()
+        });
+        assert!(custom_transformations_selected(&processing));
+        processing.modes.clear();
+        processing
+            .default_mode
+            .transformations
+            .push("another-script".into());
+        assert!(custom_transformations_selected(&processing));
+    }
 
     #[test]
     fn transformation_context_names_its_source() {
@@ -1276,12 +1333,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn workspace_fingerprint_does_not_follow_symlinks_or_excessive_depth() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("hex-watch-{unique}"));
-        let outside = std::env::temp_dir().join(format!("hex-watch-outside-{unique}.ts"));
+        let root = unique_temp_dir("hex-watch");
+        let outside = unique_temp_dir("hex-watch-outside").with_extension("ts");
         fs::create_dir_all(&root).unwrap();
         fs::write(&outside, "first").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("linked.ts")).unwrap();
@@ -1303,11 +1356,7 @@ mod tests {
 
     #[test]
     fn status_snapshot_roundtrips_atomically() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("hex-status-{unique}"));
+        let root = unique_temp_dir("hex-status");
         let path = root.join("personal-commands.json");
         let status = StatusSnapshot {
             active_generation: Some(4),
@@ -1344,11 +1393,7 @@ mod tests {
 
     impl Harness {
         fn new(config: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!("hex-scripts-{unique}"));
+            let root = unique_temp_dir("hex-scripts");
             let workspace = root.join("hex");
             fs::create_dir_all(&workspace).unwrap();
             fs::write(workspace.join("hex.config.ts"), config).unwrap();
@@ -1680,11 +1725,7 @@ export default defineHexConfig({
 
     #[test]
     fn initialization_writes_typings_and_a_starter_config_but_keeps_the_users() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let workspace = std::env::temp_dir().join(format!("hex-init-{unique}"));
+        let workspace = unique_temp_dir("hex-init");
         initialize_workspace_at(&workspace).unwrap();
         assert!(
             check_workspace_at(&workspace)

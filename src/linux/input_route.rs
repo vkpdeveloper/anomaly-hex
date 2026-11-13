@@ -195,7 +195,10 @@ fn own_streams_on(source: u32) -> Vec<u32> {
         .collect()
 }
 
-fn pactl(args: &[&str]) -> Option<String> {
+/// Runs `pactl` with `args`, returning its stdout, or `None` when it is
+/// missing or fails. Shared with the output route, which names and lists
+/// the default sink the same way.
+pub(crate) fn pactl(args: &[&str]) -> Option<String> {
     let output = Command::new("pactl").args(args).output().ok()?;
     output
         .status
@@ -220,7 +223,7 @@ mod tests {
                "description": "Built-in Audio Analog Stereo",
                "properties": {"device.api": "alsa", "device.class": "sound", "device.bus": "pci"}},
               {"index": 4, "name": "bluez_input.AA_BB_CC_DD_EE_FF.0",
-               "description": "Kit Pods",
+               "description": "Alex Pods",
                "properties": {"device.api": "bluez5"}}
             ]"#,
         )
@@ -239,7 +242,7 @@ mod tests {
     #[test]
     fn a_bluetooth_default_stands_in_with_the_built_in_microphone() {
         let stand_in = stand_in_for("bluez_input.AA_BB_CC_DD_EE_FF.0", &sources()).unwrap();
-        assert_eq!(stand_in.bluetooth, "Kit Pods");
+        assert_eq!(stand_in.bluetooth, "Alex Pods");
         assert_eq!(stand_in.input, "Built-in Audio Analog Stereo");
         assert_eq!(stand_in.bluetooth_index, 4);
     }
@@ -285,7 +288,7 @@ mod tests {
                "ports": [{"name": "[In] Mic2", "availability": "availability unknown"}],
                "active_port": "[In] Mic2"},
               {"index": 3, "name": "bluez_input.AA_BB_CC_DD_EE_FF.0",
-               "description": "Kit Pods",
+               "description": "Alex Pods",
                "properties": {"device.api": "bluez5"}}
             ]"#,
         )

@@ -3,6 +3,7 @@ use std::io::{ErrorKind, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -86,6 +87,15 @@ impl Restore {
     fn failed(&mut self) {
         self.inserted = None;
         self.original = None;
+    }
+
+    /// Labs › Keep dictation on clipboard: an earlier paste's pending restore
+    /// stands down and nothing is kept to put back, so a later restoring
+    /// paste never brings an older clipboard back over this one.
+    fn keep(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.original = None;
+        self.inserted = None;
     }
 }
 
@@ -338,6 +348,28 @@ fn copied_only(
     )
 }
 
+/// `path` as a `text/uri-list` entry: one absolute `file://` URI, CRLF
+/// terminated, with everything but unreserved characters and `/`
+/// percent-encoded.
+fn file_uri(path: &Path) -> Result<String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| eyre!("not a UTF-8 path: {}", path.display()))?;
+    if !path.is_absolute() {
+        return Err(eyre!("not an absolute path: {}", path.display()));
+    }
+    let mut uri = String::from("file://");
+    for &byte in text.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri.push_str("\r\n");
+    Ok(uri)
+}
+
 impl LinuxPaster {
     pub(crate) fn new(
         stop: Arc<AtomicBool>,
@@ -369,10 +401,7 @@ impl LinuxPaster {
     /// is served for as long as this paster lives.
     pub(crate) fn copy(&mut self, text: &str) -> Result<()> {
         let mut restore = self.restore.lock().unwrap_or_else(PoisonError::into_inner);
-        *restore = Restore {
-            generation: restore.generation.wrapping_add(1),
-            ..Restore::default()
-        };
+        restore.keep();
         match &mut self.backend {
             Backend::X11(paster) => {
                 let atoms = &paster.clipboard.getter.atoms;
@@ -386,6 +415,35 @@ impl LinuxPaster {
                 let mut copy = Command::new("wl-copy");
                 copy.args(["--type", "text/plain;charset=utf-8"]);
                 run_helper(copy, text.as_bytes(), &self.stop, HELPER_TIMEOUT)
+                    .wrap_err("could not own the Wayland clipboard; install wl-clipboard")
+            }
+        }
+    }
+
+    /// Puts `path` on the clipboard as a `text/uri-list` file, so a chat app
+    /// or agent attaches the file itself (Labs › Copy captures as a zip).
+    pub(crate) fn copy_file_uri(&mut self, path: &Path) -> Result<()> {
+        let uri = file_uri(path)?;
+        let mut restore = self.restore.lock().unwrap_or_else(PoisonError::into_inner);
+        restore.keep();
+        match &mut self.backend {
+            Backend::X11(paster) => {
+                let target = paster
+                    .clipboard
+                    .getter
+                    .get_atom("text/uri-list")
+                    .wrap_err("could not name the X11 text/uri-list target")?;
+                let atoms = &paster.clipboard.getter.atoms;
+                paster
+                    .clipboard
+                    .store(atoms.clipboard, target, uri.as_bytes())
+                    .wrap_err("could not own the X11 clipboard")
+            }
+            Backend::Wayland(_) => {
+                require_wl_copy()?;
+                let mut copy = Command::new(WL_COPY);
+                copy.args(["--type", "text/uri-list"]);
+                run_helper(copy, uri.as_bytes(), &self.stop, HELPER_TIMEOUT)
                     .wrap_err("could not own the Wayland clipboard; install wl-clipboard")
             }
         }
@@ -479,7 +537,11 @@ impl LinuxPaster {
         if text.trim().is_empty() {
             return Err(eyre!("refusing to paste an empty transcript"));
         }
-        self.paste_as(Mime::Text, text.as_bytes(), None, shift)
+        // Read as the paste commits, so the toggle applies at once. A kept
+        // paste snapshots nothing and restores nothing, and an earlier
+        // paste's pending restore stands down.
+        let keep = crate::labs::keep_on_clipboard();
+        self.paste_as(Mime::Text, text.as_bytes(), None, shift, keep)
     }
 
     /// Pastes over a typed-text selection, then puts `original` back: the
@@ -488,58 +550,64 @@ impl LinuxPaster {
         if text.trim().is_empty() {
             return Err(eyre!("refusing to paste an empty transformation"));
         }
-        self.paste_as(Mime::Text, text.as_bytes(), Some(original), false)
+        self.paste_as(Mime::Text, text.as_bytes(), Some(original), false, false)
     }
 
     /// Pastes a PNG (a capture's contact sheet) where the focus is, as the
     /// Mac's capture Paste does before its summary.
     pub(crate) fn paste_png(&mut self, png: &[u8]) -> Result<()> {
-        self.paste_as(Mime::Png, png, None, false)
+        self.paste_as(Mime::Png, png, None, false, false)
     }
 
     /// Pastes through the clipboard, then puts the previous clipboard back
     /// unless something newer replaced the paste first. `original` is the
     /// clipboard a typed-text job saved before it copied the selection.
     /// `shift` asks for Ctrl+Shift+V whatever the saved Terminal paste
-    /// setting says.
+    /// setting says. `keep` leaves the paste on the clipboard instead of
+    /// restoring it (Labs › Keep dictation on clipboard).
     fn paste_as(
         &mut self,
         mime: Mime,
         bytes: &[u8],
         original: Option<Snapshot>,
         shift: bool,
+        keep: bool,
     ) -> Result<()> {
         let restore = self.restore.clone();
         let selection = self.selection.current();
         let mut state = restore.lock().unwrap_or_else(PoisonError::into_inner);
-        state.generation = state.generation.wrapping_add(1);
-        // A paste before the previous one restored keeps that one's original.
-        let previous_pending = state
-            .inserted
-            .take()
-            .is_some_and(|(mime, bytes)| selection.holds(mime.wayland(), &bytes));
-        if let Some(original) = original {
-            state.original = Some(original);
-        } else if !previous_pending {
-            state.original = match selection.snapshot() {
-                Ok(snapshot) => Some(snapshot),
-                Err(error) => {
-                    tracing::info!(
-                        error = format!("{error:#}"),
-                        "not restoring the clipboard after this paste"
-                    );
-                    None
-                }
-            };
+        if keep {
+            state.keep();
+        } else {
+            state.generation = state.generation.wrapping_add(1);
+            // A paste before the previous one restored keeps that one's original.
+            let previous_pending = state
+                .inserted
+                .take()
+                .is_some_and(|(mime, bytes)| selection.holds(mime.wayland(), &bytes));
+            if let Some(original) = original {
+                state.original = Some(original);
+            } else if !previous_pending {
+                state.original = match selection.snapshot() {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(error) => {
+                        tracing::info!(
+                            error = format!("{error:#}"),
+                            "not restoring the clipboard after this paste"
+                        );
+                        None
+                    }
+                };
+            }
         }
         let result = self.send_paste(mime, bytes, shift);
-        if result.is_ok() {
-            state.inserted = Some((mime, bytes.to_vec()));
-            schedule_restore(restore.clone(), state.generation, selection);
-        } else {
+        if result.is_err() {
             // A paste that only reached the clipboard leaves the transcript
             // there for Ctrl+V; a typed-text job restores its own original.
             state.failed();
+        } else if !keep {
+            state.inserted = Some((mime, bytes.to_vec()));
+            schedule_restore(restore.clone(), state.generation, selection);
         }
         drop(state);
         // Give the target time to request the selection before the next queued
@@ -906,6 +974,19 @@ mod tests {
         command
     }
 
+    #[test]
+    fn a_file_is_one_percent_encoded_uri_list_line() {
+        assert_eq!(
+            file_uri(Path::new("/home/me/Scrawl 1/12.scrawl.slim.zip")).unwrap(),
+            "file:///home/me/Scrawl%201/12.scrawl.slim.zip\r\n"
+        );
+        assert_eq!(
+            file_uri(Path::new("/tmp/%s#?")).unwrap(),
+            "file:///tmp/%25s%23%3F\r\n"
+        );
+        assert!(file_uri(Path::new("relative/file")).is_err());
+    }
+
     /// A typed-text job may start while a dictation paste still waits to
     /// restore: it must cancel that restore and keep its original, not
     /// snapshot the transcript the paste left behind.
@@ -963,6 +1044,26 @@ mod tests {
         assert_eq!(restore.begin(false), None);
         assert_eq!(restore.generation, 4);
         assert!(restore.original.is_none());
+    }
+
+    /// Labs › Keep dictation on clipboard: a kept paste cancels the restore
+    /// an earlier paste left pending and keeps nothing to put back, so a
+    /// later restoring paste cannot bring an older clipboard back.
+    #[test]
+    fn a_kept_paste_stands_down_the_pending_restore() {
+        let stale = Snapshot::Wayland(vec![(
+            "text/plain;charset=utf-8".into(),
+            b"before the dictation".to_vec(),
+        )]);
+        let mut restore = Restore {
+            generation: 5,
+            original: Some(stale),
+            inserted: Some((Mime::Text, b"the dictation".to_vec())),
+        };
+        restore.keep();
+        assert_eq!(restore.generation, 6, "the pending restore is cancelled");
+        assert!(restore.original.is_none(), "nothing is left to put back");
+        assert!(restore.inserted.is_none());
     }
 
     #[test]
@@ -1253,5 +1354,27 @@ mod tests {
             !wl_paste(&["--list-types"]).status.success(),
             "the transcript stayed on a clipboard that was empty"
         );
+
+        // Labs › Keep dictation on clipboard: the dictation stays, and the
+        // clipboard it replaced never comes back.
+        Selection::Wayland
+            .restore(Snapshot::Wayland(original.clone()))
+            .unwrap();
+        crate::labs::apply(&crate::app_settings::LabsSettings {
+            keep_on_clipboard: true,
+            ..crate::app_settings::LabsSettings::default()
+        });
+        paster.paste(expected, false).unwrap();
+        let thrice = expected.repeat(3);
+        wait_for("GTK to receive the kept transcript", &mut || {
+            std::fs::read_to_string(&path).unwrap_or_default() == thrice
+        });
+        thread::sleep(RESTORE_DELAY * 2);
+        let kept = wl_paste(&["--no-newline", "--type", "text/plain;charset=utf-8"]);
+        assert!(
+            kept.status.success() && kept.stdout == expected.as_bytes(),
+            "a kept paste left the transcript on the clipboard"
+        );
+        crate::labs::apply(&crate::app_settings::LabsSettings::default());
     }
 }

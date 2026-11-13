@@ -36,6 +36,9 @@ pub struct Evidence {
     /// The browser tab's URL, when there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The captured terminal's project folder, what a `routing.terminals` rule keys on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<PathBuf>,
     /// Why OpenCode's sessions couldn't all be read, when they couldn't: `candidates` holds
     /// what was read before it failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,11 +115,17 @@ pub enum Source {
     /// A session named at the start of what was said ("tell scrawl …"; `named`). Obeyed ahead
     /// of everything but an address.
     Named,
+    /// The session a page names itself, by a `<meta name="opencode-session">` tag or an
+    /// `.opencode-session` file in its folder (`served::marker`). Obeyed ahead of rules.
+    Signed,
     /// A `routing.sites` rule covering the tab's URL. Obeyed ahead of weighing when it finds a
     /// session.
     Rule,
     /// A `routing.apps` rule covering the captured app (Jev routing). Obeyed like a site rule.
     AppRule,
+    /// A `routing.terminals` rule covering the captured terminal's folder. Obeyed like a site
+    /// rule.
+    TerminalRule,
     /// The git working tree the captured app's executable runs from (Jev routing): a dev build
     /// names its project like a localhost port does.
     DevBuild,
@@ -127,6 +136,9 @@ pub enum Source {
     /// Who published the file the tab shows, when a server serves it from outside its own
     /// project: the session the page names, or the one whose tool call wrote the file.
     Publisher,
+    /// The session OpenCode shows in the captured terminal: named by its window title or its
+    /// command line. Weighed, worth a little more than a folder.
+    TerminalSession,
     /// The captured terminal's focused pane.
     Terminal,
     /// The file the tab shows, when it's from outside the server's project: its path's words.
@@ -155,12 +167,15 @@ impl Source {
     fn label(self) -> &'static str {
         match self {
             Self::Named => "named",
+            Self::Signed => "signed",
             Self::Rule => "rule",
             Self::AppRule => "app-rule",
+            Self::TerminalRule => "terminal-rule",
             Self::DevBuild => "dev-build",
             Self::Page => "page",
             Self::Port => "port",
             Self::Publisher => "publisher",
+            Self::TerminalSession => "terminal-session",
             Self::Terminal => "terminal",
             Self::Document => "document",
             Self::Viewed => "viewed",
@@ -173,9 +188,10 @@ impl Source {
     /// Full points for a clue of this source that names a candidate.
     fn points(self) -> u32 {
         match self {
-            Self::Named => 100,
+            Self::Named | Self::Signed | Self::TerminalSession => 100,
             Self::Rule
             | Self::AppRule
+            | Self::TerminalRule
             | Self::DevBuild
             | Self::Page
             | Self::Port
@@ -437,7 +453,13 @@ pub fn decide(evidence: &Evidence, policy: Policy) -> Judgement {
     if let Some(judgement) = ruled(evidence, Source::Named) {
         return judgement;
     }
-    for source in [Source::Rule, Source::AppRule, Source::DevBuild] {
+    for source in [
+        Source::Signed,
+        Source::Rule,
+        Source::AppRule,
+        Source::TerminalRule,
+        Source::DevBuild,
+    ] {
         if let Some(judgement) = ruled(evidence, source) {
             return judgement;
         }
@@ -467,8 +489,8 @@ fn addressed(evidence: &Evidence, address: &Address) -> Scored {
     }
 }
 
-/// The session a named address, a `routing.sites` or `routing.apps` rule, or a dev build
-/// (`source`) names, or the newest in its
+/// The session a named address, a signed page, a `routing.sites` or `routing.apps` rule, or a
+/// dev build (`source`) names, or the newest in its
 /// folder (any folder of the folder's repository counts), sent to without weighing. `None` when
 /// it names none open.
 fn ruled(evidence: &Evidence, source: Source) -> Option<Judgement> {
@@ -701,7 +723,7 @@ fn alternatives(ranking: &[Scored]) -> Vec<Scored> {
 fn with_named_sessions(evidence: &Evidence) -> Vec<Candidate> {
     let mut candidates = evidence.candidates.clone();
     for clue in &evidence.clues {
-        if let (Source::Page | Source::Publisher, Pointer::Session { id, .. }) =
+        if let (Source::Page | Source::Signed | Source::Publisher, Pointer::Session { id, .. }) =
             (clue.source, &clue.pointer)
             && !candidates.iter().any(|c| &c.id == id)
         {
@@ -1251,6 +1273,7 @@ mod tests {
             candidates: sessions(),
             now_ms: NOW,
             url: None,
+            terminal: None,
             sessions_error: None,
         }
     }
@@ -1296,8 +1319,11 @@ mod tests {
         e.clues[0] = folder(Source::Rule, "/p/nobody");
         let j = decide(&e, Policy::Weigh);
         assert_ne!(sent_to(&j), Some("ses_scrawl"));
-        // The user's own choice still beats a rule.
+        // A page naming its session beats the rule, and the user's own choice beats both.
         e.clues[0] = folder(Source::Rule, "/p/scrawl");
+        e.clues.push(named(Source::Signed, "ses_signer"));
+        assert_eq!(sent_to(&decide(&e, Policy::Weigh)), Some("ses_signer"));
+        assert_eq!(sent_to(&decide(&e, Policy::Ladder)), Some("ses_signer"));
         e.address = Some(Address::Chosen("ses_ios".into()));
         assert_eq!(sent_to(&decide(&e, Policy::Weigh)), Some("ses_ios"));
     }
@@ -1306,6 +1332,7 @@ mod tests {
     fn app_rules_and_dev_builds_send_ahead_of_weighing() {
         for (source, via) in [
             (Source::AppRule, "app-rule"),
+            (Source::TerminalRule, "terminal-rule"),
             (Source::DevBuild, "dev-build"),
         ] {
             let mut e = ev(vec![

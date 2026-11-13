@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use super::cors::CorsOrigin;
 use super::{
     HttpContext, HttpRequest, HttpResponse, RequestAction, body_read_response, generate_token,
     json_post_action, read_body_bounded, write_response, write_sse, write_sse_headers,
@@ -39,7 +40,11 @@ pub(super) enum StreamAction {
         body_prefix: Vec<u8>,
     },
     Events(Arc<Stream>),
-    Finish(Arc<Stream>),
+    Finish {
+        stream: Arc<Stream>,
+        /// `process=global` was asked for; the guard holds its one slot.
+        processing: Option<super::processing::Guard>,
+    },
 }
 
 pub(super) fn create_action(request: HttpRequest) -> RequestAction {
@@ -100,7 +105,16 @@ pub(super) fn route(
             })
         }
         ("GET", "events") => RequestAction::Stream(StreamAction::Events(stream)),
-        ("POST", "finish") => RequestAction::Stream(StreamAction::Finish(stream)),
+        ("POST", "finish") => {
+            let processing = match super::processing::wanted(&request.path) {
+                Ok(wanted) => match super::processing::gate(wanted, &context.processing) {
+                    Ok(processing) => processing,
+                    Err(response) => return respond(response),
+                },
+                Err(code) => return respond(HttpResponse::code(400, code)),
+            };
+            RequestAction::Stream(StreamAction::Finish { stream, processing })
+        }
         ("POST", "cancel") => {
             stream.cancel();
             respond(HttpResponse::empty(204))
@@ -114,7 +128,12 @@ pub(super) fn route(
     }
 }
 
-pub(super) fn handle(connection: &mut TcpStream, action: StreamAction, context: &HttpContext) {
+pub(super) fn handle(
+    connection: &mut TcpStream,
+    action: StreamAction,
+    context: &HttpContext,
+    cors: Option<&CorsOrigin>,
+) {
     let response = match action {
         StreamAction::Create {
             content_length,
@@ -125,10 +144,10 @@ pub(super) fn handle(connection: &mut TcpStream, action: StreamAction, context: 
             content_length,
             body_prefix,
         } => audio(connection, &stream, content_length, body_prefix, context),
-        StreamAction::Events(stream) => return events(connection, &stream, context),
-        StreamAction::Finish(stream) => finish(&stream, context),
+        StreamAction::Events(stream) => return events(connection, &stream, context, cors),
+        StreamAction::Finish { stream, processing } => finish(&stream, processing, context),
     };
-    if let Err(error) = write_response(connection, response) {
+    if let Err(error) = write_response(connection, response, cors) {
         tracing::debug!(%error, "stream client disconnected");
     }
 }
@@ -252,21 +271,32 @@ fn audio(
     }
 }
 
-fn finish(stream: &Stream, context: &HttpContext) -> HttpResponse {
+fn finish(
+    stream: &Stream,
+    guard: Option<super::processing::Guard>,
+    context: &HttpContext,
+) -> HttpResponse {
     let stop = || context.shutdown.load(Ordering::Acquire);
     match stream.finish(FINISH_TIMEOUT, &stop) {
         Some(End::Final {
             text,
             segments,
             duration_ms,
-        }) => HttpResponse::json(
-            200,
-            &serde_json::json!({
-                "text": text,
+        }) => {
+            let mut response = serde_json::json!({
+                "text": &text,
                 "segments": segments,
                 "durationMs": duration_ms,
-            }),
-        ),
+            });
+            super::processing::attach(
+                &mut response,
+                guard.as_ref(),
+                &text,
+                &stream.selection.language,
+                &context.shutdown,
+            );
+            HttpResponse::json(200, &response)
+        }
         Some(End::Failed { code, message }) => HttpResponse::json(
             409,
             &serde_json::json!({ "code": code, "message": message }),
@@ -277,8 +307,13 @@ fn finish(stream: &Stream, context: &HttpContext) -> HttpResponse {
     }
 }
 
-fn events(connection: &mut TcpStream, stream: &Stream, context: &HttpContext) {
-    if write_sse_headers(connection).is_err() {
+fn events(
+    connection: &mut TcpStream,
+    stream: &Stream,
+    context: &HttpContext,
+    cors: Option<&CorsOrigin>,
+) {
+    if write_sse_headers(connection, cors).is_err() {
         return;
     }
     let ready = serde_json::json!({

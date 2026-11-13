@@ -69,8 +69,10 @@ pub enum ControlCli {
     Dictation {
         #[arg(value_enum)]
         action: CaptureAction,
-        /// With `stop`: wait for the transcript and print it instead of
-        /// pasting it. Exits 4, printing nothing, when no speech was heard.
+        /// With `start` (Labs › Print-only CLI dictation, macOS) or `stop`:
+        /// answer with the transcript instead of pasting it. A printing start
+        /// waits for its recording to end. Exits 4, printing nothing, when no
+        /// speech was heard.
         #[arg(long)]
         print: bool,
         /// With `start` or `toggle`: paste the transcript as heard,
@@ -1118,7 +1120,7 @@ fn apply_offline(values: &serde_json::Map<String, serde_json::Value>) -> Control
                     "Every setting already has its value",
                 ));
             }
-            change.settings.save().map_err(|error| {
+            before.update(&change.settings).map_err(|error| {
                 super::ControlError::new("internal", format!("couldn't save: {error:#}"))
             })?;
             Ok(ControlReply::done(change.message))
@@ -1500,7 +1502,7 @@ mod tests {
     fn start_forwards_the_callers_hex_environment() {
         let vars = || {
             [
-                ("HOME", "/Users/kit"),
+                ("HOME", "/Users/alex"),
                 ("HEX_RETAIN_DICTATION_AUDIO", "1"),
                 ("HEX_ENABLE_LLM", "1"),
             ]

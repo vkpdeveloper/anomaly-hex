@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, eyre};
 
+use crate::audio::linger::MicrophoneLinger;
 use crate::audio::recording_environment::{CaptureMarker, RecordingEnvironmentController};
 use crate::audio::{CaptureInstant, RecoveringAudioInput, RecoveringAudioInputEvent};
 use crate::dictation::{
@@ -23,6 +24,9 @@ const RECOGNITION_QUEUE_CAPACITY: usize = 64;
 const MAX_RECOGNITION_BACKLOG: Duration = Duration::from_millis(500);
 /// How long past the tail itself a finish waits for the stream to deliver it.
 const TAIL_DELIVERY_GRACE: Duration = Duration::from_millis(100);
+/// The capture's rate while no input is open: a placeholder, since opening
+/// one starts a capture at the device's own rate.
+const CLOSED_INPUT_SAMPLE_RATE: u32 = 16_000;
 
 pub struct RecognitionAudio {
     pub samples: Vec<f32>,
@@ -57,8 +61,13 @@ pub enum DictationAudioEvent {
     Interrupted {
         was_recording: bool,
         capture_generation: u64,
-        /// A programmatic capture's audio delivered before the loss.
+        /// A capture's audio delivered before the loss.
         kept: Option<DictationClip>,
+        /// The kept clip is a recording shortcut's: transcribe and copy it
+        /// instead of dropping it. A programmatic clip belongs to its owner's
+        /// `/finish`. Still true with `kept` empty once the shortcut's finish
+        /// took the clip ([`DictationAudio::take_kept_hotkey`]).
+        keep_hotkey: bool,
     },
     Reopened,
     CaptureDiscontinuity {
@@ -152,6 +161,9 @@ enum Command {
 struct Owner {
     input: RecoveringAudioInput,
     release_while_idle: bool,
+    /// Labs › Keep mic open after dictating: how long a finished or
+    /// cancelled capture's microphone keeps open before it is released.
+    linger: MicrophoneLinger,
     pending_capture: Option<PendingCapture>,
     capture: DictationCapture,
     recording_environment: RecordingEnvironmentController,
@@ -410,6 +422,7 @@ impl DictationAudio {
                 was_recording,
                 capture_generation,
                 kept,
+                ..
             }
             | DictationAudioEvent::CaptureDiscontinuity {
                 was_recording,
@@ -418,6 +431,34 @@ impl DictationAudio {
                 ..
             } if *was_recording && *capture_generation == generation => {
                 Some(kept.take().map_or(LostCapture::Empty, LostCapture::Kept))
+            }
+            _ => None,
+        })
+    }
+
+    /// The audio a recording shortcut kept when the microphone failed, while
+    /// its loss is still queued: a release or finishing press that found
+    /// nothing to finish takes it here, with its own target and context,
+    /// before any later start makes that notification stale. The event stays
+    /// queued, still reporting the loss, with `keep_hotkey` and no clip.
+    /// Near-silent audio stays in the event, which reports the failure.
+    pub fn take_kept_hotkey(&self) -> Option<DictationClip> {
+        let generation = self.capture_generation();
+        let mut deferred = self
+            .deferred
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        deferred.extend(self.events.try_iter());
+        deferred.iter_mut().find_map(|event| match event {
+            DictationAudioEvent::Interrupted {
+                was_recording: true,
+                capture_generation,
+                kept,
+                keep_hotkey: true,
+            } if *capture_generation == generation
+                && kept.as_ref().is_some_and(|clip| !clip.is_near_silent()) =>
+            {
+                kept.take()
             }
             _ => None,
         })
@@ -450,6 +491,19 @@ impl DictationAudio {
             if let Some(generation) = generation
                 && generation != self.capture_generation()
             {
+                // A finish takes kept audio first, so only a cancelled or
+                // near-silent capture still holds it here.
+                if let DictationAudioEvent::Interrupted {
+                    kept: Some(_),
+                    keep_hotkey: true,
+                    ..
+                } = &event
+                {
+                    tracing::info!(
+                        capture_generation = generation,
+                        "dropped kept audio of a shortcut capture that ended without a finish"
+                    );
+                }
                 tracing::debug!(
                     capture_generation = generation,
                     "ignored stale capture notification"
@@ -507,7 +561,7 @@ impl Owner {
             if input.is_open() {
                 input.sample_rate()
             } else {
-                16_000
+                CLOSED_INPUT_SAMPLE_RATE
             },
             &recording_environment,
         );
@@ -518,6 +572,7 @@ impl Owner {
         let owner = Self {
             input,
             release_while_idle,
+            linger: MicrophoneLinger::default(),
             pending_capture: None,
             capture,
             recording_environment,
@@ -585,6 +640,10 @@ impl Owner {
                     self.drain_through(at);
                 }
                 if self.input.is_recovering() {
+                    // A stalled stream waits out a growing backoff; the press
+                    // asks for the microphone now, though it still cannot
+                    // capture until the stream opens.
+                    self.input.retry_now();
                     let _ = reply.send(false);
                     return true;
                 }
@@ -819,7 +878,7 @@ impl Owner {
                     self.discontinuity_at = Some(Instant::now());
                     let was_recording = self.capture.is_recording();
                     let capture_generation = self.state.capture_generation.load(Ordering::Acquire);
-                    let kept = self.keep_lost_capture(self.last_captured_through);
+                    let kept = self.keep_lost_capture(self.last_captured_through, false);
                     self.capture = new_capture(self.sample_rate(), &self.recording_environment);
                     self.state.recording.store(false, Ordering::Release);
                     self.next_recognition_generation();
@@ -899,7 +958,8 @@ impl Owner {
                 }
                 let was_recording = self.capture.is_recording();
                 let capture_generation = self.state.capture_generation.load(Ordering::Acquire);
-                let kept = self.keep_lost_capture(lost_through);
+                let kept = self.keep_lost_capture(lost_through, true);
+                let keep_hotkey = kept.is_some() && !self.keep_on_loss;
                 self.capture.cancel();
                 self.state.recording.store(false, Ordering::Release);
                 self.state.recovering.store(true, Ordering::Release);
@@ -907,6 +967,7 @@ impl Owner {
                     was_recording,
                     capture_generation,
                     kept,
+                    keep_hotkey,
                 });
                 if self.release_while_idle && !self.capture_sink_open() {
                     self.close_input();
@@ -1020,20 +1081,31 @@ impl Owner {
         if self.input.is_open() {
             self.input.sample_rate()
         } else {
-            16_000
+            CLOSED_INPUT_SAMPLE_RATE
         }
     }
 
     fn reconcile_input(&mut self) {
         if self.release_while_idle && !self.capture_sink_open() {
-            if self.capture_idle() && self.input.is_active() {
+            // Labs › Keep mic open after dictating: a capture's end keeps the
+            // microphone open for the lab's window, and closing waits for it.
+            // Off, this is the plain idle close.
+            if self.input.is_active() && self.linger.may_close(Instant::now(), !self.capture_idle())
+            {
                 self.close_input();
             }
-        } else if !self.input.is_active() {
-            // A key release is acknowledged after its synchronous controls return;
-            // waiting for that acknowledgment here can leave the owner asleep.
-            self.input.request_recovery();
-            self.state.recovering.store(true, Ordering::Release);
+        } else {
+            if self.release_while_idle {
+                // A capture sink holds the microphone open: no window of the
+                // lab's outlives it.
+                self.linger.may_close(Instant::now(), true);
+            }
+            if !self.input.is_active() {
+                // A key release is acknowledged after its synchronous controls return;
+                // waiting for that acknowledgment here can leave the owner asleep.
+                self.input.request_recovery();
+                self.state.recovering.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -1050,12 +1122,21 @@ impl Owner {
         self.keep_on_loss = matches!(kind, CaptureKind::Programmatic);
     }
 
-    /// Finishes a programmatic capture the microphone cut short at the last
-    /// audio delivered before the loss, as a release-tail finish keeps the
-    /// audio already delivered. Other captures are dropped by the caller.
-    /// Pre-roll alone is not a usable clip: it needs audio from after the start.
-    fn keep_lost_capture(&mut self, through: Option<CaptureInstant>) -> Option<DictationClip> {
-        let started_at = self.capture.started_at().filter(|_| self.keep_on_loss)?;
+    /// Finishes a capture the microphone cut short at the last audio delivered
+    /// before the loss, as a release-tail finish keeps the audio already
+    /// delivered. A programmatic capture always keeps its audio for its
+    /// owner's `/finish`; `keep_hotkey` keeps a recording shortcut's instead of
+    /// dropping it. Other captures are dropped by the caller. Pre-roll alone is
+    /// not a usable clip: it needs audio from after the start.
+    fn keep_lost_capture(
+        &mut self,
+        through: Option<CaptureInstant>,
+        keep_hotkey: bool,
+    ) -> Option<DictationClip> {
+        let started_at = self
+            .capture
+            .started_at()
+            .filter(|_| self.keep_on_loss || (keep_hotkey && self.capture.is_intentional()))?;
         let through = through.filter(|through| *through > started_at)?;
         match self.capture.finish_with_tail(through, Duration::ZERO) {
             Finish::Transcribe(mut clip) => {
@@ -1083,10 +1164,29 @@ impl Owner {
     /// A finished dictation's audio was exactly zero: the stream runs but
     /// delivers digital silence, as after some call apps release the device
     /// (#1122), and stays that way until reopened. Reopen it now, as after a
-    /// stream failure. A cold microphone closes once idle and opens fresh
-    /// for the next press anyway.
+    /// stream failure, and renegotiate the device's sample rate as it opens:
+    /// the device can stay on a stale clock that delivers only zeros (#1575).
+    /// A cold microphone closes once idle and opens fresh for the next press
+    /// anyway; a lingering one (Labs › Keep mic open after dictating) closes
+    /// now for the same reason, since it would otherwise stay open on the
+    /// dead stream.
     fn reopen_silent_stream(&mut self) {
-        if self.release_while_idle || !self.input.is_open() || self.input.is_recovering() {
+        if !self.input.is_open() || self.input.is_recovering() {
+            return;
+        }
+        if self.release_while_idle {
+            // A capture sink is copying this microphone, so closing it would
+            // leave a gap in the capture: leave the stream as always-open
+            // mode does.
+            if crate::audio::linger::window().is_none() || self.capture_sink_open() {
+                return;
+            }
+            tracing::warn!(
+                device = %self.input.device_name(),
+                "dictation audio was digital silence; closing the lingering microphone"
+            );
+            self.linger.clear();
+            self.close_input();
             return;
         }
         tracing::warn!(
@@ -1094,7 +1194,7 @@ impl Owner {
             "dictation audio was digital silence; reopening the microphone"
         );
         self.discontinuity_at = Some(Instant::now());
-        self.input.request_recovery();
+        self.input.request_silence_recovery();
         self.state.recovering.store(true, Ordering::Release);
     }
 
@@ -1115,6 +1215,70 @@ fn new_capture(
     let mut capture = DictationCapture::new(sample_rate);
     capture.enable_recording_environment(recording_environment.clone());
     capture
+}
+
+/// A real audio owner that another module's test drives one step at a time,
+/// with no thread of its own.
+#[cfg(test)]
+pub(crate) struct OwnerForTest(Owner);
+
+#[cfg(test)]
+impl OwnerForTest {
+    /// A release-while-idle shortcut capture pressed at `pressed_at` that
+    /// held past the threshold, delivered 300 ms, and then lost its
+    /// microphone, with the loss still unread. The next open waits on a test
+    /// opener that never answers, so no real microphone opens.
+    pub(crate) fn interrupted_hold(pressed_at: CaptureInstant) -> (Self, DictationAudio) {
+        let (input, opened) = RecoveringAudioInput::pending_for_test();
+        let (stream, _samples) = crate::audio::AudioInput::channel_for_test();
+        opened
+            .send((0, Ok(crate::audio::Opened::Input(Box::new(stream)))))
+            .unwrap();
+        let (mut owner, audio) = Owner::new(
+            input,
+            "Test microphone".into(),
+            RecordingEnvironmentController::for_test(),
+            PendingInputEvents::default(),
+            true,
+            None,
+        );
+        audio.state.recovering.store(false, Ordering::Release);
+        let (reply, started) = mpsc::sync_channel(1);
+        owner.handle(Command::Start {
+            at: pressed_at,
+            kind: CaptureKind::Hotkey,
+            reply,
+        });
+        assert!(started.recv().unwrap());
+        let event = owner.input.recv_timeout(Duration::ZERO, false);
+        owner.handle_input(event);
+        let threshold_at = pressed_at + crate::dictation::MINIMUM_HOLD_DURATION;
+        owner.handle_input(RecoveringAudioInputEvent::Chunk {
+            samples: vec![0.25; 14_400],
+            captured_through: threshold_at,
+        });
+        assert!(owner.capture.become_intentional(threshold_at));
+        assert!(matches!(
+            audio.try_recv_event(),
+            Some(DictationAudioEvent::Reopened)
+        ));
+        owner.handle_input(RecoveringAudioInputEvent::Interrupted);
+        owner.input = RecoveringAudioInput::pending_for_test().0;
+        (Self(owner), audio)
+    }
+
+    /// Handles the next `count` commands as the owner's thread would, minus
+    /// its idle reconcile, which would open a real microphone.
+    pub(crate) fn serve(&mut self, count: usize) {
+        for _ in 0..count {
+            let command = self
+                .0
+                .commands
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the test sends each command it serves");
+            assert!(self.0.handle(command));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2033,7 +2197,7 @@ mod tests {
     }
 
     #[test]
-    fn microphone_loss_keeps_only_a_programmatic_captures_delivered_audio() {
+    fn microphone_loss_keeps_a_recording_captures_delivered_audio() {
         for programmatic in [false, true] {
             for gap in [false, true] {
                 let (mut owner, input, _samples) = owner_for_test(true);
@@ -2070,21 +2234,26 @@ mod tests {
                     owner.handle_input(RecoveringAudioInputEvent::Interrupted);
                 }
                 assert!(!input.is_recording());
-                let (was_recording, kept) = match input.try_recv_event() {
+                let (was_recording, kept, keep_hotkey) = match input.try_recv_event() {
                     Some(DictationAudioEvent::CaptureDiscontinuity {
                         was_recording,
                         kept,
                         ..
-                    }) if gap => (was_recording, kept),
+                    }) if gap => (was_recording, kept, false),
                     Some(DictationAudioEvent::Interrupted {
                         was_recording,
                         kept,
+                        keep_hotkey,
                         ..
-                    }) if !gap => (was_recording, kept),
+                    }) if !gap => (was_recording, kept, keep_hotkey),
                     _ => panic!("expected the loss to be reported"),
                 };
                 assert!(was_recording);
-                assert_eq!(kept.is_some(), programmatic, "gap {gap}");
+                // A stream failure keeps a recording shortcut's audio, but a
+                // gap still fails the capture and only a programmatic one
+                // keeps its clip for `/finish`.
+                assert_eq!(kept.is_some(), programmatic || !gap, "gap {gap}");
+                assert_eq!(keep_hotkey, !programmatic && !gap);
                 if let Some(clip) = kept {
                     // The 10 ms pre-roll and the 400 ms delivered before the
                     // loss; nothing from after it.
@@ -2173,6 +2342,43 @@ mod tests {
     }
 
     #[test]
+    fn a_shortcut_finish_takes_its_kept_clip_once_and_the_loss_stays_queued() {
+        let pressed_at = capture_time();
+        let (mut owner, input) = OwnerForTest::interrupted_hold(pressed_at);
+        let (reply, finished) = mpsc::sync_channel(1);
+        assert!(owner.0.handle(Command::Finish {
+            at: pressed_at + Duration::from_millis(500),
+            tail: Duration::ZERO,
+            reply,
+        }));
+        assert!(matches!(finished.recv().unwrap(), Finish::Discard));
+
+        let clip = input.take_kept_hotkey().expect("the shortcut's kept clip");
+        assert!(
+            (295..=305).contains(&clip.duration_ms()),
+            "{}",
+            clip.duration_ms()
+        );
+        assert!(input.take_kept_hotkey().is_none(), "taken only once");
+        assert!(
+            input
+                .take_loss()
+                .is_some_and(|lost| matches!(lost, LostCapture::Empty))
+        );
+        // The listener still reads the loss, marked as already submitted.
+        assert!(matches!(
+            input.try_recv_event(),
+            Some(DictationAudioEvent::Interrupted {
+                was_recording: true,
+                kept: None,
+                keep_hotkey: true,
+                ..
+            })
+        ));
+        assert!(input.try_recv_event().is_none());
+    }
+
+    #[test]
     fn cold_stream_failure_after_hold_threshold_still_fails_the_capture() {
         for mark_intentional in [false, true] {
             let (mut owner, input, _unused_samples) = owner_for_test(false);
@@ -2195,17 +2401,60 @@ mod tests {
                 Some(DictationAudioEvent::Reopened)
             ));
 
-            // Speech may already be recorded, so dropping it silently would paste a fragment.
+            // Neither capture has a clip to keep: the first delivered a chunk
+            // but was never marked intentional, and the second was marked
+            // intentional without delivering any audio. The previous failure
+            // stands.
             owner.handle_input(RecoveringAudioInputEvent::Interrupted);
             assert!(!input.is_recording());
             assert!(matches!(
                 input.try_recv_event(),
                 Some(DictationAudioEvent::Interrupted {
                     was_recording: true,
+                    kept: None,
+                    keep_hotkey: false,
                     ..
                 })
             ));
         }
+    }
+
+    #[test]
+    fn cold_stream_failure_keeps_the_audio_a_held_capture_already_delivered() {
+        let (mut owner, input, _unused_samples) = owner_for_test(false);
+        owner.release_while_idle = true;
+        let pressed_at = capture_time();
+        start(&mut owner, pressed_at);
+        let event = owner.input.recv_timeout(Duration::ZERO, false);
+        owner.handle_input(event);
+        let threshold_at = pressed_at + crate::dictation::MINIMUM_HOLD_DURATION;
+        owner.handle_input(RecoveringAudioInputEvent::Chunk {
+            samples: vec![0.25; 14_400],
+            captured_through: threshold_at,
+        });
+        assert!(owner.capture.become_intentional(threshold_at));
+        assert!(matches!(
+            input.try_recv_event(),
+            Some(DictationAudioEvent::Reopened)
+        ));
+
+        owner.handle_input(RecoveringAudioInputEvent::Interrupted);
+        assert!(!input.is_recording());
+        let Some(DictationAudioEvent::Interrupted {
+            was_recording: true,
+            kept: Some(clip),
+            keep_hotkey: true,
+            ..
+        }) = input.try_recv_event()
+        else {
+            panic!("a held cold capture keeps the audio delivered before the loss");
+        };
+        // The 300 ms delivered from the press; nothing from after the loss.
+        assert!(
+            (295..=305).contains(&clip.duration_ms()),
+            "{}",
+            clip.duration_ms()
+        );
     }
 
     #[test]

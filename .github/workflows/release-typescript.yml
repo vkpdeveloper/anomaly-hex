@@ -1,13 +1,11 @@
 name: Release TypeScript SDK
 
 # Pending changesets on dev open (or update) the "chore: release TypeScript
-# SDK" pull request into dev, which bumps versions and changelogs. Nothing is
-# published from dev. Publishing happens when production is fast-forwarded to
-# a dev commit whose SDK version is not on npm yet: changeset publish
-# publishes it, pushes its tag, and creates its GitHub release.
+# SDK" pull request into dev, which bumps versions and changelogs. Dispatch
+# this workflow on dev to publish an unreleased SDK version and tag it.
 on:
   push:
-    branches: [dev, production]
+    branches: [dev]
     paths:
       - "sdk/**"
       - ".github/workflows/release-typescript.yml"
@@ -25,7 +23,7 @@ permissions:
 
 jobs:
   version:
-    if: github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -33,14 +31,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2
         with:
           cwd: sdk
           pr-title: "chore: release TypeScript SDK"
 
   publish:
-    if: github.ref == 'refs/heads/production'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -52,8 +50,9 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - run: npm install --global npm@latest
-      - run: bun install --frozen-lockfile
+      # Exact, never latest: trusted publishing needs npm 11.5+.
+      - run: npm install --global npm@12.2.2
+      - run: bun install --frozen-lockfile --ignore-scripts
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

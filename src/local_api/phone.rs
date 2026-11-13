@@ -14,8 +14,9 @@
 //! and settings loads and saves hand it the wanted state ([`apply`]), so a
 //! CLI process that saves settings never opens a port.
 //!
-//! A phone's transcript goes through the same Output steps a desktop
-//! dictation does before it is sent back ([`process`]).
+//! A phone's transcript goes through Global mode's Output steps, with the
+//! same processor the local API's `process` query uses, before it is sent
+//! back ([`process`]).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -126,12 +127,6 @@ pub(crate) fn apply(settings: &AppSettings) {
         // the listener runs in its place.
         selection: crate::transcription::custom_models::runnable(&settings.transcription),
     });
-    #[cfg(not(target_os = "macos"))]
-    {
-        *MODES.write().unwrap_or_else(|error| error.into_inner()) = wanted
-            .is_some()
-            .then(|| crate::dictation::modes::ModeRuntime::from_settings(settings));
-    }
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
         desired.wanted = wanted;
@@ -140,50 +135,26 @@ pub(crate) fn apply(settings: &AppSettings) {
     }
 }
 
-/// Linux and Windows processing, as their listeners build it from settings.
-/// macOS reads the listener's own profiles (`dictation::config`) instead.
-#[cfg(not(target_os = "macos"))]
-static MODES: RwLock<Option<crate::dictation::modes::ModeRuntime>> = RwLock::new(None);
+/// The app's Global-mode processor, installed by [`PhoneDictation::start`].
+static PROCESSOR: RwLock<Option<super::processing::Processor>> = RwLock::new(None);
 
 /// Runs a phone transcript through what a desktop dictation gets before it
-/// pastes: replacements, the OpenCode rewrite, and transformations, in each
-/// OS's own order. No desktop app or page is behind a phone's text field, so
-/// the Global mode applies. Any step that fails keeps the text before it.
-fn process(raw: String, language: &str) -> String {
+/// pastes: replacements, the OpenCode rewrite, and transformations. No
+/// desktop app or page is behind a phone's text field, so the Global mode
+/// applies. Any step that fails keeps the text before it.
+fn process(raw: &str, language: &str, cancelled: &AtomicBool) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
         return String::new();
     }
-    let context = crate::dictation::context::ContextSnapshot::default();
-    let transformations = crate::personal_commands::hosted_client();
-    let source = crate::dictation::processor::Source::Dictation;
-    #[cfg(target_os = "macos")]
-    let processed = {
-        let cancelled = AtomicBool::new(false);
-        let mut processed = crate::dictation::config::dictation_profiles()
-            .process_cancellable(raw, language, &context, &cancelled, source);
-        processed.apply_transformations(&transformations, &context, &cancelled, source);
-        processed
-    };
-    #[cfg(not(target_os = "macos"))]
-    let processed = {
-        let modes = MODES
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        let Some(modes) = modes else {
-            return raw.to_owned();
-        };
-        modes.process(raw, language, &context, &transformations, source)
-    };
-    if let Some(error) = processed
-        .observation
-        .as_ref()
-        .and_then(|observation| observation.fallback.as_ref())
-    {
-        tracing::warn!(%error, "phone dictation processing fell back to the previous step's text");
+    let processor = PROCESSOR
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    match processor {
+        Some(processor) => processor(raw, language, cancelled).trim().to_owned(),
+        None => raw.to_owned(),
     }
-    processed.text.trim().to_owned()
 }
 
 /// The relay's current state, for the window.
@@ -233,7 +204,10 @@ pub struct PhoneDictation {
 }
 
 impl PhoneDictation {
-    pub fn start() -> Option<Self> {
+    /// `processor` is the app's Global-mode processing, the one its local
+    /// API installs.
+    pub fn start(processor: super::processing::Processor) -> Option<Self> {
+        *PROCESSOR.write().unwrap_or_else(|error| error.into_inner()) = Some(processor);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         thread::Builder::new()
@@ -494,7 +468,7 @@ fn serve(listener: &TcpListener, shared: &Arc<Shared>) {
                 match connections.try_send(stream) {
                     Ok(()) => {}
                     Err(TrySendError::Full(mut stream)) => {
-                        let _ = write_response(&mut stream, HttpResponse::code(429, "busy"));
+                        let _ = write_response(&mut stream, HttpResponse::code(429, "busy"), None);
                     }
                     Err(TrySendError::Disconnected(_)) => break,
                 }
@@ -538,7 +512,7 @@ fn work(pending: &Mutex<Receiver<TcpStream>>, shared: &Shared) {
             Err(RequestReadError::Io(_)) => None,
         };
         if let Some(response) = response {
-            if let Err(error) = write_response(&mut stream, response) {
+            if let Err(error) = write_response(&mut stream, response, None) {
                 tracing::debug!(%error, "phone disconnected before its reply");
             }
             linger(&mut stream);
@@ -651,22 +625,30 @@ fn transcribe(
         return Some(HttpResponse::code(429, "busy"));
     };
     let language = selection.language.clone();
-    let transcribed = super::transcribe_upload(
-        stream,
+    let upload = super::transcriptions::Upload {
         selection,
+        admission,
+        timings: crate::transcription::transcript::TimestampLevel::None,
+    };
+    let heard = match super::transcriptions::transcribe_upload(
+        stream,
+        upload,
         content_length,
         request.body_prefix,
         &shared.transcription,
         &shared.stop,
-        admission,
-    );
-    match transcribed {
-        Ok(heard) => Some(super::transcript_response(
-            &process(heard.transcript, &language),
-            heard.duration_ms,
-        )),
-        Err(response) => response,
-    }
+    ) {
+        Ok(heard) => heard,
+        Err(response) => return response,
+    };
+    let transcript = process(&heard.transcript.text, &language, &shared.stop);
+    Some(HttpResponse::json(
+        200,
+        &serde_json::json!({
+            "transcript": transcript,
+            "durationMs": heard.duration_ms,
+        }),
+    ))
 }
 
 /// Whether `peer` is on a network Hex answers: loopback, link-local, the

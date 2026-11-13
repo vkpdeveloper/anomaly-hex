@@ -56,7 +56,10 @@ fn find_executable(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-pub(super) fn open_system_audio(_sink: &PacketSink) -> Result<Box<dyn LiveSource>> {
+pub(super) fn open_system_audio(
+    _sink: &PacketSink,
+    _application: Option<&str>,
+) -> Result<Box<dyn LiveSource>> {
     MonitorSource::start().map(|source| Box::new(source) as Box<dyn LiveSource>)
 }
 
@@ -168,13 +171,17 @@ impl Drop for MonitorSource {
     }
 }
 
-/// Opens the folder holding `path` (or `path` itself, when a folder).
+/// Opens the folder holding the meeting file `path`.
 pub(crate) fn reveal(path: &Path) {
-    let folder = if path.is_dir() {
-        path
-    } else {
-        path.parent().unwrap_or(path)
-    };
+    open(path.parent().unwrap_or(path));
+}
+
+/// Opens the folder `path` itself.
+pub(crate) fn open_folder(path: &Path) {
+    open(path);
+}
+
+fn open(folder: &Path) {
     if let Err(error) = Command::new("xdg-open")
         .arg(folder)
         .stdin(Stdio::null())
@@ -182,7 +189,7 @@ pub(crate) fn reveal(path: &Path) {
         .stderr(Stdio::null())
         .spawn()
     {
-        tracing::error!(%error, "could not reveal meeting file");
+        tracing::error!(%error, "could not open meeting path");
     }
 }
 

@@ -172,6 +172,9 @@ fn capture_failures_are_persisted_instead_of_looking_interrupted() {
         chapters_refined: false,
         retention_applies: false,
         export_sha256: None,
+        notes_export_path: None,
+        notes_export_sha256: None,
+        notes_export_removed: false,
         audio_removed_at_ms: None,
         imported: false,
     };
@@ -220,6 +223,9 @@ fn mid_meeting_capture_loss_proceeds_to_transcription_when_audio_was_recorded() 
         chapters_refined: false,
         retention_applies: false,
         export_sha256: None,
+        notes_export_path: None,
+        notes_export_sha256: None,
+        notes_export_removed: false,
         audio_removed_at_ms: None,
         imported: false,
     };
@@ -441,6 +447,38 @@ fn a_rename_follows_the_title_when_descriptive_file_names_are_on() {
 }
 
 #[test]
+fn a_rename_without_descriptive_names_still_retitles_the_notes_file() {
+    let (base, directory) = finished_meeting("rename-notes", "Old title");
+    let mut manifest = read_manifest(&directory).unwrap();
+    let export = manifest.export_path.clone().unwrap();
+    let notes = base.join("2026-10-15 1418 Design sync.notes.md");
+    fs::write(&notes, "# Old title\n").unwrap();
+    manifest.notes = Some(MeetingNotes {
+        title: "Design sync".into(),
+        summary: "They agreed to ship on Friday.".into(),
+        ..MeetingNotes::default()
+    });
+    manifest.notes_export_path = Some(notes.clone());
+    manifest.notes_export_sha256 = file_sha256(&notes);
+    write_manifest(&directory, &manifest).unwrap();
+
+    let renamed = rename_meeting_with(&directory, "Arcade planning", false).unwrap();
+
+    assert_eq!(renamed.export_path, Some(export.clone()));
+    let written = fs::read_to_string(&notes).unwrap();
+    assert!(written.starts_with("# Arcade planning\n"));
+    assert!(written.contains(
+        "- **Transcript:** [2026-10-15 1418 Meeting.md](\
+                              2026-10-15%201418%20Meeting.md)"
+    ));
+    assert_eq!(
+        read_manifest(&directory).unwrap().notes_export_sha256,
+        Some(text_sha256(written.as_bytes()))
+    );
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn chapters_extend_every_title_but_one_the_user_typed() {
     let chapters = vec![
         Chapter {
@@ -551,6 +589,27 @@ fn deleting_trashes_the_markdown_then_the_recording_and_refuses_while_recording(
 }
 
 #[test]
+fn deleting_trashes_a_tracked_notes_file_after_the_transcript() {
+    let (base, directory) = finished_meeting("trash-notes", "Design sync");
+    let mut manifest = read_manifest(&directory).unwrap();
+    let export = manifest.export_path.clone().unwrap();
+    let notes = base.join("2026-10-15 1418 Design sync.notes.md");
+    fs::write(&notes, "# Design sync\n").unwrap();
+    manifest.notes_export_path = Some(notes.clone());
+    manifest.notes_export_sha256 = file_sha256(&notes);
+    write_manifest(&directory, &manifest).unwrap();
+
+    let mut trashed = Vec::new();
+    trash_meeting(&directory, |path| {
+        trashed.push(path.to_path_buf());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(trashed, [export, notes, directory]);
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn the_exported_markdown_is_the_reveal_target_only_while_it_exists() {
     let (base, directory) = finished_meeting("reveal", "Design sync");
     let manifest = read_manifest(&directory).unwrap();
@@ -565,6 +624,18 @@ fn the_exported_markdown_is_the_reveal_target_only_while_it_exists() {
         RevealTarget::Folder(directory.clone())
     );
     fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn explorer_opens_a_folder_itself_without_the_select_switch() {
+    assert_eq!(
+        explorer_open(Path::new(r"C:\Users\dax\Documents\Hex Meetings")).as_os_str(),
+        std::ffi::OsStr::new(r#""C:\Users\dax\Documents\Hex Meetings""#)
+    );
+    assert_eq!(
+        explorer_open(Path::new(r"D:\Notes,2026")).as_os_str(),
+        std::ffi::OsStr::new(r#""D:\Notes,2026""#)
+    );
 }
 
 #[test]
@@ -822,6 +893,9 @@ fn retention_manifest(
         chapters_refined: false,
         retention_applies: false,
         export_sha256: None,
+        notes_export_path: None,
+        notes_export_sha256: None,
+        notes_export_removed: false,
         audio_removed_at_ms: None,
         imported: false,
     }
@@ -892,6 +966,30 @@ fn retention_expires_meetings_by_when_they_ended_and_skips_active_ones() {
     let pending = vec!["pending".to_string()];
 
     let chosen = Some(MeetingRetention::Day);
+    let readable = meetings
+        .iter()
+        .filter(|meeting| {
+            retention::readable(
+                meeting,
+                meeting.status,
+                pending.contains(&meeting.id),
+                chosen,
+                now,
+            )
+        })
+        .map(|meeting| meeting.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        readable,
+        [
+            "long-call",
+            "recent-start",
+            "recording",
+            "transcribing",
+            "pending",
+            "edge"
+        ]
+    );
     assert_eq!(
         expired_meetings(&meetings, chosen, &pending, now),
         ["old", "no-end"]
@@ -976,6 +1074,49 @@ fn expiry_leaves_a_markdown_copy_the_user_edited() {
 }
 
 #[test]
+fn expiry_trashes_a_notes_file_only_while_its_digest_matches() {
+    let (base, directory) = finished_meeting("expire-notes", "Design sync");
+    let mut manifest = read_manifest(&directory).unwrap();
+    let export = manifest.export_path.clone().unwrap();
+    manifest.export_sha256 = file_sha256(&export);
+    let notes = base.join("2026-10-15 1418 Design sync.notes.md");
+    fs::write(&notes, "# Design sync\n").unwrap();
+    manifest.notes_export_path = Some(notes.clone());
+    manifest.notes_export_sha256 = file_sha256(&notes);
+    write_manifest(&directory, &manifest).unwrap();
+
+    let mut trashed = Vec::new();
+    trash_expired(&directory, |path| {
+        trashed.push(path.to_path_buf());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(trashed, [export.clone(), notes.clone(), directory.clone()]);
+
+    fs::write(&notes, "# My own notes\n").unwrap();
+    trashed.clear();
+    trash_expired(&directory, |path| {
+        trashed.push(path.to_path_buf());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(trashed, [export.clone(), directory.clone()]);
+
+    // The transcript's digest still moves it; an older manifest with no
+    // notes digest leaves the notes file alone.
+    manifest.notes_export_sha256 = None;
+    write_manifest(&directory, &manifest).unwrap();
+    trashed.clear();
+    trash_expired(&directory, |path| {
+        trashed.push(path.to_path_buf());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(trashed, [export, directory]);
+    fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn hex_rewriting_its_markdown_keeps_it_hexs_and_a_user_edit_does_not() {
     let (base, directory) = finished_meeting("digest", "Meeting — 2:18 PM");
     let mut manifest = read_manifest(&directory).unwrap();
@@ -1009,14 +1150,20 @@ fn paste_cursor_counts_coalesced_turns_and_advances_only_on_success() {
         entry(MeetingSource::System, 2_500, 3_500, "Got it."),
     ];
     let mut cursor = MeetingPasteCursor::default();
-    assert_eq!(cursor.pending_turn_count("meeting-a", &initial), 2);
+    assert_eq!(
+        cursor.pending("meeting-a", &initial),
+        PendingDelta {
+            turns: 2,
+            span_ms: 3_500
+        }
+    );
 
     // A failed paste or clipboard write must not advance the cursor.
     let failed = cursor.consume_entries("meeting-a", &initial, |_| {
         Err(eyre!("clipboard unavailable"))
     });
     assert!(failed.is_err());
-    assert_eq!(cursor.pending_turn_count("meeting-a", &initial), 2);
+    assert_eq!(cursor.pending("meeting-a", &initial).turns, 2);
 
     // A successful copy/paste commits the entries and drops the count to 0.
     let mut copied = String::new();
@@ -1028,7 +1175,10 @@ fn paste_cursor_counts_coalesced_turns_and_advances_only_on_success() {
         .unwrap();
     assert_eq!(text, "You: First. Still me.\n\nThem: Got it.");
     assert_eq!(copied, text);
-    assert_eq!(cursor.pending_turn_count("meeting-a", &initial), 0);
+    assert_eq!(
+        cursor.pending("meeting-a", &initial),
+        PendingDelta::default()
+    );
     assert!(
         cursor
             .consume_entries("meeting-a", &initial, |_| Ok(()))
@@ -1043,15 +1193,22 @@ fn paste_cursor_counts_coalesced_turns_and_advances_only_on_success() {
         7_000,
         "Next point.",
     ));
-    assert_eq!(cursor.pending_turn_count("meeting-a", &extended), 1);
+    // Its span is at least a second, so a short turn still reads "1 sec new".
+    assert_eq!(
+        cursor.pending("meeting-a", &extended),
+        PendingDelta {
+            turns: 1,
+            span_ms: 1_000
+        }
+    );
     let delta = cursor
         .consume_entries("meeting-a", &extended, |_| Ok(()))
         .unwrap();
     assert_eq!(delta, "You: Next point.");
-    assert_eq!(cursor.pending_turn_count("meeting-a", &extended), 0);
+    assert_eq!(cursor.pending("meeting-a", &extended).turns, 0);
 
     // Switching to a new meeting starts from the beginning.
-    assert_eq!(cursor.pending_turn_count("meeting-b", &initial), 2);
+    assert_eq!(cursor.pending("meeting-b", &initial).turns, 2);
 }
 
 #[test]

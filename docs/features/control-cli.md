@@ -7,6 +7,9 @@ Agent or terminal                                  // control.cli; every OS
 ├── hex status [--json] -> Listener, capture, meeting, model, features,
 │   permissions, window, update, version, pid, memory
 │   ├── Wayland listener -> its warning names a missing wl-copy before paste fails
+│   ├── Capture -> listener query: shortcut/CLI or SDK recording, including a
+│   │   pending microphone start and release tail, plus accepted output jobs
+│   │   └── Listener does not answer -> capture unknown, never inferred idle from logs
 │   └── Hex not running -> exit 3, "Hex is not running; run `hex start`"
 ├── hex start -> Already running: nothing | else open Hex.app (Linux and
 │   Windows: a detached `hex app --hidden`), wait ≤ 20 s
@@ -18,6 +21,10 @@ Agent or terminal                                  // control.cli; every OS
 │       Linux unit -> systemctl restart; else waits for the drain, then start
 ├── hex dictation start|stop|toggle|cancel
 │   ├── Same shortcut state machine as the hotkey; start locks the capture
+│   │   ├── Windows CLI/tray start -> hook adopts the accepted capture; first
+│   │   │   press of its shortcut finishes it, in Hold and Toggle alike
+│   │   └── SDK /dictations capture -> only its owner or lease ends it;
+│   │       ordinary commands and physical keys leave it alone
 │   ├── start -> intentional at once: tone once the mic is open, recording
 │   │   behavior, live stream
 │   ├── stop -> done only when the clip went to transcription;
@@ -31,6 +38,12 @@ Agent or terminal                                  // control.cli; every OS
 │       ├── Not recording -> not-recording, exit 1
 │       ├── Failure or timeout -> exit 1, prints nothing, never pastes
 │       └── History keeps it as Printed; Paste Last skips it (also on Linux)
+│   ├── dictation start --print -> Labs › Print-only CLI dictation (macOS, off
+│   │   by default): starts the same locked recording, but its text comes back
+│   │   here however it ends: the shortcut that finishes it, stop, or a kept
+│   │   microphone loss. Never pasted or copied. No speech -> no-speech, exit 4;
+│   │   cancel or any other end -> exit 1; already recording -> busy; lab off
+│   │   -> disabled; Linux and Windows -> unsupported
 │   └── dictation start|toggle --raw -> the dictation it starts pastes the
 │       transcript as heard (Dictate without processing); History keeps it as Raw;
 │       --raw with stop -> usage error, exit 2
@@ -45,13 +58,15 @@ Agent or terminal                                  // control.cli; every OS
 │       but the listener drops the job: no keys are sent and no state changes
 ├── hex transcribe <file> [--model <id>] [--language <code>]
 │   ├── Labs › Transcribe files off -> disabled, exit 1; the file is never read
-│   ├── Not WAV, or over 64 MiB -> refused here, before Hex is asked
-│   ├── Hex running -> the file to POST /transcriptions with the model named;
-│   │   ≤30 s runs on the dictation engine's model, longer clips on the
-│   │   transcription service's own copy; stdout gets the transcript
-│   ├── Hex stopped -> Linux/Windows load the model here as `model transcribe`;
-│   │   macOS answers not-running, exit 3
-│   └── No speech -> no-speech, exit 4; nothing pasted, kept, or processed
+│   ├── Not WAV or truncated -> refused here, before Hex is asked
+│   ├── Any length -> read in ≤30 s pieces, their text joined with one space
+│   ├── Hex running -> one piece at a time to POST /transcriptions with the
+│   │   model named; each piece on the dictation engine's loaded copy when it
+│   │   holds that model; stdout gets the joined transcript
+│   ├── Hex stopped -> Linux/Windows load the model here once as `model
+│   │   transcribe`; macOS answers not-running, exit 3
+│   └── No speech in every piece -> no-speech, exit 4; nothing pasted, kept,
+│       or processed
 ├── hex meetings record [--title] | stop | copy-last
 │   ├── Meetings off -> feature-off; recording shows in the menu bar and HUD
 │   │   exactly like a menu-bar recording
@@ -92,15 +107,22 @@ the local API's owner-only discovery file and the bearer-authenticated
 so they never compete with the running app for its files. Opt-ins stay
 explicit settings: no command turns Meetings on as a side effect.
 
-`hex transcribe` is the one command that doesn't use `/control`: it reads and
-checks the WAV here, then sends it to the same discovery file's
-`POST /transcriptions` (`Content-Type: audio/wav`, 64 MiB cap), so the running
-app transcribes it with the model the request names: a clip up to 30 s on its
-dictation engine's model when it holds that one, a longer clip on the
-transcription service's own copy. Its Labs toggle is read from
-`settings.json` (`AppSettings::read`), the same read `hex labs` lists from, so
-the check works with Hex running or stopped; a running Hex saves the toggle
-there at once. Off, nothing is read.
+`hex transcribe` is the one command that doesn't use `/control`: it checks the
+WAV here, reading every sample once without keeping them so a truncated or
+corrupt file is refused before anything transcribes, then sends the recording
+one piece at a time to the same discovery file's `POST /transcriptions`
+(`Content-Type: audio/wav`), so the running app transcribes it with the model
+the request names, every piece on its dictation engine's loaded copy when it
+holds that model. Pieces are at most 30 s
+(`control/cli/transcribe/pieces.rs`), read and resampled incrementally and cut
+through the quietest point near their end by `gguf_session::quiet_cut`, the
+same cut a long GGUF clip gets; a piece of only silence is skipped once the
+speech detector is installed, and the rest of the text is joined with one
+space, so a file can be any length and only about one
+piece is in memory. Its Labs toggle is read from `settings.json`
+(`AppSettings::read`), the same read `hex labs` lists from, so the check works
+with Hex running or stopped; a running Hex saves the toggle there at once.
+Off, nothing is read.
 
 On Linux and Windows `control::host::answer` carries every command out through
 the OS's adapter (`linux::app::LinuxControl`, `windows::rune::WindowsControl`):
@@ -114,6 +136,23 @@ go to the meeting recorder (`meeting/runtime`) as the tray's items do;
 command to the running Hex. `hex history`, `hex meetings list|show|search`, and
 `hex mcp` read files on every OS.
 
+`dictation start --print` is macOS's, behind a Labs toggle: the listener
+stores the command's reply with the recording (`recognition::Hotkeys::print_capture`)
+and reads it at every end. The shortcut's finish passes it to
+`DictationWorker::transcribe_printed`; `dictation stop` and `toggle` join it
+with their own reply so one transcript answers both (a plain stop still
+answers as a plain stop does); `dictation cancel`, a
+discard, and a kept microphone loss answer it themselves. Only the dictation
+machine's actions may take it, and a reply still held when a new recording
+starts, or when the machines are suspended, is failed rather than left to
+answer a later dictation. Nothing pastes or
+copies it, History records it as Printed, and the reply is answered rather
+than dropped on every path, including a discarded or silent clip and a
+microphone loss. While it waits, it holds one of the local API's four
+connection workers (`local_api::HTTP_WORKERS`) until it answers or reaches
+its cap, even if the asking client is killed. Linux and Windows answer
+`unsupported` before their host runs anything.
+
 Sources: [control.rs](../../src/control.rs) (protocol, status, quit rules),
 [control/host.rs](../../src/control/host.rs) (the Linux and Windows host),
 [control/settings.rs](../../src/control/settings.rs) (settings registry),
@@ -125,29 +164,53 @@ dispatch in [main.rs](../../src/main.rs).
 [Command and JSON contracts](../cli.md) document flags, exit codes, and schema.
 
 Checks: `control::tests` round-trip every command and reply (including
-`a_printing_stop_answers_through_its_reply_channel`), refuse other
+`a_printing_stop_answers_through_its_reply_channel`, which also joins two
+printing replies onto one transcript and pins `start --print`'s flags and
+deadline), refuse other
 protocol versions, and cover the quit rules (an unanswered listener refuses)
 and `model_selection` (remembered hints, wildcard-language validation); `control::settings::tests` include
 `every_persisted_setting_has_a_cli_key`, value parsing, shortcut conflicts,
-and zero volume; `control::cli::tests` pin
+and zero volume (`enabling_tones_restores_a_nonzero_level` covers enabling a
+saved zero); `control::cli::tests` pin
 exit codes, output, and `hex start`'s `open`
 arguments; `desktop::onboarding::tests::relaunch_forwards_only_the_hex_environment`
 pins restart's; `macos_rune::control::tests` check that `model use` prepares
 its exact selection installed-only;
 `dictation::audio::tests::marked_captures_are_intentional_without_a_hold`
 covers the immediate stream and `ReadyIntentional`; `recognition::tests`
-cover the stop replies and the paste-last refusal; `control::tests::cancel_parses_and_takes_no_flags`
+cover the stop replies and the paste-last refusal;
+`recognition::hotkeys::tests::a_printing_start_follows_the_shortcut_that_finishes_it`
+covers a printing start's reply surviving to the shortcut's finish and a
+cancel, and
+`recognition::hotkeys::tests::a_held_print_reply_never_answers_a_later_dictation`
+covers another shortcut leaving it alone, a later start failing it, a discard,
+and a suspension; `control::tests::cancel_parses_and_takes_no_flags`
 covers `cancel` and its flags; local API's
 `control_requests_are_authenticated_versioned_and_typed` covers authentication,
 bounds, and error codes; `tests::control_commands_parse_beside_the_read_commands`
 covers parsing next to `history` and `meetings`; `control::host::tests` cover
-the quit refusal, printing stops, and runtime `unsupported` replies;
+the quit refusal, printing stops (and Linux's and Windows' `unsupported` for a
+printing start), and runtime `unsupported` replies;
+`quit_and_status_use_the_owner_even_without_dictating_log_events` covers SDK
+capture, pending jobs, and an unanswered listener. `dictation::service::tests`
+cover the recording query through SDK opening, capture, and completion, and
+timeout recovery. Windows input's `command_capture_*` and `command_stop_*`
+tests cover command-to-key handoff, raw ownership, Toggle cancel, and a CLI
+stop during a physical hold. These are owner/transition tests, not a physical
+Windows keyboard or live SDK recording smoke test.
 `linux::tests` parse the shared tree beside Linux's own commands;
 `rune_ui::platform::parity_tests` fail when a capability differs across OSes
 without a recorded reason; `settings_name_real_capabilities_and_keys` checks
 the settings-to-capability table; `control::cli::transcribe::tests` cover the
-lab-off refusal, a non-WAV file refused before any transcription, the selected
-model and language, and an empty transcript as `no-speech`.
+lab-off refusal, a non-WAV, a frame-less and a truncated file refused before
+any transcription, the selected model and language, silent pieces skipped once
+the detector is installed and kept (without consulting or downloading it) when
+it is not, pieces joined in order, and a file whose pieces all hear
+nothing as `no-speech`, while `control::cli::transcribe::pieces::tests` cover a
+95 s clip split into pieces that cover every sample once, a 48 kHz file read
+into ≤30 s pieces whose samples match `AudioClip::decode_wav`, every supported
+sample format (8/16/24/32-bit int and 32-bit float) matching it too, and a file
+that changes mid-read naming where reading stopped.
 
 Observed (Oct 30, apollo, an isolated data root and `hex service` without a
 display): status, settings get/set (and refusing `show_dock_icon`), vocabulary
@@ -159,11 +222,17 @@ on a Windows PC.
 
 Gaps: no command has run against a live app; the unit checks substitute the
 host. The control loop's start/stop wiring (tone timing, recording behavior)
-has no end-to-end test. A CLI volume change does not preview a tone as the window does. Onboarding
+has no end-to-end test. `dictation start --print` in particular has never run
+on a Mac with a microphone: its reply routing through the shortcut finish, a
+kept microphone loss, and a paused listener is covered only by
+`recognition::hotkeys`' unit test and by reading every path that ends a
+recording, so expect to verify it by hand (a locked recording finished by the
+shortcut, by `stop`, and by `stop --print`) before trusting it. A CLI volume
+change does not preview a tone as the window does. Onboarding
 permission prompts, calendar connection, and meeting deletion or renaming have
 no command. Linux and Windows dictation through the CLI has not run with a
 microphone, and meeting recording through the CLI has not run on Linux or
 Windows. `hex transcribe`'s gate-off refusal, its non-WAV refusal, and a
 running headless service's `model-unavailable` answer were observed on Linux;
 no model was installed, so its transcript answer was not observed end to end,
-and it has not run on macOS or Windows.
+neither was a long file read in pieces, and it has not run on macOS or Windows.

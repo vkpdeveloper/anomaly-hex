@@ -1,9 +1,12 @@
 //! Shortcut keys a Labs feature allows, and the repair that puts a saved
 //! shortcut on one back while the feature is off: mouse buttons (Labs ›
-//! Mouse shortcuts, macOS) and Menu, Pause, or Scroll Lock (Labs › Special
-//! keys alone, Linux).
+//! Mouse shortcuts, macOS), Menu, Pause, or Scroll Lock (Labs › Special
+//! keys alone, Linux), the ISO section key (Labs › Section key alone, Linux
+//! and macOS), shortcuts without a key (Labs › Double-tap on a lone
+//! modifier, macOS), and the persisted double-tap mode those need.
 
-use super::{AppSettings, HotkeyBinding, HotkeyKey};
+use super::hotkeys::ISO_SECTION_KEY_CODE;
+use super::{AppSettings, HotkeyBinding, HotkeyKey, MAX_EXTRA_DICTATION_SHORTCUTS};
 
 impl HotkeyKey {
     /// Menu, Pause, or Scroll Lock: keys that type nothing, which Labs ›
@@ -19,9 +22,13 @@ impl HotkeyKey {
     }
 
     /// The § key, left of 1 on ISO keyboards, which Labs › Section key
-    /// alone lets a Linux shortcut use on its own (issue 1050).
+    /// alone lets a shortcut use on its own (issue 1050). macOS knows it by
+    /// virtual key code too, because a dead-key layout labels it `^`, `´`,
+    /// or `` ` `` rather than §.
     pub fn is_section(&self) -> bool {
-        !self.is_mouse() && Self::section_name(&self.label)
+        !self.is_mouse()
+            && (Self::section_name(&self.label)
+                || (cfg!(target_os = "macos") && self.code == ISO_SECTION_KEY_CODE))
     }
 
     /// Whether `name` names the § key: `§` or `section`.
@@ -80,23 +87,51 @@ impl AppSettings {
             && crate::labs::Feature::StandaloneSpecialKeys.shipped()
     }
 
-    /// Whether Labs › Section key alone is on: a Linux shortcut may be the
-    /// § key with no modifier.
+    /// Whether Labs › Section key alone is on: on Linux and macOS a shortcut
+    /// may be the ISO section key, left of 1, with no modifier.
     pub fn section_key_allowed(&self) -> bool {
-        cfg!(target_os = "linux")
+        cfg!(any(target_os = "linux", target_os = "macos"))
             && self.labs.section_key_alone
             && crate::labs::Feature::SectionKeyAlone.shipped()
     }
 
-    /// With Labs › Section key alone off, a Linux shortcut on § alone goes
-    /// back to its default (an optional one is unbound), so the listener
-    /// never registers one. § with a modifier is unaffected.
+    /// Whether Labs › Double-tap on a lone modifier is on: Double-tap
+    /// shortcut mode accepts a dictation shortcut without a key (macOS).
+    pub fn double_tap_modifiers_allowed(&self) -> bool {
+        cfg!(target_os = "macos")
+            && self.labs.double_tap_modifiers
+            && crate::labs::Feature::DoubleTapModifiers.shipped()
+    }
+
+    /// Clears a double-tap-only choice a shortcut can't support: the lock
+    /// is off, or a lone modifier is not allowed by its Labs switch. With
+    /// the lab off, a modifier-only binding falls back exactly as a fresh
+    /// load does (`shortcut_mode` stays Hold, `double_tap_lock` stays on).
+    /// Each Labs › More dictation shortcuts row folds the same way.
+    pub(crate) fn normalize_double_tap_settings(&mut self) {
+        let modifiers_allowed = self.double_tap_modifiers_allowed();
+        if !self.double_tap_lock || (self.dictation_hotkey.key.is_none() && !modifiers_allowed) {
+            self.double_tap_only = false;
+        }
+        for row in &mut self.extra_dictation_hotkeys {
+            row.mode = row
+                .mode
+                .for_binding(row.binding.as_ref(), modifiers_allowed);
+        }
+    }
+
+    /// With Labs › Section key alone off, a Linux or macOS shortcut on the
+    /// ISO section key alone goes back to its default (an optional one is
+    /// unbound), so the listener never registers one. The section key with a
+    /// modifier is unaffected.
     pub(crate) fn repair_section_key(&mut self) {
-        if self.section_key_allowed() || !cfg!(target_os = "linux") {
+        if self.section_key_allowed() || !cfg!(any(target_os = "linux", target_os = "macos")) {
             return;
         }
         if self.reset_shortcuts(HotkeyBinding::is_lone_section_key) {
-            tracing::info!("reset § shortcuts without a modifier: Labs › Section key alone is off");
+            tracing::info!(
+                "reset section-key shortcuts without a modifier: Labs › Section key alone is off"
+            );
         }
     }
 
@@ -140,6 +175,22 @@ impl AppSettings {
         }
     }
 
+    /// Labs › More dictation shortcuts keeps at most
+    /// [`MAX_EXTRA_DICTATION_SHORTCUTS`] rows, and each row's mode folds to
+    /// one its binding can trigger (double-tap only needs a key, or Labs ›
+    /// Double-tap on a lone modifier). The rows stay saved while the Lab is
+    /// off.
+    pub(crate) fn repair_extra_dictation_shortcuts(&mut self) {
+        self.extra_dictation_hotkeys
+            .truncate(MAX_EXTRA_DICTATION_SHORTCUTS);
+        let modifiers_allowed = self.double_tap_modifiers_allowed();
+        for row in &mut self.extra_dictation_hotkeys {
+            row.mode = row
+                .mode
+                .for_binding(row.binding.as_ref(), modifiers_allowed);
+        }
+    }
+
     /// Puts back every shortcut `matches`: dictation, Paste last dictation,
     /// and Annotate to their defaults, the optional ones unbound. Returns
     /// whether any changed.
@@ -165,6 +216,12 @@ impl AppSettings {
             self.second_dictation_hotkey = None;
             reset = true;
         }
+        for row in &mut self.extra_dictation_hotkeys {
+            if row.binding.as_ref().is_some_and(&matches) {
+                row.binding = None;
+                reset = true;
+            }
+        }
         if self.terminal_paste_hotkey.as_ref().is_some_and(&matches) {
             self.terminal_paste_hotkey = None;
             reset = true;
@@ -179,6 +236,15 @@ impl AppSettings {
             self.capture.replay_hotkey = None;
             reset = true;
         }
+        if self
+            .screenshots
+            .record_hotkey
+            .as_ref()
+            .is_some_and(&matches)
+        {
+            self.screenshots.record_hotkey = None;
+            reset = true;
+        }
         reset
     }
 }
@@ -186,12 +252,64 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::HotkeyModifiers;
 
     fn menu() -> HotkeyBinding {
         HotkeyBinding {
             modifiers: Default::default(),
             key: Some(HotkeyKey::named("menu")),
         }
+    }
+
+    #[test]
+    fn double_tap_only_on_a_lone_modifier_needs_the_lab() {
+        let binding = |key: Option<HotkeyKey>| HotkeyBinding {
+            modifiers: HotkeyModifiers::option(),
+            key,
+        };
+        let mut settings = AppSettings {
+            dictation_hotkey: binding(None),
+            double_tap_only: true,
+            ..Default::default()
+        };
+        settings.normalize_double_tap_settings();
+        assert!(!settings.double_tap_only);
+        settings.labs.double_tap_modifiers = true;
+        settings.double_tap_only = true;
+        settings.normalize_double_tap_settings();
+        // Modifier-only dictation exists on macOS.
+        assert_eq!(
+            settings.double_tap_only,
+            settings.double_tap_modifiers_allowed()
+        );
+        // A keyed binding keeps the choice with the lab off.
+        settings.labs.double_tap_modifiers = false;
+        settings.dictation_hotkey = binding(Some(HotkeyKey::named("space")));
+        settings.double_tap_only = true;
+        settings.normalize_double_tap_settings();
+        assert!(settings.double_tap_only);
+    }
+
+    #[test]
+    fn turning_the_double_tap_modifiers_lab_off_falls_back_as_a_fresh_load() {
+        let mut settings = AppSettings {
+            dictation_hotkey: HotkeyBinding {
+                modifiers: HotkeyModifiers::option(),
+                key: None,
+            },
+            double_tap_only: true,
+            ..Default::default()
+        };
+        settings.labs.double_tap_modifiers = true;
+        settings.normalize_double_tap_settings();
+        crate::labs::Feature::DoubleTapModifiers.set(&mut settings, false);
+        assert!(!settings.double_tap_only);
+        assert!(settings.double_tap_lock, "the lock stays on");
+        assert_eq!(
+            settings.shortcut_mode,
+            crate::dictation::ShortcutMode::Hold,
+            "the mode returns to Hold or double-tap"
+        );
     }
 
     #[test]
@@ -233,8 +351,8 @@ mod tests {
     }
 
     /// Issue 1050: off, a saved § shortcut without a modifier goes back to
-    /// its default on Linux; § with a modifier, and § with the toggle on,
-    /// stay.
+    /// its default on Linux and macOS; § with a modifier, and § with the
+    /// toggle on, stay.
     #[test]
     fn a_lone_section_key_goes_back_to_its_default_while_its_labs_toggle_is_off() {
         let section = HotkeyBinding {
@@ -261,12 +379,41 @@ mod tests {
         assert_eq!(on.dictation_hotkey, section);
         settings.repair_section_key();
         assert_eq!(settings.raw_dictation_hotkey, Some(with_control));
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
             assert!(on.section_key_allowed());
             assert_eq!(settings.dictation_hotkey, HotkeyBinding::default());
         } else {
             assert!(!on.section_key_allowed());
             assert_eq!(settings.dictation_hotkey, section);
         }
+    }
+
+    /// macOS labels the ISO section key by what it types: a dead-key layout
+    /// gives `^` for key code 10, and the section-key rules must still see
+    /// it. Elsewhere only the label names the section key.
+    #[test]
+    fn a_dead_key_label_is_the_section_key_only_on_macos() {
+        let dead_key = HotkeyBinding {
+            modifiers: Default::default(),
+            key: Some(HotkeyKey {
+                code: ISO_SECTION_KEY_CODE,
+                label: "^".into(),
+            }),
+        };
+        assert_eq!(dead_key.is_lone_section_key(), cfg!(target_os = "macos"));
+        let mut settings = AppSettings {
+            dictation_hotkey: dead_key.clone(),
+            ..Default::default()
+        };
+        settings.repair_section_key();
+        if cfg!(target_os = "macos") {
+            assert_eq!(settings.dictation_hotkey, HotkeyBinding::default());
+        } else {
+            assert_eq!(settings.dictation_hotkey, dead_key);
+        }
+        settings.labs.section_key_alone = true;
+        settings.dictation_hotkey = dead_key.clone();
+        settings.repair_section_key();
+        assert_eq!(settings.dictation_hotkey, dead_key);
     }
 }

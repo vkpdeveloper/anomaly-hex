@@ -12,6 +12,7 @@ platforms, and dependencies.
 - [Finish without losing other work](#finish-without-losing-other-work).
 - [Rearm without a phantom capture](#rearm-without-a-phantom-capture).
 - [Reopen with fresh audio](#reopen-with-fresh-audio).
+- [Keep an interrupted dictation](#keep-an-interrupted-dictation).
 - [Fence late capture notifications](#fence-late-capture-notifications).
 - [Degrade only the failing dependency](#degrade-only-the-failing-dependency).
 - [Keep Linux listeners managed](#keep-linux-listeners-managed).
@@ -46,18 +47,18 @@ hand, cannot prevent the app from opening.
 
 ```ts
 Launch -> read settings.json
-├── Unknown keys -> ignored
+├── Unknown keys -> ignored in memory, preserved on save
 ├── Invalid field -> log its key and reason -> that field's default
 │   └── Valid siblings and unrelated sections stay
 ├── Invalid JSON / not a JSON object -> log why -> defaults in memory
 │   └── launch says so; invalid JSON names serde's line and column
 ├── Unreadable file -> log why -> defaults in memory
-│   └── no launch note; a save fails rather than overwrite it
+│   └── launch says so; saves remain refused even once the file is readable
 └── Save
     ├── Invalid JSON / not an object on disk -> save refused
     │   └── fix or remove the file; original stays exactly as it was
-    ├── This process loaded a file that wasn't an object -> save refused
-    │   └── even after the file is fixed; a restart (or the Linux poll) clears it
+    ├── This save's base couldn't read a settings object -> save refused
+    │   └── a successful reload authorizes only the newly adopted snapshot
     └── Invalid fields -> preserve exact original first
         ├── settings.json.unreadable-<sha256>, owner-only; same bytes backed up once
         └── Backup fails / original cannot be read -> save fails, original stays
@@ -66,34 +67,55 @@ Launch -> read settings.json
 Loading repaired settings does not itself rewrite the file. A later settings
 save (including a migration save) takes the backup before replacing invalid
 fields. A file that is not valid JSON, or is valid JSON but not an object, is
-never backed up or replaced: every save is refused until Hex restarts, and
-launch keeps running with defaults in memory while naming the parse error. A
-process that loaded such a file keeps refusing saves even after the file is
-fixed, because its in-memory settings may be stale defaults. Reading the fixed
-file does not clear that refusal; the refusal says to restart. On Linux only,
-the two-second poll clears it when it adopts a valid or removed file.
-Backups are never automatically removed. On Linux, the running Hex checks
-`settings.json` every two seconds and adopts an edit made outside the window
-(by hand or by an agent), so its modes reach the listener and the next save
-keeps it (#970). The check runs only when the file's mtime changes. A file that
-isn't a JSON object is never adopted: the running settings stay, the parse
-error appears in the settings error surface, and the message is not logged on
-every tick. A later check that reads a valid file, or finds the file removed,
-adopts it (even when it equals the running settings), clears that error, and
-clears the process's refusal marker, so the window's next save works without a
-restart. macOS and Windows still read the file only at launch, through
-`hex settings set`, or through their own save-and-reload path. Unchosen
-`meetings.retention` is
+never backed up or replaced. Launch keeps running with defaults while naming
+the error. That failed snapshot can never save, even after another reader
+successfully loads the repaired file. Backups are never automatically removed.
+Every OS's runtime checks for external edits every two seconds, off the window
+thread. Linux checks on mtime changes and shows parse errors; macOS and Windows
+keep their previous settings on failed reads. Adopting a valid or removed file
+replaces the failed snapshot and allows new edits to save.
+
+`recover.settings-writers`: every production save passes its base and candidate
+to `AppSettings::update`. Under one process-wide lock, it rereads current
+settings and applies only fields changed from the base. Objects merge by key;
+arrays are whole-field edits, and a local edit wins a same-field conflict.
+Managed switches keep their saved values. The returned snapshot includes other
+writers' changes and a monotonic in-process revision; the window rejects older
+revisions and rebases dirty Modes fields individually. A capsule's provider or
+corner choice uses this same path, without an optimistic settings mirror.
+This protects writers in one Hex process; an uncoordinated external writer
+replacing the file during the transaction is not serialized by the mutex.
+
+```ts
+window starts with A -> CLI saves A + X
+  -> window submits base A, candidate A + Y
+     -> owner reads A + X -> writes A + X + Y -> window adopts it
+```
+
+History retention applies when the runtime adopts settings, including external
+edits while its window is closed; queries and pruning share the retention cutoff.
+Onboarding refreshes its microphone explanation from the adopted setting.
+Unchosen `meetings.retention` is
 written as an absent key, so older builds with a non-optional retention still
 read the file; existing `null` values also load in the current build.
+
+Every object in the settings file has its keys sorted alphabetically, at every
+nesting level, while array order is kept, so a file kept in version control
+changes only where a setting does. Loading does not depend on key order.
 
 Source and checks: [settings persistence](../../src/app_settings/persistence.rs)
 and its [tests](../../src/app_settings/persistence/tests.rs): old-shape retention,
 invalid enums, nested types, list entries, unknown keys, invalid JSON and
 non-object documents (defaults, refused saves, no backup), a file fixed while
-the process still holds stale settings (refused until the explicit clear),
-exactly-once private backups, interrupted saves, and backup failure. These checks use
-temporary files; they do not exercise a real app launch or the Linux poll.
+the process still holds stale settings (refused even after a healthy read),
+exactly-once private backups, interrupted saves, backup failure, and sorted keys
+at every level (`saved_keys_are_sorted_at_every_level`). These checks use
+temporary files; they do not exercise a real app launch or native polling.
+`base_aware_updates_keep_other_writers_and_nested_unknown_fields` and
+`simultaneous_updates_serialize_the_read_merge_and_write` cover stale and
+concurrent writers; `a_fresh_reader_cannot_authorize_a_failed_base` covers
+failed-read provenance. `rune_ui::modes` tests cover revision ordering and
+field-level draft rebasing. These are state tests, not native end-to-end proof.
 
 ### Finish Without Losing Other Work
 
@@ -253,7 +275,10 @@ listener restart, even after cancellation.
 
 ```ts
 initial open fails OR stream interrupts
-  -> cancel incomplete capture + discard stale audio  // interrupted audio cannot return
+  -> a dictation held past the hold threshold, or a `hex dictation start`
+     control capture, keeps what it heard    // recover.interrupted-dictation
+     -> transcribed and copied, never pasted
+  -> otherwise cancel the incomplete capture + discard stale audio  // interrupted audio cannot return
   -> bounded backoff -> reopen the resolved input     // warm microphone retries
   -> replacement delivers new audio
   -> fresh capture -> release -> expected output
@@ -267,6 +292,10 @@ no input device at all (macOS)
 no input opens, at startup or after an interruption (Linux) // #937
   -> one "could not open the microphone: …" failure per outage // take_failure
   -> last failure filled in while it keeps retrying; reset once one opens
+ALSA's default goes through PipeWire's ALSA plugin (Linux) // main, #1628
+  -> DISABLE_RTKIT is set first: PipeWire's realtime module fails to start,
+     which is ignored and the stream still opens, so the portal's realtime
+     budget never lowers RLIMIT_RTTIME // a zero budget killed Hex
 listener worker returns an error or panics (macOS)
   -> status: running false, "Stopped", capture unknown // never "Enabled"
 saved microphone missing or will not open
@@ -302,6 +331,13 @@ warm stream keeps running but delivers only exact zeros (macOS and Linux hotkey 
   -> that dictation is discarded as near-silent, as before
   -> its finish reopens the microphone like a stream failure // logged once
      -> the dead stream is closed first, so the replacement opens cold as at launch
+     -> macOS: that open makes the device renegotiate its clock first (#1575)
+        -> a throwaway stream at another rate the device lists (44.1 kHz for a
+           48 kHz device, else 48 kHz, else another listed rate), stopped at once
+        -> then the real stream opens in the format remembered before it, so
+           cpal sets the device back; a device on a stale rate delivers only
+           zeros, and the change is what clears it
+        -> the throwaway step failing only logs; the open still runs
   -> next dictation records from a fresh stream
 
 meeting microphone stream delivers only exact zeros for 3 s (macOS, #1518)
@@ -309,23 +345,65 @@ meeting microphone stream delivers only exact zeros for 3 s (macOS, #1518)
      checked once a second; a manual recording never reopens or warns
   -> a gated or noise-suppressed microphone the call app also uses still
      counts as held, so it can trigger the reopens and warning
-  -> reopen the microphone source, at most twice in one recording, the budget
-     shared across reopened streams
+  -> reopen the microphone source, at most twice in one recording (the call
+     app holding the input and 3 s of exact zeros), the budget shared by
+     every stream it reopens; audio coming back does not restore it, because
+     each reopen changes the device's rate; macOS makes the device
+     renegotiate its sample rate first, like dictation's silence recovery
+     (#1575), which briefly interrupts every other stream on that mic, the
+     call app's and a warm dictation's
+  -> a renegotiating open spends that attempt when it runs, so a failed
+     open retries plainly instead of flipping the rate again; only a
+     deferral for dictation leaves it for a later open
   ├── still silent -> keep recording; the recording capsule says
   │     "Microphone is silent · 12:34" and the menu bar "Microphone is silent"
   │     -> manifest.microphone.warning = digital_silence is written as soon
   │        as it is raised, so a crash while recording keeps it
+  ├── still silent after the warning -> only a release runs a renegotiating
+  │     retry: the set of processes recording from the opened input shrinks,
+  │     Hex's own excluded and the call app included, read once a second from
+  │     Core Audio process metadata (device lists only, never samples)
+  │     -> at most 3 retries per silent episode; silence alone never retries
+  │     -> a release seen before the warning still counts, and one seen
+  │        before a reopen and gone after it counts too
+  │     -> the release is noted where it is seen, so a stream that fails
+  │        before its next chunk cannot lose it; the comparison made by our
+  │        own renegotiating open, and by any reopen within a second of it,
+  │        ignores a disappearing pid: the driver is restarting, not an app
+  │     -> needs macOS 14+ process audio metadata, as call-app input
+  │        detection does; older macOS warns without retrying
+  ├── a dictation captures or infers -> the quick reopens and retries wait
+  │     until it is idle; a release stays pending meanwhile, and an open
+  │     already decided under dictation opens without renegotiating: the
+  │     still-silent stream reopens once dictation is idle, without spending
+  │     another reopen or retry
+  ├── a device switch -> the old input's release and pending renegotiation
+  │     are forgotten
   ├── nonzero audio returns -> clear the live warning, including in a stream
-  │     reopened after a supervisor restart; the persisted warning stays,
-  │     because the recording means "silent at some point"
-  └── the call app leaves the input -> no further reopens or warnings, but a
-        live warning stays until nonzero audio returns; the finished meeting's
-        panel still says the microphone was silent for part of the call
+  │     reopened after a supervisor restart, and start the episode's retries
+  │     over, though the recording's two reopens stay spent and a pending
+  │     renegotiation is cleared; the persisted warning stays, because the
+  │     recording means "silent at some point"
+  ├── before a warning, the call app leaves the input -> no further quick
+  │     reopens or warnings until it reports the input again
+  └── a later episode after audio returns -> warns at once (the two reopens
+        are spent), then gets its own retries; the finished meeting's panel
+        still says the microphone was silent for part of the call
   // not verified on a live device or call app
 
 open stream stops delivering audio without an error (any OS, #1206)
   -> 4 s with no chunk (STREAM_STALL_TIMEOUT) -> treated as a stream failure
   -> reopened like any interrupted stream, idle or not // logged "microphone stopped delivering audio"
+     ├── it delivered for 8 s without stopping (STREAM_PROVEN_UPTIME) -> it was working:
+     │     reopen at once with the backoff reset // exactly as before
+     └── any stream that fails before that never proved steady delivery (#1681)
+           -> the first stream or a reopened one; a stall or any other failure
+           -> wait a growing backoff, 250 ms doubling to 60 s
+           -> a successful reopen keeps it; only 8 s of continuous delivery resets it
+           -> a failed open while it stands also grows to 60 s
+           -> the dead stream is released before the wait starts
+           -> a route change (the lid opening) or a dictation press reopens at
+              once, keeping the backoff // never a fast reopen loop again
 
 programmatic dictation (local API) when the stream interrupts or gaps
   ├── audio delivered before the loss -> kept under its id // recover.programmatic-loss
@@ -349,10 +427,20 @@ values; no iPhone observed with the lid closed),
 `where_the_os_reports_new_devices_only_a_failed_open_is_retried`,
 `only_an_idle_capture_lets_the_microphone_switch`,
 `a_stream_that_stops_delivering_audio_is_reopened`,
-`a_dead_stream_is_stopped_before_its_replacement_opens`;
+`a_stream_that_keeps_stalling_backs_off_to_a_minute`,
+`a_reopened_stream_keeps_the_stall_backoff_its_predecessors_grew`,
+`a_stream_that_delivers_steadily_reopens_at_once_and_forgets_the_backoff`,
+`a_stream_that_stops_before_proving_itself_backs_off`,
+`a_route_change_ends_a_stall_wait_without_resetting_its_backoff`,
+`a_dictation_press_retries_a_stalled_microphone_at_once`,
+`a_dead_stream_is_stopped_before_its_replacement_opens`,
+`a_silent_stream_reopens_with_a_rate_renegotiation`;
+[audio/recovery.rs](../../src/audio/recovery.rs):
+`only_a_silence_recovery_renegotiates_the_next_open`,
+`a_reopen_or_a_reset_forgets_a_renegotiation_no_open_took`;
 [dictation/audio.rs](../../src/dictation/audio.rs):
 `recovered_owner_delivers_audio_and_accepts_a_new_capture`,
-`microphone_loss_keeps_only_a_programmatic_captures_delivered_audio`,
+`microphone_loss_keeps_a_recording_captures_delivered_audio`,
 `microphone_loss_with_only_pre_roll_keeps_nothing`,
 `finish_after_an_unread_microphone_loss_takes_the_kept_clip`,
 `a_dictation_of_digital_silence_reopens_the_microphone`;
@@ -361,6 +449,21 @@ values; no iPhone observed with the lid closed),
 `a_warm_silent_stream_reopens_once_unless_released`;
 [meeting/warning.rs](../../src/meeting/warning.rs):
 `a_silence_budget_is_shared_across_reopened_streams`,
+`a_warned_microphone_never_retries_without_a_release`,
+`a_release_seen_before_the_warning_retries_once_it_shows`,
+`a_release_seen_before_a_reopen_still_retries_after_it`,
+`a_release_noted_before_a_failed_source_still_retries_after_its_reopen`,
+`a_release_triggers_a_warned_retry`,
+`a_silent_episode_gets_three_release_triggered_retries`,
+`a_rebuilt_policy_keeps_the_silent_episodes_retries`,
+`a_warned_microphone_retries_after_the_call_app_lets_go`,
+`audible_audio_resets_the_episodes_retries`,
+`a_reopen_waits_while_dictation_is_active`,
+`a_spent_recording_warns_even_while_dictation_is_active`,
+`a_release_triggered_retry_waits_while_dictation_is_active`,
+`a_pending_renegotiation_reopens_once_dictation_is_idle`,
+`audible_audio_clears_a_pending_renegotiation`,
+`a_renegotiation_is_taken_once_and_dictation_defers_it`,
 `audible_audio_clears_a_warning_a_reopened_stream_inherited`,
 `a_microphone_the_call_app_does_not_hold_is_never_reopened_or_warned`,
 `a_sticky_warning_survives_its_live_one_clearing`,
@@ -370,6 +473,9 @@ values; no iPhone observed with the lid closed),
 [meeting/capture.rs](../../src/meeting/capture.rs):
 `a_meeting_follows_the_input_its_call_app_records_from`,
 `a_microphone_that_would_not_open_is_tried_a_bounded_number_of_times`,
+`a_process_that_stops_recording_between_reopens_is_a_release`,
+`a_release_just_after_our_own_rate_change_is_not_another_apps`,
+`a_release_belongs_only_to_the_input_that_saw_it`,
 `only_an_input_the_call_app_reports_counts_as_held`;
 [meeting/tests.rs](../../src/meeting/tests.rs):
 `a_meeting_manifest_round_trips_a_microphone_warning_and_old_ones_have_none`
@@ -411,8 +517,14 @@ ready stream fails while the press is held
   ├── before the 300 ms hold threshold -> back to pending, reopen for the same press
   │     ├── release before ready -> discard
   │     └── ready -> capture from the original press -> expected output
-  └── after the threshold -> fail with "Microphone capture was interrupted"
-CoreAudio processor overload (Xrun) -> warn and keep the stream // not a failure
+  └── after the threshold -> keep the audio delivered, transcribed and
+        copied (recover.interrupted-dictation), or fail with
+        "Microphone capture was interrupted" when none arrived or it is
+        near-silent
+Microphone overload (Xrun) or refused real-time promotion -> counted; one warning per burst // not a failure
+  └── Some hosts report it from the thread that runs the stream: that callback only
+      counts, the poll that drains the stream writes the count at most once per 10 s,
+      and a stream closed with a count left over writes it as it closes
 gap in the microphone timeline (warm or cold)
   ├── macOS: 50–250 ms -> filled with silence, capture continues // #619
   │     └── over 250 ms -> fail as a capture discontinuity
@@ -424,6 +536,7 @@ Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
 `enabling_warm_microphone_preserves_pending_capture_and_recovers_after_cancellation`,
 `cold_stream_failure_before_hold_threshold_reopens_for_the_same_press`,
 `cold_stream_failure_after_hold_threshold_still_fails_the_capture`,
+`cold_stream_failure_keeps_the_audio_a_held_capture_already_delivered`,
 `a_short_microphone_gap_is_filled_with_silence_instead_of_failing_the_capture`;
 in [linux/dictation/gap.rs](../../src/linux/dictation/gap.rs):
 `a_short_microphone_gap_is_padded_with_silence`,
@@ -431,7 +544,9 @@ in [linux/dictation/gap.rs](../../src/linux/dictation/gap.rs):
 [linux/dictation.rs](../../src/linux/dictation.rs):
 `a_short_microphone_gap_is_padded_into_a_finished_clip`; in
 [audio.rs](../../src/audio.rs): `overload_glitches_do_not_interrupt_the_stream`,
-`cold_open_retries_the_selected_microphone_before_falling_back`.
+`cold_open_retries_the_selected_microphone_before_falling_back`; in
+[audio/overloads.rs](../../src/audio/overloads.rs):
+`a_burst_writes_one_line_and_holds_the_rest`.
 
 **Fixed after 2.1.25 ([#130](https://github.com/anomalyco/hex/issues/130)):** the
 first hold after minutes of idle failed with the error tone. The reporter's logs
@@ -440,7 +555,7 @@ after opening. cpal 0.18 reports that as `ErrorKind::Xrun` from CoreAudio's
 `kAudioDeviceProcessorOverload` listener; the stream keeps running, but Hex
 treated every error callback as fatal. In release-when-idle mode the owner then
 closed the device without retrying, and recognition suspended the held gesture.
-Overloads and refused real-time promotion are now logged and ignored; actual
+Overloads and refused real-time promotion are now ignored; actual
 sample gaps over 50 ms still fail the capture as a discontinuity. An interruption
 before the hold threshold re-pends the same press instead of failing it. The same
 logs show a cold open falling back from the selected microphone to automatic
@@ -450,6 +565,25 @@ Not verified: the reporter's hardware, whether 200 ms of retries is long enough
 for their device, or a physical cold open after idle.
 Proof limit: controlled asynchronous opener and capture ownership, not onset
 latency or the macOS microphone indicator.
+
+**Changed after dev (overload logging):** a host can report an overload, or a
+refused real-time promotion, on the thread that runs the stream. The old line
+formatted itself there and wrote to stderr and `process.log` behind a mutex,
+once per overload. Hex now only counts them there, and writes one
+`microphone stream glitched; continuing` line with `count` from the poll that
+drains the stream, at most once every 10 s. A count that window holds back is
+written by that poll later, and a stream that closes with a count left over
+writes it as it closes (`Drop for AudioInput` calling `overloads::flush`) rather
+than beside the next open's lines hours later. `since_last_stream_glitch` still
+answers capture diagnostics from the same counters. On macOS the first chunk of
+each open also logs the callback's frames and period, which is the hardware
+period cpal does not report for `BufferSize::Default` (skipped under
+`HEX_AUDIO_FIXTURE`, whose chunks are the file's); no CoreAudio FFI was added.
+Check: `a_burst_writes_one_line_and_holds_the_rest` covers the window;
+`overload_glitches_do_not_interrupt_the_stream` covers counting instead of
+failing. Not verified: a real overload burst after this change, whether the
+coalesced rate suits a loaded machine, or the close-time flush on a device that
+glitches.
 
 **Fixed after dev ([#619](https://github.com/anomalyco/hex/issues/619)):** a
 Bluetooth headset's stream skipped about 130–145 ms of audio soon after it
@@ -478,29 +612,74 @@ captures do not check it, and one released while idle opens fresh. The
 first such dictation is still discarded. Not verified with a real WhatsApp
 call.
 
+**Fixed after dev ([#1575](https://github.com/anomalyco/hex/issues/1575)):** a
+silence reopen opened its stream in the device's current default format. A
+device a call app had just let go could already report that format as its own,
+so cpal's physical-format change did nothing and the reopened stream delivered
+zeros too, until Hex restarted. The one open that follows digital silence now
+renegotiates the device's clock first, on macOS: it opens a throwaway stream at
+another rate the device lists (44.1 kHz for a 48 kHz device, else 48 kHz, else
+another listed rate) and stops it, then opens the real stream in the format it
+remembered before the throwaway, so cpal sets the device back. A stream-failure
+reopen is unchanged, the renegotiation is used by exactly one open, and a
+throwaway that fails only logs. Field logs showed the one same-process reopen
+that recovered was followed by cpal reporting a sample-rate change and another
+reopen; this makes that change happen on purpose.
+Not verified on a device that stayed silent before this change.
+
 **Meeting capture ([#1518](https://github.com/anomalyco/hex/issues/1518)):**
 during a meeting, the microphone stream kept delivering chunks of exact 0.0
 samples for the whole call while the call app held the built-in microphone,
 so the existing stall watchdog never fired and the user's side was missing.
 A microphone stream that delivers 3 s of exact zeros now reopens like a
-failed source, at most twice in one recording, but only while the call app
-still reports recording from the same input; a manual recording, or an app
-that reports no input, never reopens or warns, and a gated or
-noise-suppressed microphone the call app also uses still counts as held so
-it can trigger the reopens and warning. If it is still silent, Hex keeps
-recording and warns in the recording capsule, the menu bar, and the finished
-meeting's detail. The manifest records `microphone.warning:
-digital_silence` as soon as it is raised, so a crash keeps it, and it means
-the microphone was silent at some point during the recording. Nonzero audio
-clears the live warning, including in a stream reopened after a supervisor
-restart; if the call app leaves the input while zeros continue, no further
-reopens or warnings happen but a live warning stays until nonzero audio
-returns. A later episode warns again without another reopen. Each gated
-episode is also logged once at info level with the opened device and the
-call app's reported inputs, so field logs can confirm the gate. The 3 s
-watch, its shared reopen budget, and its gating are unit-checked; none of it
-was observed on a live device or a call app holding the microphone with
-voice processing.
+failed source, at most twice in one recording (the call app holding the
+input and 3 s of exact zeros), but only while the call app still reports
+recording from the same input; a manual recording, or an app that reports no
+input, never reopens or warns, and a gated or noise-suppressed microphone the
+call app also uses still counts as held so it can trigger the reopens and
+warning. The budget is per recording and audio coming back does not restore
+it, because every silent reopen renegotiates the whole device's nominal rate
+and a gated or noise-suppressed mic can be silent during every listening
+stretch of the call. On macOS each of those reopens renegotiates the device's
+sample rate first, like dictation's silence recovery (#1575); that changes
+the nominal rate of the whole device, so it briefly interrupts every other
+stream on the microphone, including the call app's and a warm dictation's.
+If it is still silent, Hex keeps recording and warns in the recording
+capsule, the menu bar, and the finished meeting's detail. The manifest
+records `microphone.warning: digital_silence` as soon as it is raised, so a
+crash keeps it, and it means the microphone was silent at some point during
+the recording. Once warned, a renegotiating retry runs only when another
+process stops recording from the opened input: Hex reads Core Audio's
+process metadata (device lists, never samples) once a second, excludes its
+own process, and includes the call app, so its release also counts. The
+shared last-known set survives a supervisor reopen, so a process seen before
+one and gone after it counts as a release, a release is noted where it is
+seen so a stream that fails or stalls before its next chunk cannot lose it,
+and a release seen before the warning still counts once it shows. The
+comparison made by our own renegotiating open, and by any reopen within a
+second of it, ignores a disappearing pid: the driver is restarting its
+streams, not another app. Release detection needs macOS 14+ process audio
+metadata, as call-app input detection does, so older macOS raises the
+warning without retrying. Switching inputs forgets the old input's release
+and pending renegotiation. A renegotiating open takes the renegotiation when
+it is attempted, so a failing open retries plainly rather than flipping the
+rate on every supervisor retry, and a successful one spends a release noted
+before it. Silence alone never retries, and one silent episode gets at most 3
+such retries. A dictation capture or inference defers both the quick reopens
+and the retries until it is idle, while the warning is still raised, and a
+release stays pending meanwhile; an open already decided under dictation
+opens without renegotiating, and the still-silent stream reopens once
+dictation is idle without spending another reopen or retry, so a rate change
+never cuts a dictation. Nonzero audio clears the live warning, including in
+a stream reopened after a supervisor restart, and starts the silent
+episode's retry count over, clears a pending renegotiation, and leaves the
+recording's two quick reopens spent. A later episode warns at once, then
+gets its own retries. Each gated episode is also
+logged once at info level with the opened device and the call app's reported
+inputs, so field logs can confirm the gate. The 3 s watch, its per-recording
+reopen budget, the release-triggered retry cap, and its gating are
+unit-checked; none of it was observed on a live device or a call app holding
+the microphone with voice processing.
 
 **Fixed after 3.3.0 ([#1206](https://github.com/anomalyco/hex/issues/1206)):**
 after a burst of overrun warnings while idle, a warm USB microphone's stream
@@ -508,6 +687,56 @@ stopped delivering audio without reporting an error, so every dictation held
 only the stale pre-roll and was discarded as no speech until Hex restarted. An
 open stream that delivers nothing for 4 s now counts as failed and is reopened
 with the usual bounded recovery. Not verified on the reporter's microphone.
+
+### Keep An Interrupted Dictation
+
+`recover.interrupted-dictation`: a shortcut dictation held past the hold
+threshold, or a `hex dictation start` control capture, whose microphone fails
+keeps what it already heard instead of dropping the whole dictation.
+
+```ts
+shortcut held past the hold threshold, or a `hex dictation start` capture
+  -> stream fails or stalls                         // a gap over 250 ms still drops it
+  -> audio delivered up to the loss is kept        // pre-roll alone keeps nothing
+  -> transcribed and processed like a dictation
+     └── Dictate without processing -> copied as heard, raw history
+  -> final text copied, never pasted              // the disrupting app may hold focus
+     -> Paste Last Dictation and History keep it
+  -> no error tone or Failed HUD; the HUD transcribes, processes, completes
+  -> no audio after the start, or a near-silent clip
+     -> the previous failure, "Microphone capture was interrupted"
+  -> release or finishing press queued before the listener reads the loss
+     -> that finish takes the kept clip, once, with its own capture's target
+        and context, before a later press can start
+     └── the next press still records; the old loss arrives stale
+```
+
+The copied text is processed exactly like a normal dictation, including mode
+corrections, OpenCode rewriting, and transformations, unless it came from
+Dictate without processing, which is copied as heard and recorded as raw
+history. The copy is forced for this job whether or not Labs › Copy dictation
+only is on. The shortcut machine is suspended, so the eventual key release does
+nothing, and the microphone reopens with the usual bounded recovery. A
+microphone gap over 250 ms still fails the capture as a discontinuity, and a
+near-silent clip saves its diagnostics but keeps the previous failure.
+
+Checks in [dictation/audio.rs](../../src/dictation/audio.rs):
+`microphone_loss_keeps_a_recording_captures_delivered_audio` (a recording
+shortcut keeps its clip; a gap still keeps only a programmatic capture's),
+`cold_stream_failure_after_hold_threshold_still_fails_the_capture` (nothing to
+keep keeps nothing), and
+`cold_stream_failure_keeps_the_audio_a_held_capture_already_delivered` (a held
+cold capture keeps what it delivered), and
+`a_shortcut_finish_takes_its_kept_clip_once_and_the_loss_stays_queued`. In
+[recognition.rs](../../src/recognition.rs):
+`a_release_queued_behind_a_microphone_loss_copies_the_kept_audio_before_the_next_press`
+(with Release microphone while idle, the release and the next press queued
+behind the loss: one salvaged submission, and the next press records). In
+[parakeet.rs](../../src/parakeet.rs):
+`a_salvaged_dictation_is_copied_and_kept_for_paste_last_and_history` (normal
+and raw clips are both copied, with normal and raw history). Proof limit:
+channel-backed audio and the output worker, not a physical microphone taken by
+a call app or a target app's clipboard.
 
 ### Fence Late Capture Notifications
 

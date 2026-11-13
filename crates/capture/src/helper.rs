@@ -20,13 +20,20 @@ pub fn path() -> Result<PathBuf> {
     }
     let raw_exe = std::env::current_exe().context("Could not locate scrawl")?;
     let exe = std::fs::canonicalize(&raw_exe).unwrap_or(raw_exe);
-    // Beside the app binary, or one level up from `target/*/deps` for tests.
-    exe.ancestors()
-        .skip(1)
-        .take(2)
+    helper_dirs(&exe)
         .map(|dir| dir.join("scrawl-helper"))
         .find(|path| path.is_file())
         .context("scrawl-helper is missing; rebuild Scrawl")
+}
+
+/// Where a helper can sit: beside the executable, one level up from `target/*/deps` for tests,
+/// and the profile directory for cargo 1.100's `build/<package>/<hash>/out` test binaries.
+fn helper_dirs(exe: &Path) -> impl Iterator<Item = &Path> {
+    let profile = exe
+        .ancestors()
+        .find(|path| path.ends_with("build"))
+        .and_then(Path::parent);
+    exe.ancestors().skip(1).take(2).chain(profile)
 }
 
 pub fn ui_path() -> Result<PathBuf> {
@@ -43,9 +50,7 @@ pub fn ui_path() -> Result<PathBuf> {
     }
     let raw_exe = std::env::current_exe().context("Could not locate scrawl")?;
     let exe = std::fs::canonicalize(&raw_exe).unwrap_or(raw_exe);
-    exe.ancestors()
-        .skip(1)
-        .take(2)
+    helper_dirs(&exe)
         .map(|dir| dir.join("scrawl-ui-helper"))
         .find(|path| path.is_file())
         .context("scrawl-ui-helper is missing; rebuild Scrawl")
@@ -301,6 +306,30 @@ pub fn shrink(movie: &Path, out: &Path, max_edge: u32) -> Result<crate::retentio
         Path::new("/usr/sbin/taskpolicy"),
         &[&[os("-c"), os("utility")], &args[..]].concat(),
         Duration::from_secs(1800),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Trimmed {
+    pub duration_ms: u64,
+}
+
+/// Copies `movie` from `from_ms` to `to_ms` into `out` as an MPEG-4, without re-encoding.
+pub fn trim(movie: &Path, out: &Path, from_ms: u64, to_ms: u64) -> Result<Trimmed> {
+    let (from, to) = (from_ms.to_string(), to_ms.to_string());
+    run(
+        &[
+            os("trim"),
+            movie.as_os_str(),
+            os("--out"),
+            out.as_os_str(),
+            os("--from"),
+            os(&from),
+            os("--to"),
+            os(&to),
+        ],
+        Duration::from_secs(300),
     )
 }
 

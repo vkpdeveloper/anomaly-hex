@@ -426,10 +426,11 @@ impl CapsuleState {
         // An Undo ring two seconds in, so a still shows it draining.
         if let Pres::Done(Done {
             countdown: Some(end),
+            window,
             ..
         }) = &state.surface.pres
         {
-            let now = end - flow::undo_s() + 2.0;
+            let now = end - window + 2.0;
             undo_ring::sync(&mut state.live.ring, &state.surface.pres, now, false);
         }
         state.live.meter.publish(0.4);
@@ -468,10 +469,6 @@ impl CapsuleState {
             self.recording_since = Some(now);
             self.replace = true;
             self.live.thumb = None;
-        }
-        // Send to… bringing a closed capsule back: under the pointer.
-        if input == Input::OpenList && !self.shown {
-            self.replace = true;
         }
         let actions = self.flow.input(input, now);
         self.dispatch(actions);

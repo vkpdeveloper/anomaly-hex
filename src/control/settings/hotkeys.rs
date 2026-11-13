@@ -1,7 +1,47 @@
 //! Shortcut text for `hex settings`: reading and writing the modifier-plus-key
 //! form, and why a bare special key still needs its Labs toggle.
 
-use crate::app_settings::{AppSettings, HotkeyBinding, HotkeyKey, HotkeyModifiers, ModifierSide};
+use crate::app_settings::{
+    AppSettings, HotkeyBinding, HotkeyKey, HotkeyModifiers, HotkeySlot, ModifierSide,
+};
+
+use super::{ShortcutRules, invalid};
+
+/// Applies the checks a recorded shortcut meets: Labs › Mouse shortcuts
+/// where mouse buttons are recorded, the special-key rules, the OS's own
+/// rule for `slot`, and no key shared with another active shortcut.
+pub(super) fn check_shortcut(
+    settings: &AppSettings,
+    candidate: &AppSettings,
+    name: &str,
+    slot: HotkeySlot,
+    binding: &HotkeyBinding,
+    shortcuts: &ShortcutRules,
+) -> Result<(), crate::control::ControlError> {
+    if cfg!(target_os = "macos")
+        && !candidate.labs.mouse_shortcuts
+        && binding.key.as_ref().is_some_and(HotkeyKey::is_mouse)
+    {
+        return Err(invalid(
+            name,
+            "mouse buttons need Labs › Mouse shortcuts: hex labs on mouse-shortcuts",
+        ));
+    }
+    if let Some(why) = special_key_refusal(candidate, binding) {
+        return Err(invalid(name, &why));
+    }
+    (shortcuts.rule)(slot, binding).map_err(|why| invalid(name, &why))?;
+    if settings.hotkey_in_use(slot, binding) {
+        return Err(crate::control::ControlError::new(
+            "shortcut-in-use",
+            format!(
+                "{} is already in use by another Hex shortcut",
+                format_hotkey(binding)
+            ),
+        ));
+    }
+    Ok(())
+}
 
 /// Reads a shortcut such as `option`, `right-command`, `fn`, `f5`,
 /// `left-option+right-option` (both Options), or `control+option+space`:
@@ -85,7 +125,7 @@ pub fn parse_hotkey(
             && !key.is_mouse()
             && !HotkeyKey::special_name(&key.label)
             && !(cfg!(target_os = "windows") && HotkeyKey::navigation_name(&key.label))
-            && !(cfg!(target_os = "linux") && HotkeyKey::section_name(&key.label))
+            && !(cfg!(any(target_os = "linux", target_os = "macos")) && key.is_section())
         {
             return Err("add a modifier, such as option+".to_string() + &key.label.to_lowercase());
         }
@@ -103,8 +143,11 @@ pub(super) fn special_key_refusal(
     settings: &AppSettings,
     binding: &HotkeyBinding,
 ) -> Option<String> {
-    // The § key alone needs Labs › Section key alone (Linux).
-    if cfg!(target_os = "linux") && binding.is_lone_section_key() && !settings.section_key_allowed()
+    // The ISO section key alone needs Labs › Section key alone (Linux,
+    // macOS).
+    if cfg!(any(target_os = "linux", target_os = "macos"))
+        && binding.is_lone_section_key()
+        && !settings.section_key_allowed()
     {
         return Some("section needs Labs › Section key alone: hex labs on section-key".into());
     }

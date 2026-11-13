@@ -6,10 +6,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::Result;
-use hound::{Sample, SampleFormat, WavReader};
+use hound::{Sample, SampleFormat, WavReader, WavSpec};
 
-use crate::transcription::engine::{HeldModel, dictation_busy, held, transcribe_clip};
+use crate::transcription::engine::{
+    HeldModel, dictation_busy, held, timestamp_level, transcribe_clip, transcribe_clip_timed,
+};
 use crate::transcription::models::TranscriptionSelection;
+use crate::transcription::transcript::{TimestampLevel, Transcript};
 
 /// The service's own model, for a selection the dictation engine does not
 /// hold: macOS's switchable transcriber, or one local GGUF model.
@@ -46,13 +49,14 @@ pub struct TranscriptionServiceHandle {
 
 #[derive(Debug)]
 pub struct AudioClip {
-    samples: Vec<f32>,
+    /// The 16 kHz mono samples every transcriber runs.
+    pub(crate) samples: Vec<f32>,
     pub duration_ms: u64,
 }
 
 pub struct TranscriptionJob {
     canceled: Arc<AtomicBool>,
-    result: Receiver<std::result::Result<String, TranscriptionServiceError>>,
+    result: Receiver<std::result::Result<Transcript, TranscriptionServiceError>>,
 }
 
 pub struct AudioAdmission(Arc<AtomicBool>);
@@ -64,6 +68,39 @@ pub enum AudioError {
     ResourceExhausted,
 }
 
+/// The sample types the canonical WAV decoder reads, chosen by a file's spec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WavFormat {
+    F32,
+    I8,
+    I16,
+    I32,
+}
+
+/// The accepted WAV input: 8 kHz through 192 kHz and one through eight
+/// channels. `Unsupported` for anything else, before any samples are
+/// allocated.
+pub(crate) fn validate_wav_input(spec: &WavSpec) -> Result<(), AudioError> {
+    if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&spec.sample_rate)
+        || !(1..=MAX_CHANNELS).contains(&spec.channels)
+    {
+        return Err(AudioError::Unsupported);
+    }
+    Ok(())
+}
+
+/// The sample type `spec` selects: integer PCM or 32-bit float. `Unsupported`
+/// for a format the decoder does not read.
+pub(crate) fn wav_format(spec: &WavSpec) -> Result<WavFormat, AudioError> {
+    Ok(match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Float, 32) => WavFormat::F32,
+        (SampleFormat::Int, 1..=8) => WavFormat::I8,
+        (SampleFormat::Int, 9..=16) => WavFormat::I16,
+        (SampleFormat::Int, 17..=32) => WavFormat::I32,
+        _ => return Err(AudioError::Unsupported),
+    })
+}
+
 #[derive(Debug)]
 pub enum TranscriptionServiceError {
     QueueFull,
@@ -71,6 +108,8 @@ pub enum TranscriptionServiceError {
     Cancelled,
     Model(String),
     Inference(String),
+    /// The model cannot produce the asked-for timings natively.
+    Timestamps,
 }
 
 enum Command {
@@ -82,9 +121,10 @@ enum Command {
     Transcribe {
         selection: TranscriptionSelection,
         clip: AudioClip,
+        timings: TimestampLevel,
         _admission: AudioAdmission,
         canceled: Arc<AtomicBool>,
-        response: SyncSender<std::result::Result<String, TranscriptionServiceError>>,
+        response: SyncSender<std::result::Result<Transcript, TranscriptionServiceError>>,
     },
 }
 
@@ -152,12 +192,14 @@ impl TranscriptionServiceHandle {
         selection: TranscriptionSelection,
         clip: AudioClip,
         admission: AudioAdmission,
+        timings: TimestampLevel,
     ) -> std::result::Result<TranscriptionJob, TranscriptionServiceError> {
         let (response, result) = mpsc::sync_channel(1);
         let canceled = Arc::new(AtomicBool::new(false));
         self.submit(Command::Transcribe {
             selection,
             clip,
+            timings,
             _admission: admission,
             canceled: canceled.clone(),
             response,
@@ -185,7 +227,7 @@ impl TranscriptionJob {
         &self,
         timeout: Duration,
     ) -> std::result::Result<
-        Option<std::result::Result<String, TranscriptionServiceError>>,
+        Option<std::result::Result<Transcript, TranscriptionServiceError>>,
         TranscriptionServiceError,
     > {
         match self.result.recv_timeout(timeout) {
@@ -210,11 +252,7 @@ impl AudioClip {
     pub fn decode_wav<R: Read + Seek>(reader: R) -> std::result::Result<Self, AudioError> {
         let mut reader = WavReader::new(reader).map_err(|_| AudioError::Invalid)?;
         let spec = reader.spec();
-        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&spec.sample_rate)
-            || !(1..=MAX_CHANNELS).contains(&spec.channels)
-        {
-            return Err(AudioError::Unsupported);
-        }
+        validate_wav_input(&spec)?;
         let frames =
             usize::try_from(reader.duration()).map_err(|_| AudioError::ResourceExhausted)?;
         let normalized_samples = frames
@@ -230,26 +268,19 @@ impl AudioClip {
         }
         let channels = usize::from(spec.channels);
         let int_scale = 2_f32.powi(i32::from(spec.bits_per_sample) - 1);
-        let mono = match (spec.sample_format, spec.bits_per_sample) {
-            (SampleFormat::Float, 32) => {
+        let mono = match wav_format(&spec)? {
+            WavFormat::F32 => {
                 decode_mono::<_, f32, _>(&mut reader, channels, frames, |sample| sample)?
             }
-            (SampleFormat::Int, 1..=8) => {
-                decode_mono::<_, i8, _>(&mut reader, channels, frames, |sample| {
-                    f32::from(sample) / 128.0
-                })?
-            }
-            (SampleFormat::Int, 9..=16) => {
-                decode_mono::<_, i16, _>(&mut reader, channels, frames, |sample| {
-                    f32::from(sample) / int_scale
-                })?
-            }
-            (SampleFormat::Int, 17..=32) => {
-                decode_mono::<_, i32, _>(&mut reader, channels, frames, |sample| {
-                    sample as f32 / int_scale
-                })?
-            }
-            _ => return Err(AudioError::Unsupported),
+            WavFormat::I8 => decode_mono::<_, i8, _>(&mut reader, channels, frames, |sample| {
+                f32::from(sample) / 128.0
+            })?,
+            WavFormat::I16 => decode_mono::<_, i16, _>(&mut reader, channels, frames, |sample| {
+                f32::from(sample) / int_scale
+            })?,
+            WavFormat::I32 => decode_mono::<_, i32, _>(&mut reader, channels, frames, |sample| {
+                sample as f32 / int_scale
+            })?,
         };
         let duration_ms = mono.len() as u64 * 1_000 / u64::from(spec.sample_rate);
         let samples = crate::dictation::try_resample_for_parakeet(&mono, spec.sample_rate)
@@ -317,11 +348,12 @@ fn run(commands: Receiver<Command>) {
             Command::Transcribe {
                 selection,
                 clip,
+                timings,
                 _admission,
                 canceled,
                 response,
             } => {
-                let result = transcribe(&mut active, &selection, clip, &canceled);
+                let result = transcribe(&mut active, &selection, clip, &canceled, timings);
                 let _ = response.send(result);
             }
         }
@@ -461,7 +493,8 @@ fn transcribe(
     selection: &TranscriptionSelection,
     clip: AudioClip,
     canceled: &Arc<AtomicBool>,
-) -> std::result::Result<String, TranscriptionServiceError> {
+    timings: TimestampLevel,
+) -> std::result::Result<Transcript, TranscriptionServiceError> {
     check_canceled(canceled)?;
     let mut samples = clip.samples;
     let engine_has_model = if samples.len() <= SHARED_MAX_SAMPLES {
@@ -469,14 +502,13 @@ fn transcribe(
         let shared = {
             let audio = audio.clone();
             with_shared_model(selection, canceled, SHARED_WAIT, move |model| {
-                transcribe_clip(model, audio.as_ref().clone())
+                run_clip(model, audio.as_ref().clone(), timings)
             })?
         };
         if let Some(transcript) = shared {
             *active = WarmTranscriber::default();
             check_canceled(canceled)?;
-            return transcript
-                .map_err(|error| TranscriptionServiceError::Inference(error.to_string()));
+            return transcript;
         }
         samples = Arc::unwrap_or_clone(audio);
         false
@@ -485,15 +517,49 @@ fn transcribe(
     };
     let model = load(active, selection)?;
     check_canceled(canceled)?;
-    let transcript = transcribe_clip(model, samples);
+    let transcript = run_clip(model, samples, timings);
     // A long clip's copy is only temporary when the engine holds the model.
     if engine_has_model {
         *active = WarmTranscriber::default();
     }
-    let transcript =
-        transcript.map_err(|error| TranscriptionServiceError::Inference(error.to_string()))?;
+    let transcript = transcript?;
     check_canceled(canceled)?;
     Ok(transcript)
+}
+
+/// Transcribes `samples` on a held model, with the model's own timings only
+/// when the request asked for them and the model produces that level. Nothing
+/// estimates or downgrades a level: a word request a segment-only model cannot
+/// answer is refused instead.
+fn run_clip(
+    model: &mut HeldModel,
+    samples: Vec<f32>,
+    timings: TimestampLevel,
+) -> std::result::Result<Transcript, TranscriptionServiceError> {
+    if timings == TimestampLevel::None {
+        return transcribe_clip(model, samples)
+            .map(|text| Transcript {
+                text,
+                ..Default::default()
+            })
+            .map_err(|error| TranscriptionServiceError::Inference(error.to_string()));
+    }
+    check_timings(timestamp_level(model), timings)?;
+    transcribe_clip_timed(model, samples).map_err(TranscriptionServiceError::Inference)
+}
+
+/// The 422 decision: a timed request is answered only when the model produces
+/// that level itself. Nothing estimates the times or answers a word request
+/// with segments.
+fn check_timings(
+    model: TimestampLevel,
+    requested: TimestampLevel,
+) -> std::result::Result<(), TranscriptionServiceError> {
+    if requested.supported_by(model) {
+        Ok(())
+    } else {
+        Err(TranscriptionServiceError::Timestamps)
+    }
 }
 
 #[cfg(test)]
@@ -597,6 +663,22 @@ mod tests {
 
         let clip = AudioClip::decode_wav(wav).unwrap();
         assert!(clip.samples.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn a_timed_request_is_answered_only_at_the_models_own_level() {
+        use crate::transcription::transcript::TimestampLevel::{None, Segment, Word};
+        assert!(
+            matches!(
+                check_timings(Segment, Word),
+                Err(TranscriptionServiceError::Timestamps)
+            ),
+            "word timings are never derived from a segment-only model"
+        );
+        assert!(check_timings(Segment, Segment).is_ok());
+        assert!(check_timings(Word, Word).is_ok());
+        assert!(check_timings(Word, Segment).is_ok());
+        assert!(check_timings(None, None).is_ok());
     }
 
     #[test]

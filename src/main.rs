@@ -24,6 +24,8 @@ mod calendar;
 mod caps_lock_dictation;
 #[cfg(hex_capture)]
 mod capture_host;
+#[cfg(hex_capture)]
+mod capture_zip;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod control;
 mod desktop;
@@ -65,6 +67,8 @@ mod rune_hud;
 mod rune_ui;
 #[cfg(all(target_os = "macos", hex_capture))]
 mod screenshots;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod shortcut_pause;
 #[cfg(target_os = "macos")]
 mod suppression;
 mod transcription;
@@ -411,7 +415,15 @@ fn main() -> Result<()> {
                     None
                 }
             };
-            recognition::listen(events, device.as_deref(), &SHUTDOWN, None, history, None)
+            recognition::listen(
+                events,
+                device.as_deref(),
+                &SHUTDOWN,
+                None,
+                history,
+                None,
+                std::sync::Arc::new(personal_commands::TransformationClient::default()),
+            )
         }
         Command::Service { embedded } => {
             if !embedded {
@@ -648,7 +660,7 @@ mod tests {
             .command
         };
         assert!(matches!(
-            parse(&["/Users/kit/.local/bin/hex-meetings-mcp"]),
+            parse(&["/Users/alex/.local/bin/hex-meetings-mcp"]),
             Some(Command::Control(ControlCli::Mcp { meetings_dir: None }))
         ));
         assert!(matches!(
@@ -871,6 +883,14 @@ mod tests {
 fn main() -> Result<()> {
     #[cfg(target_arch = "x86_64")]
     transcription::cpu_floor::require();
+    // Opening ALSA's default device loads libpipewire into this process, and
+    // its realtime module asks the desktop portal for a realtime budget and
+    // then limits this process's realtime CPU time to it; the portal caches
+    // that budget once at its own startup and can report zero, which makes
+    // the kernel kill Hex. Hex never takes realtime scheduling through the
+    // portal or rtkit.
+    // SAFETY: Before any other thread exists to read the environment.
+    unsafe { std::env::set_var("DISABLE_RTKIT", "1") };
     linux::input_route::mark_streams();
     linux::run(&SHUTDOWN)
 }

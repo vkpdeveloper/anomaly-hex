@@ -35,8 +35,10 @@ pub(super) const SCENES: &[&str] = &[
     "windows-onboarding-microphone",
     // GNOME and KDE on Wayland: the desktop's paste permission, explained.
     "onboarding-paste",
-    // Almost ready: the model still downloads.
+    // Almost ready: the model still downloads, and a sketch from "Watch
+    // another one" while it does.
     "onboarding-waiting",
+    "onboarding-sketch",
     // Your turn: the practice game, and the shortcut that didn't start.
     "onboarding-try",
     "mac-onboarding-try",
@@ -156,6 +158,41 @@ fn onboarding_continue_without_model() {
     assert!(rt.find("continue-without-model").is_some(), "stalled");
     tap(&mut rt, "continue-without-model");
     assert!(rt.state.first_run.is_none(), "onboarding closed");
+}
+
+/// The mic note follows the shortcut: Hold says hold, Toggle says tap,
+/// and a mic released while idle has nothing to explain.
+#[test]
+fn the_mic_note_follows_the_shortcut() {
+    let note = |toggle: bool, release: bool| {
+        let mut ui = Ui::with(AppSettings::default(), Service::Fixture(Vec::new()));
+        super::super::onboarding_kit::scenes::mac_first_run(
+            &mut ui,
+            crate::rune_ui::onboarding::MacStep::TryIt,
+            Page::Try,
+        );
+        // Each poll reads both from settings again.
+        if toggle {
+            ui.settings.shortcut_mode = crate::dictation::ShortcutMode::Toggle;
+        }
+        ui.settings.release_microphone_while_idle = release;
+        let s = ui.first_run.as_mut().expect("the first run is open");
+        s.toggle = toggle;
+        if let Some(live) = s.live.as_mut() {
+            live.release_microphone = release;
+        }
+        texts(&runtime_for(ui, true, PANE_SIZE))
+            .into_iter()
+            .find(|t| t.starts_with("It only records"))
+    };
+    let hold = note(false, false).expect("the note shows");
+    assert!(
+        hold.starts_with("It only records while you hold "),
+        "{hold}"
+    );
+    let tap = note(true, false).expect("the note shows");
+    assert!(tap.starts_with("It only records after you tap "), "{tap}");
+    assert_eq!(note(false, true), None, "no note once the mic is released");
 }
 
 /// The language capsule on the download page: English systems have no
@@ -326,13 +363,13 @@ fn onboarding_walkthrough() {
     );
     rt.state.picker.installed = Some(vec![model]);
 
-    // The story plays on: the demo, then the practice game once the model
-    // is ready, then Hex is ready.
+    // The story plays on: the demo, then the practice game ("With Hex")
+    // once the model is ready, then Hex is ready.
     settle(&mut rt);
     rt.update(|ui, _| super::super::onboarding_kit::live::fixture_resume(ui, Page::Try));
     settle(&mut rt);
     assert_eq!(step(&rt), Some(Step::TryIt));
-    assert!(texts(&rt).contains(&"Clear your messages".to_owned()));
+    assert!(texts(&rt).contains(&"With Hex".to_owned()));
     assert!(rt.find("skip").is_some(), "Skip shows on the practice too");
     tap(&mut rt, "done");
     assert!(texts(&rt).contains(&"Hex is ready".to_owned()));
@@ -343,5 +380,78 @@ fn onboarding_walkthrough() {
         "onboarding walkthrough: Setting up Hex -> {} downloaded ({} bytes) -> Your turn -> Hex is ready",
         definition.name,
         downloaded.load(std::sync::atomic::Ordering::Relaxed)
+    );
+}
+
+/// The practice and Hex is ready speak the interface language, the
+/// shortcut's keycaps sitting where the translation puts `{keys}`.
+#[test]
+fn the_practice_and_ready_pages_are_translated() {
+    let shown = |scene: &str| {
+        let mut rt = runtime(scene, true, PANE_SIZE);
+        crate::desktop::i18n::apply(Some("zh"));
+        settle(&mut rt);
+        texts(&rt)
+    };
+    let english = [
+        "Hold",
+        "Tap",
+        "Not recording",
+        "and answer the one that's lit.",
+        "anywhere, then talk.",
+        "to answer",
+        "Keyboard mode",
+        "Hex is ready",
+    ];
+    for (scene, expected) in [
+        (
+            "mac-onboarding-try",
+            &["按住", "，回复亮起的那条。", "未在录音", "回复"][..],
+        ),
+        (
+            "mac-onboarding-ready",
+            &["在任何地方按住", "，然后开口说。"][..],
+        ),
+    ] {
+        let shown = shown(scene);
+        for text in expected {
+            assert!(
+                shown.iter().any(|t| t == text),
+                "{scene}: {text}: {shown:?}"
+            );
+        }
+        for text in english {
+            assert!(
+                !shown.iter().any(|t| t == text),
+                "{scene}: {text}: {shown:?}"
+            );
+        }
+    }
+}
+
+/// A shortcut that didn't start leaves only the way out: no hold prompt or
+/// idle pill inviting a press that does nothing, and one Reopen Hex.
+#[test]
+fn a_shortcut_that_did_not_start_shows_only_reopen() {
+    let rt = runtime("mac-onboarding-reopen", true, PANE_SIZE);
+    let shown = texts(&rt);
+    assert!(
+        !shown
+            .iter()
+            .any(|t| t == "and answer the one that's lit." || t == "and say anything."),
+        "{shown:?}"
+    );
+    assert!(rt.find("idle-pill").is_none(), "no idle pill");
+    assert_eq!(
+        rt.elements()
+            .iter()
+            .filter(|e| !e.exiting && e.path.ends_with("/reopen-hex"))
+            .count(),
+        1,
+        "one Reopen Hex"
+    );
+    assert!(
+        shown.iter().any(|t| t == "Hex's shortcut didn't start."),
+        "{shown:?}"
     );
 }

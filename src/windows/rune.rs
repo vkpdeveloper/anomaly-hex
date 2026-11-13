@@ -8,26 +8,31 @@
 //! - The named event from `windows_app` keeps one app per session: a later
 //!   launch signals it and the running app shows its window.
 //!
-//! Rune's `App` keeps the loop, the state, and the hidden window alive
-//! after the window closes (`keep_running`), starts without a window for a
-//! login launch (`windowless`), and opens or quits from other threads
-//! through its `AppHandle`.
+//! Rune's `App` keeps the loop and the state after the window closes and gives
+//! the window and its GPU surface back (`keep_running` with
+//! `release_gpu_when_closed`), starts without a window for a login launch
+//! (`windowless`), and opens or quits from other threads through its
+//! `AppHandle`. Opening again makes the window it closed where that one was and
+//! at its size (`keep_window_frame`).
 
 use std::ffi::c_void;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use windows_sys::Win32::Foundation::{HINSTANCE, HWND};
-use windows_sys::Win32::Graphics::Dwm::{DWMWA_CAPTION_COLOR, DwmSetWindowAttribute};
+use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Dwm::{
+    DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
+};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWLP_HINSTANCE, GetSystemMetrics, GetWindowLongPtrW, ICON_BIG, ICON_SMALL, IMAGE_ICON,
     LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW,
-    WM_SETICON,
+    WM_NCDESTROY, WM_SETICON, WM_SETTINGCHANGE,
 };
 
 use crate::app_settings::AppSettings;
@@ -89,6 +94,9 @@ pub(crate) enum ShortcutTarget {
     /// Labs › Terminal paste shortcut: dictates like dictation and always
     /// pastes with Ctrl+Shift+V.
     TerminalPaste,
+    /// Labs › Second dictation shortcut: another key that dictates exactly
+    /// like the dictation shortcut.
+    SecondDictation,
     /// Toggle mode's cancel shortcut.
     Cancel,
 }
@@ -160,6 +168,9 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bool) -> Result<()> {
+    if let Err(error) = crate::windows::login_item::follow_current_version() {
+        tracing::warn!(%error, "could not point Launch at login at this version of Hex");
+    }
     let Some(instance) = crate::windows::app::AppInstance::claim(start_hidden)? else {
         return Ok(());
     };
@@ -177,7 +188,9 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     crate::windows::gpu_fallback::watch();
     let mut app = crate::rune_ui::app(Default::default())
         .args(crate::rune_ui::window_args())
+        .on_quit(quit_hook)
         .on_window(|window| {
+            WINDOW.with(|current| *current.borrow_mut() = Some(window.clone()));
             let _ = window.with_raw_handle(|handle| {
                 if let rune::raw_window_handle::RawWindowHandle::Win32(handle) = handle.as_raw() {
                     let hwnd = handle.hwnd.get() as HWND;
@@ -211,10 +224,14 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     };
     let tray = match added_tray {
         Ok(tray) => {
+            // Closing gives the window and its swapchain back, so a Hex sitting
+            // in the tray holds no Direct3D window and never passes for a game
+            // to capture tools such as NVIDIA's Instant Replay (#1308). Opening
+            // it again makes both, where the window was and at its size.
             app = if start_hidden {
-                app.windowless()
+                app.windowless().release_gpu_when_closed()
             } else {
-                app.keep_running()
+                app.keep_running().release_gpu_when_closed()
             };
             Some(Arc::new(tray))
         }
@@ -236,16 +253,24 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
         .map_err(|_| eyre!("the Hex runtime already started"))?;
     let (control_calls, control_receiver) = mpsc::sync_channel(8);
     let (dictation_controls, dictations) = mpsc::sync_channel(8);
+    let processing = crate::dictation::modes::ProcessingState::from_settings(&settings);
     let local_api = crate::local_api::LocalApi::start_for_app(
         &event_path,
         control_calls,
         Some(dictation_controls),
+        Some(crate::local_api::Processing::installed(
+            crate::local_api::processing::dictation_processor(processing.clone()),
+        )),
     );
     // Labs › Phone dictation: idle until its setting asks for it.
-    let phone_dictation = crate::local_api::phone::PhoneDictation::start();
+    let phone_dictation = crate::local_api::phone::PhoneDictation::start(
+        crate::local_api::processing::dictation_processor(processing.clone()),
+    );
     let quit = window.clone();
     let runtime_tray = tray.clone();
     let runtime_shared = shared.clone();
+    let dictations = crate::dictation::service::DictationQueue::from(dictations);
+    let listener_queries = dictations.clone();
     let runtime = std::thread::Builder::new()
         .name("hex-runtime".into())
         .spawn(move || {
@@ -259,13 +284,15 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
                 shutdown,
                 hud,
                 runtime_tray.as_deref(),
-                dictations.into(),
+                dictations,
+                processing,
             );
             quit.quit();
         })?;
     crate::control::host::serve(
         control_receiver,
         Arc::new(WindowsControl {
+            dictations: listener_queries,
             runtime: runtime_handle(),
             shared,
             window: Mutex::new(window.clone()),
@@ -290,6 +317,16 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     drop(local_api);
     drop(tray);
     Ok(())
+}
+
+/// Hex is ending: Rune runs this before the loop ends, including from Windows'
+/// `WM_QUERYENDSESSION` and `WM_ENDSESSION` (also for a windowless launch),
+/// which may end the process before `app.run()` returns. Clear the GPU draw
+/// marker now, so a logoff or shutdown isn't read as a crash while drawing.
+/// If another app vetoes the shutdown, the marker is already gone and this
+/// launch carries on without it.
+fn quit_hook(_: &mut Ui, _: &mut rune::Tx) {
+    crate::windows::gpu_fallback::disarm();
 }
 
 /// Names the main thread, which runs Rune's event loop and draws, so
@@ -318,6 +355,7 @@ fn run_runtime(
     indicator: crate::rune_hud::HudSender,
     tray: Option<&rune::Tray>,
     dictations: crate::dictation::service::DictationQueue,
+    processing: crate::dictation::modes::ProcessingState,
 ) {
     let mut tray_view = None;
     let mut tray_meetings = None;
@@ -329,6 +367,7 @@ fn run_runtime(
         history,
         indicator,
         dictations,
+        processing,
     );
     loop {
         let mut next = match requests.recv_timeout(RUNTIME_TICK) {
@@ -349,7 +388,10 @@ fn run_runtime(
         let published = Arc::new(host.publish());
         let changed = {
             let mut current = lock(&shared.published);
-            let changed = current.as_deref() != Some(&published);
+            let changed = current.as_deref() != Some(&published)
+                || current.as_ref().is_some_and(|old| {
+                    old.settings.source.revision != published.settings.source.revision
+                });
             if changed {
                 *current = Some(published.clone());
             }
@@ -387,6 +429,7 @@ fn runtime_handle() -> RuntimeHandle {
 /// The Windows adapter `hex` control commands from the local API run
 /// through ([`crate::control::host`]).
 struct WindowsControl {
+    dictations: crate::dictation::service::DictationQueue,
     runtime: RuntimeHandle,
     shared: Arc<Shared>,
     window: Mutex<rune::AppHandle<Ui>>,
@@ -435,9 +478,16 @@ impl crate::control::host::Host for WindowsControl {
             listener: published.listener.clone(),
             transcription: published.transcription.clone(),
             update: published.update_status.clone(),
-            capture: crate::control::host::capture_from_state(published.activity),
             window_open: self.window().is_visible(),
         })
+    }
+
+    fn capture(&self) -> std::result::Result<crate::control::CaptureSnapshot, ControlError> {
+        if self.state()?.listener.running {
+            self.dictations.snapshot(crate::windows::dictation::wake)
+        } else {
+            Ok(Default::default())
+        }
     }
 
     fn dictation(
@@ -457,9 +507,12 @@ impl crate::control::host::Host for WindowsControl {
         self.listener(crate::windows::dictation::ListenerCommand::PasteLast)
     }
 
-    fn save(&self, settings: AppSettings) -> std::result::Result<(), ControlError> {
-        settings
-            .save()
+    fn save(
+        &self,
+        base: &AppSettings,
+        settings: AppSettings,
+    ) -> std::result::Result<(), ControlError> {
+        base.update(&settings)
             .map_err(|error| ControlError::new("internal", format!("couldn't save: {error:#}")))?;
         self.send(Request::ReloadSettings)
     }
@@ -626,47 +679,178 @@ fn apply_window_icon(hwnd: HWND) {
     }
 }
 
+thread_local! {
+    /// Rune's handle to the settings window, which outlives each native window
+    /// it makes: closing destroys the native one (`release_gpu_when_closed`) and
+    /// the next open makes another from this handle. UI-thread only, like the
+    /// native window it names.
+    static WINDOW: std::cell::RefCell<Option<rune::WindowHandle>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Closing destroys the native window, so the next open would make a new one at
+/// the app's own size and where the OS puts it. Keep the frame the closing
+/// window had instead, so one the user moved or resized comes back as they left
+/// it: Rune keeps a position on the window's options and a resize request's
+/// size on the app, and both reach the window it creates next. A maximized,
+/// minimized, or full-screen frame is not the size and place to reopen at, so
+/// that one is left alone.
+pub(crate) fn keep_window_frame(tx: &mut rune::Tx) {
+    let Some(placement) = WINDOW.with(|window| {
+        let window = window.borrow();
+        let handle = window.as_ref()?;
+        let placement = handle.placement()?;
+        if placement.scale <= 0.0
+            || placement.maximized
+            || placement.minimized
+            || placement.full_screen
+        {
+            return None;
+        }
+        // Outer position in physical desktop pixels, the space Rune's window
+        // options take; it reaches the next window this handle creates.
+        handle.set_position(placement.position);
+        Some(placement)
+    }) else {
+        return;
+    };
+    let (width, height) = placement.content_size;
+    let scale = placement.scale as f32;
+    tx.resize_window((width as f32 / scale, height as f32 / scale));
+}
+
 /// The settings window Rune created last, for [`match_title_bar`].
 static TITLED_WINDOW: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-/// The caption's COLORREF (`0x00bbggrr`), or [`NO_CAPTION_COLOR`] before the
-/// first frame names one.
-static CAPTION_COLOR: AtomicU32 = AtomicU32::new(NO_CAPTION_COLOR);
-const NO_CAPTION_COLOR: u32 = u32::MAX;
+/// What the last frame asked of the caption, or `None` before the first
+/// frame names a theme.
+static CAPTION: Mutex<Option<Caption>> = Mutex::new(None);
+
+/// A caption theme: the window background's COLORREF (`0x00bbggrr`), whether
+/// the window is dark, and the OS theme when it was applied.
+///
+/// The OS theme is part of the key because winit repaints the native frame
+/// from it on every `WM_SETTINGCHANGE` (`dark_mode.rs`'s `try_theme`), not
+/// only when the OS theme changed, so [`keep_caption`] writes a forced theme
+/// back after each one. When the OS theme does change, the key changes too,
+/// and the next frame repaints the caption for the new pair.
+#[derive(Clone, Copy, PartialEq)]
+struct Caption {
+    color: u32,
+    dark: bool,
+    system_dark: bool,
+}
+
+/// Identifies Hex's caption subclass among any others on the window.
+const CAPTION_SUBCLASS: usize = 1;
 
 /// Blends the native title bar into the window: DWM paints the caption the
-/// window's background color once a frame has named it. The caption keeps
-/// its icon and title, the frame, its resize edges, and the caption buttons.
+/// window's background color once a frame has named it, and draws its text
+/// and buttons in the window's light or dark mode. The caption keeps its
+/// icon and title, the frame, its resize edges, and the caption buttons.
 fn blend_title_bar(hwnd: HWND) {
     TITLED_WINDOW.store(hwnd, Ordering::Relaxed);
-    let color = CAPTION_COLOR.load(Ordering::Relaxed);
-    if color != NO_CAPTION_COLOR {
-        set_caption_color(hwnd, color);
+    // SAFETY: `hwnd` is the settings window Rune just created, and the proc
+    // outlives it. Installing the same proc and id on the same window again
+    // replaces the reference data instead of being refused, which is harmless:
+    // it carries none, and re-applying the caption is idempotent besides.
+    unsafe {
+        SetWindowSubclass(hwnd, Some(keep_caption), CAPTION_SUBCLASS, 0);
+    }
+    let caption = *lock(&CAPTION);
+    if let Some(caption) = caption {
+        set_title_bar(hwnd, caption);
     }
 }
 
-/// Paints the settings window's caption `background`, so the title bar reads
-/// as part of the window. Called every frame with the current theme's
-/// background; DWM is asked only when the color changes (the system theme
-/// switched). Windows 10 has no caption color and keeps its own.
-pub(crate) fn match_title_bar(background: rune::Color) {
+/// Puts a forced caption back after a settings broadcast, and drops this
+/// subclass when the window goes away.
+///
+/// winit handles `WM_SETTINGCHANGE` by repainting the frame from the OS theme
+/// (`dark_mode.rs`'s `try_theme`) on every broadcast, not only when the theme
+/// changed, and sends `ThemeChanged` only for a real change. An unrelated
+/// broadcast (an accent colour, region, or environment change) therefore
+/// leaves a forced appearance overwritten: the view's cached theme did not
+/// change, so it does not re-apply it. Running after the next proc, which is
+/// winit's, gives the last word back to the theme the view last resolved. The
+/// caption is written only while Appearance forces a theme different from the
+/// OS (`dark` against `system_dark`); when it follows the OS, or is off, the
+/// frame winit just painted is already the one asked for, and a real OS theme
+/// change repaints it from the next frame, whose key changed.
+unsafe extern "system" fn keep_caption(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_NCDESTROY {
+        // SAFETY: `keep_caption` was installed under `CAPTION_SUBCLASS` on
+        // `hwnd`, which still exists while its window procedure handles the
+        // destroy notification, so this removes exactly this proc's entry
+        // before the chain forwards it. comctl32 also frees the chain with the
+        // window; removing it first just does that while the handle is usable.
+        unsafe {
+            RemoveWindowSubclass(hwnd, Some(keep_caption), CAPTION_SUBCLASS);
+        }
+    }
+    // SAFETY: Windows passes this window's message and parameters, and the
+    // next proc in the chain is the one winit installed for it.
+    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+    if message == WM_SETTINGCHANGE {
+        // Copy the theme out before DWM is asked: a guard taken in an `if`'s
+        // condition would be held until that statement ends.
+        let caption = *lock(&CAPTION);
+        if let Some(caption) = caption
+            && caption.dark != caption.system_dark
+        {
+            set_title_bar(hwnd, caption);
+        }
+    }
+    result
+}
+
+/// Paints the settings window's caption `background` and light/dark mode, so
+/// the title bar reads as part of the window. Called every frame with the
+/// current theme; DWM is asked only when the caption's theme changes (the
+/// window's theme, or the OS theme winit last copied onto the frame).
+/// Windows 10 has no caption colour, so DWM keeps its own caption background
+/// (light or dark with the same flag; before build 19041 it ignores attribute
+/// 20 and keeps the OS caption), and its text and buttons follow `dark`.
+pub(crate) fn match_title_bar(background: rune::Color, dark: bool, system_dark: bool) {
     let [r, g, b, _] = background.premul_srgb(1.0);
     let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u32;
-    let color = byte(r) | byte(g) << 8 | byte(b) << 16;
-    if CAPTION_COLOR.swap(color, Ordering::Relaxed) == color {
-        return;
+    let caption = Caption {
+        color: byte(r) | byte(g) << 8 | byte(b) << 16,
+        dark,
+        system_dark,
+    };
+    {
+        let mut last = lock(&CAPTION);
+        if *last == Some(caption) {
+            return;
+        }
+        *last = Some(caption);
     }
     let hwnd = TITLED_WINDOW.load(Ordering::Relaxed);
     if !hwnd.is_null() {
-        set_caption_color(hwnd, color);
+        set_title_bar(hwnd, caption);
     }
 }
 
-fn set_caption_color(hwnd: HWND, color: u32) {
+fn set_title_bar(hwnd: HWND, caption: Caption) {
+    // `DWMWA_USE_IMMERSIVE_DARK_MODE` takes a Win32 `BOOL`, which is an `i32`.
+    let dark = i32::from(caption.dark);
     unsafe {
         DwmSetWindowAttribute(
             hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            (&raw const dark).cast(),
+            size_of::<i32>() as u32,
+        );
+        DwmSetWindowAttribute(
+            hwnd,
             DWMWA_CAPTION_COLOR as u32,
-            (&raw const color).cast(),
+            (&raw const caption.color).cast(),
             size_of::<u32>() as u32,
         );
     }

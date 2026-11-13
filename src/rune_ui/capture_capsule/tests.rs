@@ -13,7 +13,7 @@ use super::flow::{
 };
 use super::surface::{Id, PANEL_H, PANEL_W, TOP};
 use super::{CapsuleState, poll, trace_channels, view};
-use crate::capture_host::CaptureNeed;
+use crate::capture_host::{AskedBy, CaptureNeed};
 
 fn guess() -> Route {
     Route::Guess {
@@ -25,7 +25,7 @@ fn guess() -> Route {
             Dest::new("HOME", "yesterday"),
             Dest::new("RUNE", "2 days ago"),
         ],
-        site: Some("problems.kitlangton.com".into()),
+        site: Some("example.com".into()),
     }
 }
 
@@ -40,7 +40,7 @@ fn rule() -> Route {
             Dest::new("HOME", "yesterday"),
             Dest::new("RUNE", "2 days ago"),
         ],
-        site: Some("problems.kitlangton.com".into()),
+        site: Some("example.com".into()),
     }
 }
 
@@ -160,6 +160,10 @@ fn stills() -> Vec<(&'static str, Pres)> {
         ),
         ("processing", after(&[processing()])),
         ("saved", after(&[In(Input::Stage(Stage::Done))])),
+        (
+            "copy-failed",
+            after(&[In(Input::CopyFailed), In(Input::Stage(Stage::Done))]),
+        ),
         ("failed", after(&[In(failed())])),
         (
             "failed-start",
@@ -274,12 +278,18 @@ fn stills() -> Vec<(&'static str, Pres)> {
         }),
         (
             "permission",
-            after(&[In(Input::NeedsPermission(CaptureNeed::ScreenRecording))]),
+            after(&[In(Input::NeedsPermission(
+                CaptureNeed::ScreenRecording,
+                AskedBy::Capture,
+            ))]),
         ),
         (
             "permission-asked",
             after(&[
-                In(Input::NeedsPermission(CaptureNeed::ScreenRecording)),
+                In(Input::NeedsPermission(
+                    CaptureNeed::ScreenRecording,
+                    AskedBy::Capture,
+                )),
                 Click(Id::Ask),
             ]),
         ),
@@ -287,7 +297,10 @@ fn stills() -> Vec<(&'static str, Pres)> {
         ("permission-ready", permission(Grant::Ready)),
         (
             "permission-microphone",
-            after(&[In(Input::NeedsPermission(CaptureNeed::Microphone))]),
+            after(&[In(Input::NeedsPermission(
+                CaptureNeed::Microphone,
+                AskedBy::Capture,
+            ))]),
         ),
     ]
 }
@@ -295,7 +308,10 @@ fn stills() -> Vec<(&'static str, Pres)> {
 /// The permission helper for Screen Recording once its grant is `grant`.
 fn permission(grant: Grant) -> Pres {
     after(&[
-        In(Input::NeedsPermission(CaptureNeed::ScreenRecording)),
+        In(Input::NeedsPermission(
+            CaptureNeed::ScreenRecording,
+            AskedBy::Capture,
+        )),
         In(Input::Permission(CaptureNeed::ScreenRecording, grant)),
     ])
 }
@@ -572,6 +588,7 @@ const GOLDENS: &[&str] = &[
     "picker-iphone",
     "processing",
     "saved",
+    "copy-failed",
     "rule-sent",
     "rule-resolving",
     "rule-final",
@@ -1358,7 +1375,7 @@ fn shift_marks_and_saves_the_row_under_the_pointer() {
                 *actions.lock().unwrap(),
                 [Action::Send {
                     to: "RUNE".into(),
-                    always: Some("problems.kitlangton.com".into())
+                    always: Some("example.com".into())
                 }],
                 "search: {search}"
             );

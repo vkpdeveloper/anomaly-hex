@@ -13,7 +13,7 @@ impl Flow {
             self.cue(&before, &actions);
         }
         self.closing(&before);
-        self.left_waiting(before, &actions);
+        self.track_undo(&actions);
         let mut actions = actions;
         actions.extend(self.hold_countdown(now));
         actions
@@ -47,7 +47,6 @@ impl Flow {
                         chips_until: None,
                         discard_until: None,
                     };
-                    self.switching = true;
                     vec![Action::Switch(mode)]
                 }
                 Mode::Area | Mode::Window => {
@@ -96,21 +95,41 @@ impl Flow {
                 vec![Action::Inspect]
             }
             (_, Id::Undo) => self.input(Input::Undo, now),
-            (Phase::Permission { need, grant, .. }, Id::Ask) => {
+            (
+                Phase::Permission {
+                    need,
+                    grant,
+                    asked_by,
+                    ..
+                },
+                Id::Ask,
+            ) => {
                 let need = *need;
+                let asked_by = *asked_by;
                 match *grant {
                     Grant::Off | Grant::Asked => {
                         self.phase = Phase::Permission {
                             need,
                             grant: Grant::Asked,
                             at: now,
+                            asked_by,
                         };
                         vec![Action::Allow(need)]
                     }
                     Grant::Restart => vec![Action::Restart],
                     Grant::Ready => {
                         self.phase = Phase::Hidden;
-                        vec![Action::Record(Mode::Screen)]
+                        match asked_by {
+                            // Annotate's own helper records the screen, as
+                            // it always has.
+                            AskedBy::Capture => vec![Action::Record(Mode::Screen)],
+                            // The Screenshots picker was what the shortcut
+                            // asked for: open it again, never Annotate's
+                            // whole-screen recording.
+                            AskedBy::Screenshots { record } => {
+                                vec![Action::OpenScreenshots { record }]
+                            }
+                        }
                     }
                 }
             }

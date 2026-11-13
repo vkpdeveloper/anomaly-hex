@@ -8,9 +8,10 @@ use clap::{Args, Subcommand};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use serde::{Deserialize, Serialize};
 
+use crate::app_settings::AppSettings;
 use crate::dictation::vocabulary::VocabularyEntry;
 use crate::history::stats::HistoryStats;
-use crate::history::{HistoryEntry, HistoryKind, HistoryRetention};
+use crate::history::{HistoryEntry, HistoryKind, HistoryRetention, recordings};
 use crate::meeting::query::{
     ChapterView, Library, ListQuery, Meeting, OffsetRange, SearchQuery, TextHit, TimeRange,
     TranscriptSource, search_texts,
@@ -177,6 +178,10 @@ struct HistoryRow<'a> {
     score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     snippet: Option<String>,
+    /// The entry's kept audio file (Labs › Keep recordings), while it is
+    /// still beside the store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recording: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -193,9 +198,10 @@ fn history_output<'a>(
     retention: HistoryRetention,
     now: u64,
     vocabulary: &[VocabularyEntry],
+    recordings: Option<&Path>,
 ) -> Result<HistoryOutput<'a>> {
     let range = TimeRange::parse(args.since.as_deref(), args.until.as_deref(), now)?;
-    let cutoff = retention.max_age_ms().map(|age| now.saturating_sub(age));
+    let cutoff = retention.cutoff(now);
     let app = args.app.as_ref().map(|s| s.to_lowercase());
     let grep = args.grep.as_ref().map(|s| s.to_lowercase());
     let mut matching: Vec<_> = entries
@@ -242,6 +248,9 @@ fn history_output<'a>(
             raw_text: args.raw.then_some(entry.raw_text.as_str()),
             score: hit.as_ref().map(|hit| (hit.score * 100.0).round() / 100.0),
             snippet: hit.map(|hit| hit.snippet),
+            recording: recordings
+                .and_then(|recordings| recordings::saved(recordings, entry))
+                .map(|path| path.to_string_lossy().into_owned()),
         })
         .collect();
     Ok(HistoryOutput {
@@ -318,7 +327,7 @@ fn stats_output(
     day_of: impl Fn(u64) -> i64,
 ) -> Result<StatsOutput> {
     let range = TimeRange::parse(since, until, now)?;
-    let cutoff = retention.max_age_ms().map(|age| now.saturating_sub(age));
+    let cutoff = retention.cutoff(now);
     let stats = crate::history::stats::summarize(
         entries
             .iter()
@@ -397,19 +406,33 @@ fn stats_text(stats: &HistoryStats) -> String {
     text
 }
 
+/// Labs › Keep recordings for `hex history`, read from the saved settings:
+/// this command never applies them to the process, so the runtime switch
+/// (`crate::labs::keep_recordings`) can read off while the lab is on.
+fn keep_recordings(settings: &AppSettings) -> bool {
+    crate::labs::Feature::KeepRecordings.saved_on(settings)
+}
+
 pub fn history(args: &HistoryArgs) -> Result<()> {
     if let Some(HistoryAction::Stats { since, until, json }) = &args.action {
         return history_stats(since.as_deref(), until.as_deref(), *json);
     }
     let root = crate::app_paths::support_dir()?;
-    let entries = crate::history::read_snapshot(&root.join("history.json"))
-        .wrap_err("could not read history.json")?;
+    let history = root.join("history.json");
+    let entries =
+        crate::history::read_snapshot(&history).wrap_err("could not read history.json")?;
+    let settings = AppSettings::read().wrap_err("could not read settings.json")?;
+    let recordings = keep_recordings(&settings).then(|| {
+        let directory = recordings::directory(&history);
+        std::path::absolute(&directory).unwrap_or(directory)
+    });
     let output = history_output(
         &entries,
         args,
         retention(&root)?,
         crate::desktop::events::now_ms(),
         &crate::dictation::vocabulary::read_saved(&root),
+        recordings.as_deref(),
     )?;
     let mut out = io::stdout().lock();
     if args.json {

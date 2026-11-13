@@ -30,6 +30,10 @@ pub struct ContextSnapshot {
     pub browser_url: Option<Url>,
     pub window_title: Option<String>,
     pub input_revision: Option<u64>,
+    /// Labs › Screen vocabulary: names and terms read from the focused window
+    /// as this capture became real. Set only on the snapshot a capture
+    /// finishes with, so they never reach another dictation or a meeting.
+    pub screen_terms: Vec<String>,
 }
 
 /// The page refresh one capture owes. A shortcut's press starts it
@@ -62,6 +66,11 @@ impl CaptureRefresh {
             self.ticket = Some(request());
         }
         self.ticket
+    }
+
+    /// Whether a capture started and has not finished or been cancelled.
+    pub(crate) fn pending(&self) -> bool {
+        self.pending
     }
 
     /// The capture ended without transcribing: nothing waits for its page.
@@ -112,6 +121,7 @@ struct Frontmost {
 pub enum ContextSelector {
     BrowserHost(String),
     Application(String),
+    ApplicationSubstring(String),
 }
 
 impl ContextSelector {
@@ -120,13 +130,20 @@ impl ContextSelector {
     }
 
     pub fn browser_host(host: impl Into<String>) -> Self {
-        Self::BrowserHost(normalize_browser_host(&host.into()))
+        Self::BrowserHost(crate::dictation::modes::canonical_host(&host.into()).unwrap_or_default())
     }
 
     pub fn matches(&self, context: &ContextSnapshot) -> bool {
         match self {
             Self::BrowserHost(host) => context.browser_host_is(host),
             Self::Application(application) => context.application_is(application),
+            Self::ApplicationSubstring(application) => {
+                !application.is_empty()
+                    && context
+                        .application
+                        .as_ref()
+                        .is_some_and(|current| current.to_lowercase().contains(application))
+            }
         }
     }
 
@@ -259,6 +276,7 @@ fn snapshot_of(front: &Frontmost, page: Option<Url>) -> ContextSnapshot {
         browser_url: page.or_else(|| front.page.clone()),
         window_title: front.window_title.clone(),
         input_revision: None,
+        screen_terms: Vec::new(),
     }
 }
 
@@ -307,6 +325,7 @@ impl ContextSnapshot {
                         browser_url: Some(browser_url),
                         window_title,
                         input_revision: None,
+                        screen_terms: Vec::new(),
                     });
                 }
                 Ok(None) => {}
@@ -349,6 +368,7 @@ impl ContextSnapshot {
                     browser_url: url,
                     window_title: title,
                     input_revision: None,
+                    screen_terms: Vec::new(),
                 });
             }
         }
@@ -494,6 +514,21 @@ pub fn frontmost_bundle_path() -> Option<std::path::PathBuf> {
             .bundleURL()?
             .path()
             .map(|path| path.to_string().into())
+    })
+}
+
+/// The frontmost application's display name, without reading a page or a
+/// window title: a dictation mode's application name (Labs › Switch model
+/// with app). `None` when Hex itself owns the frontmost application, since
+/// its own window names no mode, or when macOS reports none.
+#[cfg(target_os = "macos")]
+pub fn frontmost_other_application() -> Option<String> {
+    autoreleasepool(|_| {
+        let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        if application.processIdentifier() == std::process::id() as i32 {
+            return None;
+        }
+        application.localizedName().map(|name| name.to_string())
     })
 }
 
@@ -678,10 +713,6 @@ fn parse_tab_output(output: &str) -> Option<(Url, Option<String>)> {
     Some((url, (!title.is_empty()).then(|| title.to_string())))
 }
 
-fn normalize_browser_host(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
-}
-
 fn application_names_equal(left: &str, right: &str) -> bool {
     strip_bundle_extension(left).eq_ignore_ascii_case(strip_bundle_extension(right))
 }
@@ -712,6 +743,26 @@ mod tests {
     use std::cell::Cell;
     use std::sync::atomic::{AtomicI32, AtomicUsize};
     use std::time::Instant;
+
+    #[test]
+    fn website_selectors_accept_saved_urls_ports_and_idn() {
+        for (entry, page) in [
+            ("https://X.com/home", "https://x.com/other"),
+            ("x.com:3000", "https://x.com/"),
+            (" X.com. ", "https://x.com/"),
+            ("bücher.example", "https://xn--bcher-kva.example/"),
+        ] {
+            let context = ContextSnapshot {
+                browser_url: Some(Url::parse(page).unwrap()),
+                ..Default::default()
+            };
+            assert!(
+                ContextSelector::browser_host(entry).matches(&context),
+                "{entry}"
+            );
+            assert!(!ContextSelector::browser_host("news.x.com").matches(&context));
+        }
+    }
 
     fn next(monitor: &ContextMonitor) -> ContextSnapshot {
         monitor

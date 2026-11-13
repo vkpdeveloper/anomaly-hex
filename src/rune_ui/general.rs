@@ -16,7 +16,7 @@ use super::controls::{
     pressable_row, row_switch, value_button, value_font,
 };
 use super::icons::*;
-use super::lists::{PermissionControl, permission_control, slider};
+use super::lists::{PermissionControl, inline_slider, permission_control, slider};
 use super::platform::PlatformRequest;
 use super::settings::{self as s, Capture, Face};
 use super::{Menu, Pane, Request, ShortcutTarget, Ui};
@@ -29,6 +29,10 @@ use crate::transcription::models as transcription_models;
 
 mod search;
 mod shortcuts;
+
+/// Labs › More dictation shortcuts (macOS): General's extra shortcut rows.
+#[cfg(target_os = "macos")]
+mod extra_shortcuts;
 
 pub(super) use self::search::{focus_search_key, pane};
 pub(super) use self::shortcuts::shortcut_rows;
@@ -58,9 +62,8 @@ pub(super) fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>, query: &str) -> Opt
             let (description, cancel) = search::cancel_rows(ui, p);
             rows.extend_described(tr("Cancel"), Some(description), cancel);
         }
-        // Labs › Second dictation shortcut (macOS): another key that
-        // dictates like the one above, such as on an external keyboard.
-        #[cfg(target_os = "macos")]
+        // Labs › Second dictation shortcut: another key that dictates like
+        // the one above, such as on an external keyboard.
         if crate::labs::Feature::SecondDictationShortcut.on(&ui.settings) {
             rows.extend_described(
                 tr("Second dictation shortcut"),
@@ -74,6 +77,15 @@ pub(super) fn basics(ui: &Ui, p: Paint, layer: &mut Vec<El>, query: &str) -> Opt
                     ShortcutTarget::SecondDictation,
                     Some(tr("Dictates like the shortcut above")),
                 ),
+            );
+        }
+        // Labs › More dictation shortcuts (macOS): up to four more keys that
+        // each dictate like the one above, each with its own shortcut mode.
+        #[cfg(target_os = "macos")]
+        if crate::labs::Feature::MoreDictationShortcuts.on(&ui.settings) {
+            rows.extend(
+                tr("Extra dictation shortcut"),
+                extra_shortcuts::rows(ui, p, layer),
             );
         }
         // Labs › Terminal paste shortcut (Windows, Linux): another key that
@@ -1000,32 +1012,47 @@ pub(super) fn application(ui: &Ui, p: Paint, layer: &mut Vec<El>, query: &str) -
             ),
         );
     }
+    let volume = ui
+        .sound_volume_drag
+        .unwrap_or_else(|| s::sound_volume(settings));
     rows.push(
         tr("Sound volume"),
-        pick_row(
-            ui,
+        icon_row(
             p,
             "sound-volume",
             &VOLUME,
             tr("Sound volume"),
-            s::SOUND_VOLUME_STEPS
-                .iter()
-                .map(|(label, _)| tr(label))
-                .collect(),
-            s::sound_volume_index(settings),
-            |ui, index| {
-                let volume = s::SOUND_VOLUME_STEPS[index].1;
-                let saved = ui.update(|settings| {
-                    settings.sound_effects = volume > 0.0;
-                    if volume > 0.0 {
-                        settings.sound_effect_volume = volume;
+            None,
+            inline_slider(
+                p,
+                "sound-volume-slider",
+                tr("Sound volume"),
+                volume,
+                if volume > 0.0 {
+                    format!("{:.0}%", volume * 100.0)
+                } else {
+                    tr("Off").to_owned()
+                },
+                160.0,
+                |ui, value, done| {
+                    let volume = (value * 100.0).round() / 100.0;
+                    ui.sound_volume_drag = if done { None } else { Some(volume) };
+                    if !done {
+                        return;
                     }
-                });
-                if saved && volume > 0.0 && ui.live() {
-                    crate::feedback::play(crate::feedback::Tone::DictationStart);
-                }
-            },
-            layer,
+                    // Zero turns tones off and keeps the last level, as
+                    // `hex settings set sound_effect_volume 0` does.
+                    let saved = ui.update(|settings| {
+                        settings.sound_effects = volume > 0.0;
+                        if volume > 0.0 {
+                            settings.sound_effect_volume = volume;
+                        }
+                    });
+                    if saved && volume > 0.0 && ui.live() {
+                        crate::feedback::play(crate::feedback::Tone::DictationStart);
+                    }
+                },
+            ),
         ),
     );
     rows.push(
@@ -1296,14 +1323,15 @@ pub(super) fn pick_select(
         Menu::Pick(key),
         format!("{key}-control"),
         name,
-        labels,
+        labels.into_iter().map(str::to_owned).collect(),
         selected,
         pick,
         layer,
     )
 }
 
-/// [`pick_select`] for rows made at run time, opened as `menu`.
+/// [`pick_select`] for rows made at run time, opened as `menu`. Labels are
+/// owned so a card can build them from its own choices.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn quiet_select(
     ui: &Ui,
@@ -1311,24 +1339,24 @@ pub(super) fn quiet_select(
     menu: Menu,
     key: String,
     name: &str,
-    labels: Vec<&'static str>,
+    labels: Vec<String>,
     selected: usize,
     pick: impl Fn(&mut Ui, usize) + 'static,
     layer: &mut Vec<El>,
 ) -> El {
     let choices = labels.clone();
     let pick = std::rc::Rc::new(pick);
-    let current = labels.get(selected).copied().unwrap_or_default();
+    let current = labels.get(selected).cloned().unwrap_or_default();
     Select::new(key, &labels)
         .appearance(SelectAppearance::Inline)
-        .current(labels.get(selected).copied())
+        .current(labels.get(selected).map(String::as_str))
         .open(ui.open == Some(menu))
         .placement(Placement::BottomEnd)
         .on_toggle(move |ui: &mut Ui| s::toggle_menu(ui, menu))
         .on_close(|ui: &mut Ui| ui.open = None)
         .on_choose(move |ui: &mut Ui, value: &str, _: &mut rune::Tx| {
             ui.open = None;
-            if let Some(index) = choices.iter().position(|label| *label == value) {
+            if let Some(index) = choices.iter().position(|label| label == value) {
                 pick(ui, index);
             }
         })

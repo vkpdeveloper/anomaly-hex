@@ -15,12 +15,15 @@ pub(crate) mod live_text;
 pub(crate) mod modes;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 pub(crate) mod processor;
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) mod screen_vocabulary;
 pub(crate) mod service;
 pub(crate) mod spoken_formatting;
 pub(crate) mod spoken_symbols;
 pub(crate) mod text_replacements;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod vocabulary;
+pub(crate) mod voice_prompt;
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -65,6 +68,10 @@ pub enum DictationFlavour {
     /// Labs › Terminal paste shortcut: processed like a normal dictation,
     /// but pasted with Ctrl+Shift+V whatever Terminal paste says.
     TerminalPaste,
+    /// Labs › Second dictation shortcut: another key that dictates exactly
+    /// like the dictation shortcut. It is its own owner, so neither
+    /// shortcut finishes or double-taps the other's capture.
+    Second,
 }
 
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
@@ -86,6 +93,10 @@ impl DictationFlavour {
 }
 
 pub const MINIMUM_HOLD_DURATION: Duration = Duration::from_millis(300);
+/// A second press of the shortcut this soon after the first's release is a
+/// double tap. Equal to the hold threshold today, but its own setting.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(300);
 /// Audio kept after a shortcut release that finishes a capture, because a
 /// release often lands while the last word is still sounding.
 pub const POST_RELEASE_TAIL: Duration = Duration::from_millis(200);
@@ -121,7 +132,7 @@ const VOICE_HISTORY_FRAMES: usize = 150;
 pub const BOTH_SIDES_WINDOW: Duration = Duration::from_millis(80);
 const MINIMUM_PARAKEET_DURATION: Duration = Duration::from_millis(1500);
 const INITIAL_RECORDING_CAPACITY: Duration = Duration::from_secs(10);
-const PARAKEET_SAMPLE_RATE: u32 = 16_000;
+pub(crate) const PARAKEET_SAMPLE_RATE: u32 = 16_000;
 /// A capture whose loudest 30 ms window stays below this level is treated as
 /// empty rather than transcribed, because models hallucinate closing phrases
 /// such as "thank you" on silence. Deliberately conservative: whispered speech
@@ -675,6 +686,9 @@ struct Recording {
     input_buffer: Vec<f32>,
     resampler: Option<Fft<f32>>,
     stream: Option<LiveStream>,
+    /// This capture already logged why it has no live stream, so the retry
+    /// on every audio chunk never repeats it.
+    stream_refusal_logged: bool,
     /// Whether this recording's stream should show the live text plate,
     /// decided once when the stream opens so toggling Labs › Live text
     /// mid-capture changes nothing.
@@ -752,6 +766,7 @@ impl Recording {
             input_buffer: Vec::with_capacity(Self::CHUNK_SIZE),
             resampler,
             stream: None,
+            stream_refusal_logged: false,
             show_live_text: false,
             voice: VoiceTrack::default(),
             live_text: None,
@@ -1206,12 +1221,27 @@ impl DictationCapture {
         let Some(recording) = &mut self.recording else {
             return;
         };
-        if recording.stream.is_none() {
-            recording.stream = engine.begin();
-            recording.show_live_text = recording.stream.is_some()
-                && (crate::labs::live_text() || crate::dictation::live_text::board_demanded());
-            recording.feed_stream();
+        if recording.stream.is_some() {
+            return;
         }
+        recording.stream = engine.begin();
+        // The capture retries the stream on each audio chunk; say once, and
+        // only when it would have shown live words, why there is none.
+        if recording.stream.is_none()
+            && !recording.stream_refusal_logged
+            && (crate::labs::live_text() || crate::dictation::live_text::demanded())
+        {
+            recording.stream_refusal_logged = true;
+            tracing::info!(
+                reason = engine
+                    .stream_refusal()
+                    .unwrap_or("no live stream is available"),
+                "no live stream has opened yet; provisional words show only if one opens later"
+            );
+        }
+        recording.show_live_text = recording.stream.is_some()
+            && (crate::labs::live_text() || crate::dictation::live_text::board_demanded());
+        recording.feed_stream();
     }
 
     #[cfg(test)]

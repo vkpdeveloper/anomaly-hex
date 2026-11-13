@@ -704,9 +704,11 @@ impl TranscriptionEngine {
             stream,
             clip,
             Box::new(|model, clip| {
-                // Labs › Skip long pauses, asked as the run starts.
-                let mut clip = whole_clip(clip, crate::labs::skip_pauses());
-                crate::dictation::pad_for_parakeet(&mut clip);
+                // Labs › Skip long pauses, asked as the run starts, then
+                // padding that follows the cut rather than being trimmed by
+                // a trailing pause (#1629).
+                let clip =
+                    padded_whole_clip(clip, crate::labs::skip_pauses(), Some(model.model_id()));
                 model
                     .transcribe(&clip)
                     .map_err(|error| format!("{error:#}"))
@@ -866,6 +868,33 @@ impl TranscriptionEngine {
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
+
+    /// Why a live stream cannot open for a capture, when it can't: the
+    /// model's own definition doesn't stream, or it streams in principle but
+    /// not on the device it loaded on (a CPU, or a GPU whose stream probe
+    /// failed). `None` when a stream can open.
+    pub(crate) fn stream_refusal(&self) -> Option<&'static str> {
+        if self.streams.load(Ordering::Acquire) {
+            return None;
+        }
+        match self.held_selection() {
+            Some(selection) => {
+                use crate::transcription::models::{TranscriptionModelId, definition};
+                // An imported model's catalog entry says it can't stream, but
+                // its GGUF is only checked when it loads; blame the device.
+                if !matches!(selection.model, TranscriptionModelId::Custom(_))
+                    && !definition(selection.model).streams
+                {
+                    Some("the selected speech model doesn't stream")
+                } else {
+                    Some(
+                        "the speech model isn't streaming on this device (a CPU, or a GPU that could not start streaming)",
+                    )
+                }
+            }
+            None => Some("no streaming speech model is loaded"),
+        }
+    }
 }
 
 /// Whether a dictation or a meeting records, so an idle model stays loaded:
@@ -931,6 +960,39 @@ pub(crate) fn transcribe_clip(model: &mut HeldModel, samples: Vec<f32>) -> Resul
     return model.transcribe(samples);
     #[cfg(not(target_os = "macos"))]
     model.transcribe_clip(samples)
+}
+
+/// Transcribes a complete 16 kHz clip with a held model and its own native
+/// timings, never estimated ones.
+pub(crate) fn transcribe_clip_timed(
+    model: &mut HeldModel,
+    samples: Vec<f32>,
+) -> Result<crate::transcription::transcript::Transcript, String> {
+    model
+        .transcribe_timed(samples)
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// The finest native timings a held model gives. Dictation never asks; the
+/// local API answers `422` for a level the model cannot produce.
+pub(crate) fn timestamp_level(
+    model: &HeldModel,
+) -> crate::transcription::transcript::TimestampLevel {
+    model.timestamps()
+}
+
+/// A whole clip as a non-macOS dictation run transcribes it: long pauses cut
+/// first, then the minimum duration and the model's trailing silence, so a
+/// trailing pause cannot trim Unified English's closing context (#1629).
+#[cfg(not(target_os = "macos"))]
+fn padded_whole_clip(
+    clip: Vec<f32>,
+    skip_pauses: bool,
+    model: Option<crate::transcription::models::TranscriptionModelId>,
+) -> Vec<f32> {
+    let mut clip = whole_clip(clip, skip_pauses);
+    crate::transcription::pad_gguf_samples(&mut clip, model);
+    clip
 }
 
 impl Drop for TranscriptionEngine {
@@ -1195,10 +1257,37 @@ impl Worker {
         commands: &Receiver<Command>,
         next: &mut VecDeque<Command>,
     ) {
-        let Some(options) = self
+        let options = self
             .model()
-            .and_then(|model| model.stream_options().cloned())
-        else {
+            .and_then(|model| model.stream_options().cloned());
+        let Some(options) = options else {
+            let loaded = self.model.is_some();
+            let model_streams = self
+                .model
+                .as_ref()
+                .and_then(|model| model.gguf_selection())
+                // An imported model's catalog entry says it can't stream, but
+                // its GGUF is only checked when it loads.
+                .filter(|selection| {
+                    !matches!(
+                        selection.model,
+                        crate::transcription::models::TranscriptionModelId::Custom(_)
+                    )
+                })
+                .map(|selection| crate::transcription::models::definition(selection.model).streams);
+            match loaded {
+                true => tracing::info!(
+                    stream = id,
+                    live_text = partials.is_some(),
+                    model_streams,
+                    "a live stream was requested but this model can't stream on its device; transcribing the whole clip"
+                ),
+                false => tracing::info!(
+                    stream = id,
+                    live_text = partials.is_some(),
+                    "a live stream was requested but no speech model is loaded; transcribing the whole clip"
+                ),
+            }
             return;
         };
         self.running.enter(cancel);
@@ -1769,6 +1858,36 @@ mod tests {
             clip.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
         );
         assert!(whole_clip(clip.clone(), true).len() < clip.len());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_whole_clip_is_padded_after_cutting_its_trailing_pause() {
+        use crate::transcription::UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES;
+        use crate::transcription::models::TranscriptionModelId;
+
+        // #1629: quiet pre-roll, speech, then a 5 s trailing pause. Cutting
+        // the pause must leave the 400 ms of Unified English silence after
+        // the cut, where nothing can trim it.
+        let mut clip = vec![0.0; 8_000];
+        clip.extend(tone(16_000));
+        clip.extend(vec![0.0; 80_000]);
+        let cut = whole_clip(clip.clone(), true);
+        let cut_len = cut.len();
+        assert_eq!(cut_len, 8_000 + 16_000 + PAUSE_HEAD_SAMPLES);
+
+        let padded = padded_whole_clip(
+            clip,
+            true,
+            Some(TranscriptionModelId::ParakeetUnifiedEnglish),
+        );
+
+        assert_eq!(
+            padded.len(),
+            cut_len + UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES
+        );
+        assert_eq!(padded[..cut_len], cut[..]);
+        assert!(padded[cut_len..].iter().all(|&sample| sample == 0.0));
     }
 
     fn assert_quiet_speech_is_kept(speech_db: f32, noise_db: f32, dc_offset: f32) {
@@ -2442,5 +2561,51 @@ mod tests {
             commands.try_iter().collect::<Vec<_>>().as_slice(),
             [Command::Finish { stream: None, .. }]
         ));
+    }
+
+    /// A capture that wanted live text is told which side refuses: the
+    /// model's own definition, or the device it loaded on.
+    #[test]
+    fn a_stream_refusal_names_the_model_or_the_device() {
+        let (engine, _commands) = TranscriptionEngine::for_test();
+        assert_eq!(engine.stream_refusal(), None, "it can stream");
+        engine.streams.store(false, Ordering::Release);
+        assert_eq!(
+            engine.stream_refusal(),
+            Some("no streaming speech model is loaded")
+        );
+        *engine.held.lock().unwrap() = Some(crate::transcription::models::TranscriptionSelection {
+            model: crate::transcription::models::TranscriptionModelId::ParakeetUnifiedEnglish,
+            language: "en".into(),
+        });
+        assert_eq!(
+            engine.stream_refusal(),
+            Some(
+                "the speech model isn't streaming on this device (a CPU, or a GPU that could not start streaming)"
+            )
+        );
+        *engine.held.lock().unwrap() = Some(crate::transcription::models::TranscriptionSelection {
+            model: crate::transcription::models::TranscriptionModelId::ParakeetV3,
+            language: "en".into(),
+        });
+        assert_eq!(
+            engine.stream_refusal(),
+            Some("the selected speech model doesn't stream")
+        );
+        // An imported model's catalog entry says it can't stream, but its
+        // GGUF is only checked when it loads: blame the device instead.
+        *engine.held.lock().unwrap() = Some(crate::transcription::models::TranscriptionSelection {
+            model: crate::transcription::models::TranscriptionModelId::Custom(
+                crate::transcription::models::CustomModelId::parse("custom-0123456789abcdef")
+                    .unwrap(),
+            ),
+            language: "en".into(),
+        });
+        assert_eq!(
+            engine.stream_refusal(),
+            Some(
+                "the speech model isn't streaming on this device (a CPU, or a GPU that could not start streaming)"
+            )
+        );
     }
 }

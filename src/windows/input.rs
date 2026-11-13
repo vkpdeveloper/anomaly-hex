@@ -202,7 +202,7 @@ enum Disposition {
 
 const EVENT_CAPACITY: usize = 16;
 const MAX_EVENT_DELAY_MS: u32 = 60_000;
-const DOUBLE_TAP_WINDOW_MS: u32 = 300;
+const DOUBLE_TAP_WINDOW_MS: u32 = crate::dictation::DOUBLE_TAP_WINDOW.as_millis() as u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HotkeyAction {
@@ -219,7 +219,7 @@ pub enum HotkeyAction {
 pub struct HotkeyEvent {
     pub action: HotkeyAction,
     /// The shortcut that started the capture: dictation, Dictate without
-    /// processing, or Labs › Terminal paste.
+    /// processing, Labs › Terminal paste, or Labs › Second dictation.
     pub flavour: DictationFlavour,
     timestamp_ms: u32,
 }
@@ -262,6 +262,10 @@ struct CallbackState {
     terminal_paste: Option<WindowsHotkey>,
     terminal_paste_trigger_vk: Option<u32>,
     terminal_paste_trigger_down: bool,
+    /// Labs › Second dictation shortcut, while the lab is on and it is bound.
+    second: Option<WindowsHotkey>,
+    second_trigger_vk: Option<u32>,
+    second_trigger_down: bool,
     annotate: Option<WindowsHotkey>,
     annotate_trigger_vk: Option<u32>,
     annotate_trigger_down: bool,
@@ -301,6 +305,8 @@ struct CaptureState {
     /// The shortcut, not another, owns this capture (or the last one).
     flavour: DictationFlavour,
 }
+
+mod commands;
 
 impl CaptureState {
     /// Whether another shortcut owns a capture in progress.
@@ -403,9 +409,10 @@ impl CaptureState {
 }
 
 impl CallbackState {
-    /// A second dictation shortcut's key: held, locked, and finished like
-    /// the dictation key, owning the capture it starts. `None` when the key
-    /// is not its trigger.
+    /// Dictate without processing, Labs › Terminal paste, and Labs › Second
+    /// dictation: each key held, locked, and finished like the dictation
+    /// key, owning the capture it starts. `None` when the key is not its
+    /// trigger.
     fn second_dictation(
         &mut self,
         vk: u32,
@@ -419,6 +426,7 @@ impl CallbackState {
             DictationFlavour::TerminalPaste => {
                 (self.terminal_paste_trigger_vk, self.terminal_paste.as_ref())
             }
+            DictationFlavour::Second => (self.second_trigger_vk, self.second.as_ref()),
             DictationFlavour::Normal => return None,
         };
         let trigger_down = self.second_trigger_down(flavour);
@@ -467,6 +475,7 @@ impl CallbackState {
         match flavour {
             DictationFlavour::Raw => self.raw_trigger_down,
             DictationFlavour::TerminalPaste => self.terminal_paste_trigger_down,
+            DictationFlavour::Second => self.second_trigger_down,
             DictationFlavour::Normal => false,
         }
     }
@@ -475,6 +484,7 @@ impl CallbackState {
         match flavour {
             DictationFlavour::Raw => self.raw_trigger_down = down,
             DictationFlavour::TerminalPaste => self.terminal_paste_trigger_down = down,
+            DictationFlavour::Second => self.second_trigger_down = down,
             DictationFlavour::Normal => {}
         }
     }
@@ -507,6 +517,7 @@ pub(crate) fn set_capture_inhibited(inhibited: bool) {
         state.paste_trigger_down = false;
         state.raw_trigger_down = false;
         state.terminal_paste_trigger_down = false;
+        state.second_trigger_down = false;
         if let Some(action) = state.capture.cancel() {
             send_event(state, action, now);
         }
@@ -546,6 +557,7 @@ impl WindowsHotkeyMonitor {
         paste_last: Option<WindowsHotkey>,
         raw: Option<WindowsHotkey>,
         terminal_paste: Option<WindowsHotkey>,
+        second: Option<WindowsHotkey>,
         annotate: Option<WindowsHotkey>,
         cancel: Option<WindowsHotkey>,
         double_tap_enabled: bool,
@@ -564,6 +576,7 @@ impl WindowsHotkeyMonitor {
         let raw_trigger_vk = chord_virtual_key(raw.as_ref(), "Dictate without processing")?;
         let terminal_paste_trigger_vk =
             chord_virtual_key(terminal_paste.as_ref(), "Terminal paste shortcut")?;
+        let second_trigger_vk = chord_virtual_key(second.as_ref(), "Second dictation shortcut")?;
         let annotate_trigger_vk = chord_virtual_key(annotate.as_ref(), "Annotate")?;
         let label = binding.label();
         let (event_sender, events) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -582,6 +595,9 @@ impl WindowsHotkeyMonitor {
             terminal_paste,
             terminal_paste_trigger_vk,
             terminal_paste_trigger_down: false,
+            second,
+            second_trigger_vk,
+            second_trigger_down: false,
             annotate,
             annotate_trigger_vk,
             annotate_trigger_down: false,
@@ -956,6 +972,7 @@ fn process_button(vk: u32, is_down: bool, time: u32) -> Disposition {
                     Some(&state.binding),
                     state.raw.as_ref(),
                     state.terminal_paste.as_ref(),
+                    state.second.as_ref(),
                 ]
                 .into_iter()
                 .flatten()
@@ -1022,10 +1039,14 @@ fn process_button(vk: u32, is_down: bool, time: u32) -> Disposition {
                 state.drawing_escape_down = is_down;
                 return Disposition::Suppress;
             }
-            // Dictate without processing and Labs › Terminal paste: key
-            // chords held, locked, and finished like the dictation key, each
-            // owning the capture it starts.
-            for flavour in [DictationFlavour::Raw, DictationFlavour::TerminalPaste] {
+            // Dictate without processing, Labs › Terminal paste, and Labs ›
+            // Second dictation: key chords held, locked, and finished like the
+            // dictation key, each owning the capture it starts.
+            for flavour in [
+                DictationFlavour::Raw,
+                DictationFlavour::TerminalPaste,
+                DictationFlavour::Second,
+            ] {
                 if let Some(disposition) = state.second_dictation(vk, is_down, is_up, time, flavour)
                 {
                     return disposition;
@@ -1898,6 +1919,49 @@ mod tests {
     }
 
     #[test]
+    fn command_capture_finishes_on_the_first_physical_press_in_either_mode() {
+        for toggle in [false, true] {
+            for flavour in [DictationFlavour::Normal, DictationFlavour::Raw] {
+                let mut state = CaptureState {
+                    toggle,
+                    ..Default::default()
+                };
+                state.start_command(flavour);
+                assert!(state.recording);
+                assert_eq!(state.wants_cancel(), toggle);
+                assert!(!state.owned_by_other(flavour));
+                assert_eq!(state.press(true, false, 100), Some(HotkeyAction::Finish));
+                assert_eq!(state.release(true, 150), None);
+                assert!(!state.wants_cancel());
+                assert!(!state.recording);
+            }
+        }
+    }
+
+    #[test]
+    fn command_stop_clears_a_physical_hold_without_a_second_finish() {
+        let mut state = CaptureState::default();
+        assert_eq!(state.press(true, false, 100), Some(HotkeyAction::Start));
+        assert_eq!(state.cancel(), Some(HotkeyAction::Cancel));
+        assert_eq!(state.release(true, 150), None);
+        assert_eq!(state.press(true, false, 200), Some(HotkeyAction::Start));
+        assert_eq!(state.release(true, 250), Some(HotkeyAction::Finish));
+    }
+
+    #[test]
+    fn command_capture_cancels_without_leaving_the_hook_locked() {
+        let mut state = CaptureState {
+            toggle: true,
+            ..Default::default()
+        };
+        state.start_command(DictationFlavour::Normal);
+        assert!(state.wants_cancel());
+        assert_eq!(state.cancel(), Some(HotkeyAction::Cancel));
+        assert!(!state.wants_cancel());
+        assert_eq!(state.press(false, false, 100), Some(HotkeyAction::Start));
+    }
+
+    #[test]
     fn toggle_mode_starts_on_a_press_and_finishes_on_the_next() {
         for (double_tap_enabled, double_tap_only) in [(false, false), (true, false), (true, true)] {
             let mut state = CaptureState {
@@ -1980,6 +2044,37 @@ mod tests {
         state.claim(DictationFlavour::Normal);
         assert_eq!(state.flavour, DictationFlavour::Normal);
         assert_eq!(state.press(true, false, 250), Some(HotkeyAction::Start));
+        assert!(!state.locked);
+    }
+
+    /// Labs › Second dictation shortcut is its own owner too: the dictation,
+    /// raw, and terminal-paste shortcuts neither claim its capture nor count
+    /// a tap around it toward its double tap.
+    #[test]
+    fn the_second_dictation_flavour_owns_its_capture() {
+        let mut state = CaptureState::default();
+        state.claim(DictationFlavour::Second);
+        assert_eq!(state.press(true, false, 100), Some(HotkeyAction::Start));
+        assert!(state.owned_by_other(DictationFlavour::Normal));
+        assert!(state.owned_by_other(DictationFlavour::Raw));
+        assert!(state.owned_by_other(DictationFlavour::TerminalPaste));
+        for other in [
+            DictationFlavour::Normal,
+            DictationFlavour::Raw,
+            DictationFlavour::TerminalPaste,
+        ] {
+            state.claim(other);
+            assert_eq!(state.flavour, DictationFlavour::Second);
+        }
+        assert_eq!(state.release(true, 150), Some(HotkeyAction::Finish));
+        // Another shortcut's tap right after is not Second's second tap.
+        state.claim(DictationFlavour::Normal);
+        assert_eq!(state.press(true, false, 200), Some(HotkeyAction::Start));
+        assert!(!state.locked);
+        assert_eq!(state.release(true, 250), Some(HotkeyAction::Finish));
+        // Second starts a fresh capture of its own.
+        state.claim(DictationFlavour::Second);
+        assert_eq!(state.press(true, false, 300), Some(HotkeyAction::Start));
         assert!(!state.locked);
     }
 

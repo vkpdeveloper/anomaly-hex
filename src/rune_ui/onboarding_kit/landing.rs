@@ -7,7 +7,7 @@ use crate::desktop::i18n::tr;
 
 use super::super::controls::{KeySize, Paint, PushSize, key_tray, keycap};
 use super::fixture::Language;
-use super::hex_meter::{hex_meter, hex_meter_glowing};
+use super::hex_meter::{hex_logo, hex_meter};
 use super::pill::{FLY, PILL};
 
 /// One display heading style across every onboarding step (`26 pt`, softened
@@ -162,19 +162,22 @@ impl Home {
     }
 }
 
-/// Final `"Hex is ready"` landing: the thin single-hexagon mark arrives from
-/// the top pill with a soft outline glow, followed by staggered copy and a
-/// quiet macOS menu-bar preview showing where Hex lives.
+/// Final `"Hex is ready"` landing: the Hex logo builds outside in (its
+/// outline arriving from the top pill when `matched`), followed by
+/// staggered copy and where Hex lives. `age`: seconds since the page
+/// appeared; `toggle`: the shortcut taps to start rather than holds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ready(
     p: Paint,
     caps: &[String],
+    toggle: bool,
     matched: Option<&str>,
-    now: f64,
+    age: f64,
     reduced: bool,
     motion: Motion,
     home: Home,
 ) -> El {
-    let mark = hex_meter_glowing(p, "meter", 64.0, now, reduced);
+    let mark = hex_logo(p, "meter", 64.0, age, reduced, matched.is_some());
     let mark = match matched {
         Some(id) => el().key(id).matched(id).motion(FLY).child(mark),
         None => motion.staggered(mark.key("mark"), 0.0, 8.0),
@@ -196,7 +199,7 @@ pub(crate) fn ready(
                             .font(title_font(p))
                             .color(p.text()),
                     )
-                    .child(hold_anywhere(p, caps)),
+                    .child(hold_anywhere(p, caps, toggle)),
                 1.0,
                 8.0,
             ),
@@ -204,20 +207,39 @@ pub(crate) fn ready(
         .child(motion.staggered(menubar_hint(p, home), 2.0, 8.0))
 }
 
-/// `"Hold [⌥] anywhere, then talk."`
-pub(crate) fn hold_anywhere(p: Paint, caps: &[String]) -> El {
+/// `"Hold [⌥] anywhere, then talk."`, or `"Tap"` when the shortcut taps.
+pub(crate) fn hold_anywhere(p: Paint, caps: &[String], toggle: bool) -> El {
+    let sentence = if toggle {
+        tr("Tap {keys} anywhere, then talk.")
+    } else {
+        tr("Hold {keys} anywhere, then talk.")
+    };
     row()
         .key("hold-anywhere")
         .gap(8.0)
         .center_y()
-        .child(text(tr("Hold")).key("hold").font(LEAD).color(p.muted()))
-        .child(keys(p, "keys", caps, false))
-        .child(
-            text(tr("anywhere, then talk."))
-                .key("anywhere")
-                .font(LEAD)
-                .color(p.muted()),
-        )
+        .children(around_keys(
+            sentence,
+            keys(p, "keys", caps, false),
+            |words| text(words).font(LEAD).color(p.muted()),
+        ))
+}
+
+/// A translated sentence with the shortcut's keycap `tray` where its
+/// `{keys}` is, so each language puts the keys where its grammar wants
+/// them: the words before (`"before"`), the tray, and the words after
+/// (`"after"`), each side left out when the sentence has none.
+pub(crate) fn around_keys(sentence: &str, tray: El, words: impl Fn(&str) -> El) -> Vec<El> {
+    let (before, after) = sentence.split_once("{keys}").unwrap_or((sentence, ""));
+    let side = |copy: &str, key: &str| {
+        let copy = copy.trim();
+        (!copy.is_empty()).then(|| words(copy).key(key))
+    };
+    side(before, "before")
+        .into_iter()
+        .chain(Some(tray))
+        .chain(side(after, "after"))
+        .collect()
 }
 
 /// Quiet capsule previewing the single-hexagon icon where Hex lives: the

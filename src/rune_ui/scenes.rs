@@ -2,6 +2,7 @@
 //! opens.
 
 use super::*;
+use onboarding_kit::scenes::{FirstRun, first_run, mac_first_run};
 
 /// A named starting state for `--scene`.
 pub(super) type Scene = (&'static str, fn(&mut Ui));
@@ -45,7 +46,7 @@ pub(super) const SCENES: &[Scene] = &[
         *ui = portal_fixture();
         if let Some(view) = &mut ui.view {
             view.listener.running = false;
-            view.listener.status = "Disabled".into();
+            view.listener.status = crate::desktop::host::ListenerStatus::Disabled;
         }
     }),
     ("capturing", |ui| {
@@ -97,6 +98,30 @@ pub(super) const SCENES: &[Scene] = &[
         ui.settings.labs.history_stats = true;
         crate::labs::apply(&ui.settings.labs);
         ui.pane = Pane::History;
+    }),
+    // Labs › Select multiple dictations: two entries selected, with the card
+    // that copies or deletes them.
+    ("history-selection", |ui| {
+        *ui = portal_fixture();
+        ui.history = history::HistoryPane::fixture_selection();
+        ui.settings.labs.history_multi_select = true;
+        ui.pane = Pane::History;
+    }),
+    // Labs › Screenshots' Captures: a shot, a recording with its words, and
+    // an older shot; and before any.
+    #[cfg(hex_capture)]
+    ("captures", |ui| {
+        *ui = portal_fixture();
+        ui.settings.labs.screenshots = true;
+        ui.captures = captures::CapturesPane::fixture();
+        ui.pane = Pane::Captures;
+    }),
+    #[cfg(hex_capture)]
+    ("captures-empty", |ui| {
+        *ui = portal_fixture();
+        ui.settings.labs.screenshots = true;
+        ui.captures = captures::CapturesPane::fixture_empty();
+        ui.pane = Pane::Captures;
     }),
     ("history-empty", |ui| {
         *ui = portal_fixture();
@@ -153,6 +178,19 @@ pub(super) const SCENES: &[Scene] = &[
         *ui = portal_fixture();
         modes::fixture(ui);
         ui.open = Some(Menu::Transformations);
+        ui.pane = Pane::Modes;
+    }),
+    // Labs › Switch model with app: each mode's speech model and language.
+    ("modes-speech", |ui| {
+        *ui = mac_fixture();
+        modes::fixture(ui);
+        ui.settings.labs.app_model_switching = true;
+        ui.settings.dictation_processing.modes[0].speech =
+            Some(crate::app_settings::KeyboardModelChoice {
+                model: TranscriptionModelId::ParakeetV3,
+                language: "es".into(),
+            });
+        ui.picker.installed = Some(vec![TranscriptionModelId::ParakeetV3]);
         ui.pane = Pane::Modes;
     }),
     ("picker", |ui| {
@@ -264,6 +302,11 @@ pub(super) const SCENES: &[Scene] = &[
     }),
     ("onboarding-waiting", |ui| {
         first_run(ui, FirstRun::Downloading, Page::Waiting)
+    }),
+    // "Watch another one": the first sketch, after its second reply.
+    ("onboarding-sketch", |ui| {
+        first_run(ui, FirstRun::Downloading, Page::Waiting);
+        onboarding_kit::sketch_fixture(ui, 11.0);
     }),
     // GNOME and KDE on Wayland: why the desktop asks before the first paste.
     ("onboarding-paste", |ui| {
@@ -387,7 +430,7 @@ pub(super) const SCENES: &[Scene] = &[
         *ui = mac_fixture();
         if let Ok(devices) = &mut ui.microphones {
             devices.system_default = Some("MacBook Pro Microphone".into());
-            devices.bluetooth_default_passed_over = Some("Kit Pods".into());
+            devices.bluetooth_default_passed_over = Some("Alex Pods".into());
         }
         ui.advanced = vec![Pane::General];
     }),
@@ -771,6 +814,13 @@ pub(super) const SCENES: &[Scene] = &[
     ("mac-onboarding-restart", |ui| {
         mac_first_run(ui, onboarding::MacStep::SetupRestart, Page::Permissions)
     }),
+    ("mac-onboarding-waiting", |ui| {
+        mac_first_run(ui, onboarding::MacStep::SetupWaiting, Page::Waiting)
+    }),
+    ("mac-onboarding-sketch", |ui| {
+        mac_first_run(ui, onboarding::MacStep::SetupWaiting, Page::Waiting);
+        onboarding_kit::sketch_fixture(ui, 11.0);
+    }),
     ("mac-onboarding-try", |ui| {
         mac_first_run(ui, onboarding::MacStep::TryIt, Page::Try)
     }),
@@ -780,55 +830,14 @@ pub(super) const SCENES: &[Scene] = &[
     ("mac-onboarding-ready", |ui| {
         mac_first_run(ui, onboarding::MacStep::Done, Page::Ready)
     }),
+    // After the practice's "Use tap to start".
+    ("mac-onboarding-ready-tap", |ui| {
+        *ui = mac_fixture();
+        ui.settings.shortcut_mode = crate::dictation::ShortcutMode::Toggle;
+        onboarding::mac_fixture(ui, onboarding::MacStep::Done);
+        onboarding_kit::live::fixture(ui, Page::Ready);
+    }),
 ];
-
-/// The tour state a Linux first-run scene starts from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FirstRun {
-    /// Nothing installed; the recommended model just started downloading.
-    Fresh,
-    /// The download is a third of the way.
-    Downloading,
-    /// The download stopped.
-    Failed,
-    /// The model is installed.
-    Ready,
-    /// The model is installed, and the desktop asks before Hex's first
-    /// paste (GNOME and KDE on Wayland).
-    PasteAccess,
-}
-
-fn first_run(ui: &mut Ui, state: FirstRun, page: Page) {
-    *ui = portal_fixture();
-    onboarding::fixture(ui, crate::desktop::onboarding::Step::Setup, true);
-    match state {
-        FirstRun::Fresh => onboarding::set_downloaded(ui, 8),
-        FirstRun::Downloading => onboarding::set_downloaded(ui, 31),
-        FirstRun::Failed => {
-            if let Some(view) = &mut ui.view {
-                view.transcription.preparing = None;
-                view.transcription.error = Some("The connection was reset.".into());
-            }
-        }
-        FirstRun::Ready | FirstRun::PasteAccess => {
-            ui.picker.installed = Some(vec![ui.settings.transcription.model]);
-            if let Some(view) = &mut ui.view {
-                view.transcription.preparing = None;
-            }
-        }
-    }
-    if state == FirstRun::PasteAccess {
-        ui.platform.paste = Some(paste_access::PasteAccess::Ask);
-    }
-    onboarding::poll(ui);
-    onboarding_kit::live::fixture(ui, page);
-}
-
-fn mac_first_run(ui: &mut Ui, step: onboarding::MacStep, page: Page) {
-    *ui = mac_fixture();
-    onboarding::mac_fixture(ui, step);
-    onboarding_kit::live::fixture(ui, page);
-}
 
 /// The Annotate pane with captures `enabled`, a 3-day video retention, and
 /// `adjust` applied to what the host shows.
@@ -858,19 +867,19 @@ pub(super) fn mac_fixture() -> Ui {
             policy: crate::app_settings::MeetingPolicy::AlwaysRecord,
         },
         crate::app_settings::MeetingProviderChoice {
-            key: "problems.kitlangton.com".into(),
-            label: "problems.kitlangton.com".into(),
+            key: "example.com".into(),
+            label: "example.com".into(),
             policy: crate::app_settings::MeetingPolicy::NeverOffer,
         },
     ];
     ui.settings.experimental.hex_microphone = true;
     ui.microphones = Ok(crate::audio::InputDevices {
         names: vec![
-            "Kit Pods".into(),
+            "Alex Pods".into(),
             "MacBook Pro Microphone".into(),
             "Studio Display Microphone".into(),
         ],
-        system_default: Some("Kit Pods".into()),
+        system_default: Some("Alex Pods".into()),
         default_is_hex_microphone: false,
         ..Default::default()
     });
@@ -927,7 +936,9 @@ pub(super) fn portal_fixture() -> Ui {
 /// Deterministic settings and service state matching a typical Wayland
 /// desktop with the shortcuts portal.
 pub(super) fn fixture(shortcuts: DesktopShortcuts) -> Ui {
-    crate::desktop::i18n::apply(Some("en"));
+    // English, unless a render names another language to check its copy in.
+    let language = std::env::var("HEX_RENDER_LANGUAGE").unwrap_or_else(|_| "en".into());
+    crate::desktop::i18n::apply(Some(&language));
     let settings = AppSettings {
         dictation_hotkey: HotkeyBinding {
             modifiers: HotkeyModifiers::default(),
@@ -948,7 +959,7 @@ pub(super) fn fixture(shortcuts: DesktopShortcuts) -> Ui {
         listener: DesktopListenerSnapshot {
             running: true,
             warming: false,
-            status: "Enabled".into(),
+            status: crate::desktop::host::ListenerStatus::Enabled,
             warning: None,
             notice: None,
             last_failure: None,

@@ -70,17 +70,15 @@ pub struct OpenCodeSessionTime {
 }
 
 fn executable(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        path.is_file()
+            && fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
-        true
+        path.is_file()
     }
 }
 
@@ -156,6 +154,11 @@ pub const HEAVY_MEDIA: [&str; 5] = [
 pub const MEDIA_PENDING: &str = ".media-pending";
 /// Present in a bundle on this Mac while its heavy media is being copied to the agent host.
 pub const MEDIA_SENDING: &str = ".media-sending";
+/// A capture's light zip copy (Labs › Copy captures as a zip) sits inside the
+/// bundle beside its other files: `<bundle folder name>.slim.zip`.
+pub const SLIM_ZIP_SUFFIX: &str = ".slim.zip";
+/// The name that copy is written under, before its rename.
+pub const SLIM_ZIP_TEMP_SUFFIX: &str = ".slim.zip.tmp";
 
 /// A tar of everything in bundle `name` but its heavy media and this Mac's own markers, to
 /// stdout. The recording's `capture.json` goes with it: it describes `recording.mp4`, which
@@ -174,6 +177,9 @@ fn light_files_tar(parent: &Path, name: &std::ffi::OsStr) -> Command {
             // Retries belong to this Mac; a copied marker would only sit there.
             "--exclude=*/.deliver.json",
             "--exclude=*/.deliver.json.tmp",
+            // A light copy is this Mac's own attachment, not part of the capture.
+            "--exclude=*.slim.zip",
+            "--exclude=*.slim.zip.tmp",
         ])
         .arg("-cf")
         .arg("-")
@@ -1194,6 +1200,8 @@ mod light_files {
             "frames-full/0001.png",
             ".deliver.json",
             ".media-sending",
+            "a.scrawl.slim.zip",
+            "a.scrawl.slim.zip.tmp",
         ] {
             std::fs::write(bundle.join(file), b"x").unwrap();
         }

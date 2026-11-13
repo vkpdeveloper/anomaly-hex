@@ -116,7 +116,10 @@ On Linux                                 // capture.linux
 │   is embedded
 ├── Frames -> the portal's PipeWire stream, libpipewire-0.3 loaded at run
 │   time (`maxFramerate` 60/1); 32-bit RGB as a linear DMA-BUF (niri, GNOME,
-│   KDE) or shared memory
+│   KDE) or shared memory. A stream that ends or fails before its first frame
+│   ends the capture with that reason, keeping no voice; a stream with no frame
+│   yet when the person stops is saved with its voice and marks, the summary
+│   saying the stream sent no frames
 ├── Encoding -> VA-API (libva loaded at run time): each DMA-BUF imported, scaled
 │   to a 2560 px long edge (1920 for a window, exact even sides padded to 16 px
 │   macroblocks and cropped in SPS) and converted on the video engine, H.264
@@ -160,7 +163,8 @@ On Linux                                 // capture.linux
 │   open for the capture
 ├── Words -> one foreground job on the listener's engine (its loaded model)
 ├── Copy -> the summary text through Hex's Linux clipboard (wl-copy or the
-│   X11 clipboard), as the Mac copies it
+│   X11 clipboard), as the Mac copies it; Labs › Copy captures as a zip puts
+│   `<stem>.scrawl.slim.zip` there instead, as a `text/uri-list` file
 ├── Paste -> as the Mac: the contact sheet (image/png), then the summary,
 │   each with Hex's own Ctrl+V (linux/paste). An app that takes no image (a
 │   terminal) gets only the summary, which names the contact sheet; the Mac
@@ -219,7 +223,8 @@ On Windows                               // capture.windows
 ├── While dictating -> General's setting through windows/audio_control, one
 │   suppressor per capture, restored when it ends
 ├── Copy and paste -> the engine's own clipboard and Ctrl+V (handoff): the
-│   contact sheet, then the summary
+│   contact sheet, then the summary; with Labs › Copy captures as a zip, the
+│   copy is the light zip as CF_HDROP instead
 ├── Pane -> no Screen Recording row, no transcriber choice
 └── Gaps: no `hex annotate` (Windows has no control transport yet), no
     iPhone, keys pressed in the app are not logged. Checked only by
@@ -282,7 +287,10 @@ First launch with Annotate on            // capture.import
 ├── Esc while a capture records -> nothing: it reaches the app being recorded,
 │   and Hex's tap lets it through; a dictation under it goes on too (#786)
 ├── The binding is swallowed, never chord evidence for dictation
-└── Hold the dictation shortcut mid-capture -> dictation pastes as usual
+├── Hold the dictation shortcut mid-capture -> dictation pastes as usual
+└── Another app holds Secure Event Input -> ⌥⇧S still starts and stops (a
+    Carbon hotkey while it lasts; Esc doesn't arrive). See dictation.md's
+    Shortcuts Under Secure Input
 
 While a capture records                  // capture.quiet
 ├── Start -> a recording-environment session with General's While dictating
@@ -373,10 +381,11 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 │   │   Capture ⌥⇧S"; Capture or the shortcut records the pointer's display
 │   ├── ✕ closes it; unanswered it folds after 2 min; the shortcut brings it
 │   │   back as it stood
-│   ├── A capture written with no frames (Screen Recording turned off mid-way)
-│   │   -> sent with only the voice and marks, its summary noting "No screen:
-│   │   Screen Recording is off for Hex", no contact sheet; the helper opens
-│   │   once its capsule folds
+│   ├── A capture written with no frames -> sent with only the voice and
+│   │   marks, its summary naming the actual reason the picture is missing
+│   │   (Screen Recording is off for Hex, or the screen source failed or sent
+│   │   no frames), no contact sheet; a permission miss opens the helper once
+│   │   its capsule folds
 │   └── Story: hex://story/prototypes/capture-capsule/permission; goldens
 │       capture-capsule-permission{,-restart,-ready}
 ├── A shown recording that leaves with no outcome (a discard, from a chip or
@@ -427,6 +436,31 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 │   │   runs out, and a rule's send waits (`CaptureCommand::Hold`). Leaving
 │   │   goes on with the time it had left, at least 1 s. A pick already went,
 │   │   so only its Undo waits (`Flow::hold_countdown`)
+│   ├── A capture of Ghostty -> the focused pane's folder and title
+│   │   (Ghostty's AppleScript), and what runs in front in it, read from the
+│   │   process tree under Ghostty (libproc: the shell's tty and foreground
+│   │   group, that process's name, arguments and folder; no new permission).
+│   │   Several panes are told apart by title and folder; still unclear, the
+│   │   process is left out (`look::terminal`)
+│   │   ├── OpenCode's TUI in front -> the session it shows is the top
+│   │   │   suggestion, "open in this terminal": the session titled as the
+│   │   │   terminal's `OC | <title>` (a cut title matches the long one,
+│   │   │   one in the pane's folder first), else the `-s ses_…` it was
+│   │   │   started with. A suggestion like any other, never sent by itself
+│   │   ├── OpenCode's home screen (`OpenCode`) or a plain shell -> the
+│   │   │   folder and the title's words are clues, as before
+│   │   ├── ⇧ (a folder that isn't home or `/`) -> the rule is
+│   │   │   `routing.terminals` keyed on the folder's project root ("hex
+│   │   │   terminal" in the header and the footer's app badge), naming the
+│   │   │   session picked; it covers that folder and everything under it (the
+│   │   │   longest key wins) and sends like a site rule. Ghostty itself stays
+│   │   │   a general app, so no rule ever sends all of Ghostty
+│   │   └── Checks -> `look::tests` (TUI session first, command-line
+│   │       fallback, home screen, home folder, terminal rule),
+│   │       `look::terminal::tests`, `policy` and `config` rule keys, and
+│   │       `capture_host::routing` `an_always_rule_from_a_terminal_keys_on_its_folder`.
+│   │       The process walk was measured once against a real Ghostty; no
+│   │       end-to-end capture of a TUI was run
 ├── A finished capture with nowhere sent yet reads "Copied" from the start
 │   ├── Anything else with somewhere to go (a guess, nothing fitting, no
 │   │   answer) -> macOS: "Copied", then Search with the capture shortcut's
@@ -441,7 +475,7 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 │   │   │   "recent") or nothing; never "guess". No row moves once shown: a
 │   │   │   later answer gives a row its new reason in place and adds new
 │   │   │   sessions last (`routes::keep_rows`, as the router does)
-│   │   ├── Shift down (a guess or rule with a site or app) -> the row under
+│   │   ├── Shift down (a guess or rule with a site, terminal folder or app) -> the row under
 │   │   │   the pointer reads "always" in the accent and the header reads
 │   │   │   "Always send [site] to [row]" (with the pointer off the rows,
 │   │   │   "Always send [site] to…" and no row is marked). In the search the
@@ -765,8 +799,46 @@ hex capture stop                         // capture.stop
     │   language. Check: scrawl-capture keyframes
     │   spoken_cues_count_in_other_languages
     ├── Transcription fails -> logged; the bundle has no words, and the outcome says why
-    ├── Written -> image and text copied to the clipboard (Scrawl's handoff)
+    ├── Written -> image and text copied to the clipboard (Scrawl's handoff),
+    │   or the light zip alone with Labs › Copy captures as a zip (capture.copy)
     └── Sent -> the capture-route thread (capture.route)
+
+Copying a written capture                 // capture.copy; Labs › Copy captures as a zip
+├── Off (default) -> the bundle's summary text on the clipboard, as before:
+│   macOS and Windows through Scrawl's handoff (Windows may also put the
+│   contact sheet PNG when the clipboardImage experiment is on), Linux the
+│   summary text through Hex's paster
+├── On -> crates/capture/src/slim_zip.rs writes <stem>.scrawl.slim.zip inside
+│   the bundle (a temp name, then rename) and puts only that file on the
+│   clipboard: macOS a file URL through handoff::copy_file_to_clipboard (the
+│   screenshot card's file copy uses it too), Windows CF_HDROP (a DROPFILES
+│   header and a double-NUL-terminal UTF-16 path list), Linux text/uri-list
+│   (the X11 `text/uri-list` target, or wl-copy --type text/uri-list)
+│   ├── Contents: the bundle's files recursively, paths relative to its root,
+│   │   STORED (no compression), UTF-8 names, a DOS timestamp
+│   ├── Left out: HEAVY_MEDIA (recording.mp4, recording.mov, audio.wav,
+│   │   frames-full/, contact-sheet-full.png), .media-pending, .media-sending,
+│   │   .deliver.json and its .tmp, and any earlier *.slim.zip or temp file;
+│   │   symlinks are skipped
+│   ├── summary.md inside the zip is generated with the bundle folder as `.`,
+│   │   so its header reads anywhere it is unzipped; the summary.md on disk
+│   │   is unchanged
+│   ├── A failed build or clipboard write is logged, and the capture copies
+│   │   as it did before
+│   ├── Refused rather than written as ZIP64 at 0xFFFF files or 0xFFFFFFFF
+│   │   bytes
+│   ├── A terminal paste gets no text: the clipboard holds only the file
+│   ├── scrawl.json and summary.md still name media the zip leaves out
+│   │   (recording.mp4, audio.wav, frames-full/), because they describe the
+│   │   whole capture
+│   └── The capsule's Paste, Inspect, Send to…, routing, and retention still
+│       see the same bundle; the zip goes when the bundle does
+│       // checks: `cargo test --manifest-path crates/capture/Cargo.toml --lib slim_zip`
+│       // (CRC-32 vector, central-directory read-back, excludes, header path,
+│       // a second copy); a_file_is_one_percent_encoded_uri_list_line (linux/paste.rs);
+│       // copy_capture_zip_is_its_own_switch_and_everywhere (labs.rs)
+│       // not verified: pasting the zip into a real chat or agent app on any OS,
+│       // and the Windows clipboard write (cross-compiled only)
 
 What a send carries                      // capture.send (router opencode::send_bundle)
 ├── One prompt: the summary (transcript, marks, notes) as text, then the
@@ -787,6 +859,8 @@ What a send carries                      // capture.send (router opencode::send_
 │   (the prompt says the folder may still be arriving). Credentials stay remote.
 │   An explicitly configured agentOpencode keeps the CLI and synchronous copy;
 │   without Python 3, the default path falls back to the CLI before any HTTP send
+│       The light-files tar leaves out any `*.slim.zip` and its temp file too:
+│       that copy is this Mac's clipboard attachment, not the capture
 │   └── macOS/Linux reuse the SSH connection for 60 s after its last use,
 │       through an owner-only control socket; Windows opens each connection.
 │       API reads now honor their caller's deadline over SSH too, including
@@ -822,15 +896,19 @@ Where it goes                            // capture.route; capture.routing's aut
 │   NoAnswer | Unreachable. Background refinements preserve an open search and
 │   selected session; a pick or Undo cancels them
 │   ├── Rule -> only a rule the person saved (`routing.sites`, `routing.apps`,
-│   │   a Shift pick's): a three-second countdown begins at Written. A folder
+│   │   `routing.terminals`, a Shift pick's), or a page that names its session (a
+│   │   `<meta name="opencode-session">` tag or an `.opencode-session` file in
+│   │   its folder, found through symlinked folders too), which beats any rule
+│   │   and is sent to that exact session, a subagent's included ("page names
+│   │   it"): a three-second countdown begins at Written. A folder
 │   │   rule shows its repository while its session resolves; it sends once both
 │   │   the countdown and resolution finish. Undo during the countdown posts
 │   │   nothing. The capsule's `Hold` pauses the countdown while the pointer is
 │   │   on it and resumes it with what it had left (at least 1 s; a hold the
 │   │   capsule never ends lapses after 2 min, and the next capture resumes
 │   │   it). Sending -> Sent, or Queued when OpenCode didn't take it. Whatever
-│   │   autoSend, smartRouting, or jevRouting say, a saved rule sends and
-│   │   nothing else sends on its own. smartRouting off decides with the port
+│   │   autoSend, smartRouting, or jevRouting say, a saved rule or signed page
+│   │   sends and nothing else sends on its own. smartRouting off decides with the port
 │   │   ladder, after rules and addresses, on the same look
 │   ├── Guess -> everything else the router would send (Jev's pick, HOME when
 │   │   Jev couldn't tell, a dev server's port, a page's data-session or

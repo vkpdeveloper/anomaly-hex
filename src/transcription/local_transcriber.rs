@@ -9,8 +9,9 @@ use crate::app_settings::TranscriptionDevice;
 use crate::transcription::gguf_session::{OfflineGgufSession, output_truncated};
 use crate::transcription::gpu_health;
 use crate::transcription::models::{
-    TranscriptionSelection, download_with_progress, model_path, validate,
+    TranscriptionModelId, TranscriptionSelection, download_with_progress, model_path, validate,
 };
+use crate::transcription::{pad_gguf_samples, trailing_silence_samples};
 
 /// A word or segment's start and end (ms from the clip's start) and text.
 pub type TimedSpan = (i64, i64, String);
@@ -211,12 +212,6 @@ pub fn transcribe_wav_with_selection(
     selection: &TranscriptionSelection,
 ) -> Result<String> {
     let samples = read_wav_for_parakeet(path)?;
-    LocalTranscriber::load(selection)?.transcribe(&samples)
-}
-
-/// A WAV already in memory, as `hex transcribe` read it.
-pub fn transcribe_wav_bytes(wav: &[u8], selection: &TranscriptionSelection) -> Result<String> {
-    let samples = read_wav(std::io::Cursor::new(wav))?;
     LocalTranscriber::load(selection)?.transcribe(&samples)
 }
 
@@ -459,6 +454,17 @@ impl LocalTranscriber {
         self.stream.as_ref()
     }
 
+    /// Silence a live stream of this model hears before it finalizes, the
+    /// same trailing silence its whole-clip runs get.
+    pub(crate) fn stream_trailing_silence(&self) -> usize {
+        trailing_silence_samples(Some(self.model_id()))
+    }
+
+    /// The model this transcriber was loaded for.
+    pub(crate) fn model_id(&self) -> TranscriptionModelId {
+        self.selection.model
+    }
+
     pub(crate) fn with_stream<R>(
         &mut self,
         stream_options: &transcribe_cpp::StreamOptions,
@@ -489,10 +495,42 @@ impl LocalTranscriber {
             .wrap_err("could not prewarm transcription model")
     }
 
-    /// Transcribes a complete 16 kHz clip, padded as a dictation's clip is.
+    /// Transcribes a complete 16 kHz clip, padded as a dictation's clip is:
+    /// the minimum duration, then Unified English's trailing silence.
     pub(crate) fn transcribe_clip(&mut self, mut samples: Vec<f32>) -> Result<String> {
-        crate::dictation::pad_for_parakeet(&mut samples);
+        pad_gguf_samples(&mut samples, Some(self.model_id()));
         self.transcribe(&samples)
+    }
+
+    /// [`Self::transcribe_clip`] with the model's own segment and word times,
+    /// chunked and padded exactly as the untimed run chunks and pads it, so
+    /// the text matches and each chunk's times sit on the clip's timeline.
+    pub(crate) fn transcribe_timed(
+        &mut self,
+        mut samples: Vec<f32>,
+    ) -> Result<crate::transcription::transcript::Transcript> {
+        pad_gguf_samples(&mut samples, Some(self.model_id()));
+        let options = RunOptions {
+            timestamps: self.finest_timestamps,
+            ..self.options.clone()
+        };
+        match self
+            .session
+            .transcribe_chunked_timed(&samples, &options, self.max_audio_samples)
+        {
+            Err(error) if self.gpu_failed(&error) => {
+                self.recover_on_cpu(&error)?;
+                self.session
+                    .transcribe_chunked_timed(&samples, &options, self.max_audio_samples)
+            }
+            result => result,
+        }
+    }
+
+    /// The finest native timings this model gives, as a timed request needs
+    /// them. Never the level a caller asked for.
+    pub(crate) fn timestamps(&self) -> crate::transcription::transcript::TimestampLevel {
+        crate::transcription::gguf_session::timestamp_level(self.finest_timestamps)
     }
 
     pub fn device_label(&self) -> &str {
@@ -610,6 +648,7 @@ impl LocalTranscriber {
         &mut self,
         samples: &[f32],
     ) -> Result<crate::transcription::transcript::Transcript> {
+        use crate::transcription::gguf_session::{chunk_ranges, sample_offset_ms};
         use crate::transcription::transcript::TranscriptSegment;
         const CHUNK: usize = 30 * 16_000;
         let chunk = self.max_audio_samples.map_or(CHUNK, |max| max.min(CHUNK));
@@ -627,11 +666,11 @@ impl LocalTranscriber {
         };
         let mut timed = crate::transcription::transcript::Transcript::default();
         let mut texts = Vec::new();
-        for (index, part) in samples.chunks(chunk.max(1)).enumerate() {
-            let offset = (index * chunk / 16) as i64;
+        for range in chunk_ranges(samples, chunk) {
+            let offset = sample_offset_ms(range.start);
             let transcript = self
                 .session
-                .run(part, &options)
+                .run(&samples[range], &options)
                 .wrap_err("transcription failed")?;
             let text = transcript.text.trim();
             if !text.is_empty() {

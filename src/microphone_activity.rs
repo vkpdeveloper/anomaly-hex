@@ -40,6 +40,8 @@ mod os;
 mod os;
 #[cfg(not(target_os = "macos"))]
 pub use os::active_microphone_applications;
+#[cfg(target_os = "windows")]
+pub(crate) use os::{EndpointSessions, active_endpoint_sessions, process_canonical_bundle_id};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActiveMicrophoneApplication {
@@ -94,6 +96,7 @@ fn is_browser_id(canonical_bundle_id: Option<&str>) -> bool {
                 | "com.microsoft.edgemac"
                 | "company.thebrowser.Browser"
                 | "com.vivaldi.Vivaldi"
+                | "net.imput.helium"
         )
     )
 }
@@ -235,6 +238,51 @@ pub(crate) fn application_input_devices(canonical_bundle_id: &str) -> Result<Vec
     })
 }
 
+#[cfg(target_os = "macos")]
+/// The process IDs recording from the input device `uid`, read from Core
+/// Audio's process metadata: devices only, never audio samples. Hex's own
+/// process is included; a caller that records excludes itself. A failed
+/// per-process read, including a listed device's UID, fails the whole call,
+/// so a dropped pid is never mistaken for an app that stopped recording.
+pub(crate) fn input_recorders(uid: &str) -> Result<Vec<i32>> {
+    objc2::rc::autoreleasepool(|_| {
+        let process_objects = property_vec::<AudioObjectID>(
+            kAudioObjectSystemObject as AudioObjectID,
+            kAudioHardwarePropertyProcessObjectList,
+        )?;
+        let mut pids = Vec::new();
+        for process_object in process_objects {
+            let recording =
+                property_value::<u32>(process_object, kAudioProcessPropertyIsRunningInput)?;
+            if recording == 0 {
+                continue;
+            }
+            let devices = property_vec_in::<AudioObjectID>(
+                process_object,
+                kAudioProcessPropertyDevices,
+                kAudioObjectPropertyScopeInput,
+            )?;
+            let mut records_uid = false;
+            for device in devices {
+                let device_uid = property_cf_string(device, kAudioDevicePropertyDeviceUID)
+                    .ok_or_else(|| {
+                        eyre!("could not read a recording process's input device uid")
+                    })?;
+                if device_uid == uid {
+                    records_uid = true;
+                    break;
+                }
+            }
+            if !records_uid {
+                continue;
+            }
+            let pid = property_value::<i32>(process_object, kAudioProcessPropertyPID)?;
+            pids.push(pid);
+        }
+        Ok(pids)
+    })
+}
+
 /// Whether the Core Audio process `bundle_id` belongs to the app
 /// `canonical_bundle_id`: the app itself or one of its helpers, such as the
 /// browser helper that holds the microphone for a Meet tab.
@@ -245,7 +293,7 @@ fn is_process_of(bundle_id: &str, canonical_bundle_id: &str) -> bool {
 
 /// Linux and Windows executables (lowercase, without `.exe`) by the bundle
 /// identifier of the same app on macOS.
-const EXECUTABLES: [(&str, &str); 43] = [
+const EXECUTABLES: [(&str, &str); 45] = [
     // Discord and its Canary and PTB builds, on Windows and Linux (the
     // Flatpak runs the same binary).
     ("discord", "com.hnc.Discord"),
@@ -285,6 +333,8 @@ const EXECUTABLES: [(&str, &str); 43] = [
     ("chromium-browser", "com.google.Chrome"),
     ("brave", "com.brave.Browser"),
     ("brave-browser", "com.brave.Browser"),
+    ("helium", "net.imput.helium"),
+    ("helium-browser", "net.imput.helium"),
     ("firefox", "org.mozilla.firefox"),
     ("firefox-bin", "org.mozilla.firefox"),
     ("firefox-esr", "org.mozilla.firefox"),
@@ -357,6 +407,7 @@ fn canonical_bundle_id_for(bundle_id: &str, name: Option<&str>) -> Option<&'stat
         ("com.microsoft.edgemac", "com.microsoft.edgemac"),
         ("company.thebrowser.browser", "company.thebrowser.Browser"),
         ("com.vivaldi.vivaldi", "com.vivaldi.Vivaldi"),
+        ("net.imput.helium", "net.imput.helium"),
     ]
     .iter()
     .find_map(|(prefix, canonical)| {
@@ -390,6 +441,7 @@ pub(crate) fn canonical_application_name(canonical_bundle_id: &str) -> Option<&'
         "com.microsoft.edgemac" => Some("Microsoft Edge"),
         "company.thebrowser.Browser" => Some("Arc"),
         "com.vivaldi.Vivaldi" => Some("Vivaldi"),
+        "net.imput.helium" => Some("Helium"),
         _ => None,
     }
 }
@@ -950,6 +1002,10 @@ mod tests {
             "com.google.Chrome.helper.Renderer",
             "com.google.Chrome"
         ));
+        assert!(is_process_of(
+            "net.imput.helium.helper.Renderer",
+            "net.imput.helium"
+        ));
         assert!(is_process_of("com.google.Chrome", "com.google.Chrome"));
         assert!(!is_process_of(
             "com.google.Chrome.helper",
@@ -966,6 +1022,7 @@ mod tests {
     fn browser_bundles_include_helpers() {
         assert!(browser_bundle("com.brave.Browser.helper", None));
         assert!(browser_bundle("com.google.Chrome.helper", None));
+        assert!(browser_bundle("net.imput.helium.helper", None));
         assert!(browser_bundle(
             "com.apple.WebKit.GPU",
             Some("Safari Graphics and Media")
@@ -1038,6 +1095,19 @@ mod tests {
                 true,
             ),
             ("company.thebrowser.dia", "Dia", None, false),
+            ("net.imput.helium", "Helium", Some("net.imput.helium"), true),
+            (
+                "net.imput.helium.helper",
+                "Helium Helper",
+                Some("net.imput.helium"),
+                true,
+            ),
+            (
+                "net.imput.helium.helper.Renderer",
+                "Helium Helper (Renderer)",
+                Some("net.imput.helium"),
+                true,
+            ),
             ("anomaly.hex", "Hex", None, false),
             ("zoom", "Zoom", Some("us.zoom.xos"), false),
             (
@@ -1062,6 +1132,9 @@ mod tests {
             ),
             ("vivaldi-bin", "Vivaldi", Some("com.vivaldi.Vivaldi"), true),
             ("vivaldi.exe", "Vivaldi", Some("com.vivaldi.Vivaldi"), true),
+            ("helium", "Helium", Some("net.imput.helium"), true),
+            ("helium-browser", "Helium", Some("net.imput.helium"), true),
+            ("helium.exe", "Helium", Some("net.imput.helium"), true),
             (
                 "com.vivaldi.Vivaldi.helper",
                 "Vivaldi Helper",

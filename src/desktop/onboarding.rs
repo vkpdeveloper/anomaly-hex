@@ -419,6 +419,15 @@ impl Flow {
         let was_ready = self.setup_ready();
         self.microphone_row |= status.microphone != PermissionState::Ready;
         self.status = status;
+        // A grant answers what was asked, as the host's own record of asks
+        // does: a permission switched off again is asked for afresh.
+        if status.microphone == PermissionState::Ready {
+            self.asked[0] = false;
+            self.microphone_guide = false;
+        }
+        if status.accessibility == PermissionState::Ready {
+            self.asked[1] = false;
+        }
         if !grantable(self.status.accessibility) {
             self.accessibility_stale = false;
         }
@@ -722,6 +731,48 @@ impl StalePermissionTracker {
     }
 }
 
+/// How long after a grant System Settings may take to come back to the
+/// front (an authentication sheet closing) before Hex stops waiting to
+/// return.
+pub const RETURN_FROM_SETTINGS_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Brings Hex back after the person grants an asked permission in System
+/// Settings, so the tour is in front again. Hex returns only while System
+/// Settings is still the frontmost app: someone who moved on to another app
+/// keeps it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReturnFromSettings {
+    granted_at: Option<std::time::Instant>,
+}
+
+impl ReturnFromSettings {
+    pub fn note_granted(&mut self, now: std::time::Instant) {
+        self.granted_at = Some(now);
+    }
+
+    pub const fn is_pending(&self) -> bool {
+        self.granted_at.is_some()
+    }
+
+    /// Whether to bring Hex forward now.
+    pub fn poll(&mut self, now: std::time::Instant, focus: SettingsFocus) -> bool {
+        let Some(granted_at) = self.granted_at else {
+            return false;
+        };
+        if focus.hex_active
+            || now.saturating_duration_since(granted_at) > RETURN_FROM_SETTINGS_WINDOW
+        {
+            self.granted_at = None;
+            return false;
+        }
+        if focus.settings_frontmost {
+            self.granted_at = None;
+            return true;
+        }
+        false
+    }
+}
+
 fn next_practice(current: Practice, observation: Observation) -> Practice {
     match observation {
         Observation::Started => Practice::Listening,
@@ -808,7 +859,8 @@ fn relaunched_at_consumed(marker: &Path) -> Option<u64> {
 }
 
 /// Remembers the tour's step, so a tour quit part-way (macOS's own "Quit &
-/// Reopen" after a grant, or ⌘Q) resumes there.
+/// Reopen" after a grant, or ⌘Q) resumes there. The step is the one record
+/// of an unfinished tour: [`record_completion`] replaces it.
 pub fn record_step(step: Step) {
     let result =
         crate::app_paths::support_dir().and_then(|directory| record_step_at(&directory, step));
@@ -861,7 +913,10 @@ pub(crate) fn completion_recorded_at(directory: &Path) -> bool {
     if directory.join("onboarding-complete").is_file() {
         return true;
     }
-    if directory.join("onboarding-pending").is_file() || !directory.join("settings.json").is_file()
+    // A saved step is a tour quit part-way, never settings from before it.
+    if directory.join("onboarding-pending").is_file()
+        || directory.join("onboarding-step").is_file()
+        || !directory.join("settings.json").is_file()
     {
         return false;
     }
@@ -955,6 +1010,10 @@ pub(crate) fn record_completion_at(directory: &Path) -> color_eyre::Result<()> {
     let temporary = directory.join(".onboarding-complete.tmp");
     write_owner_only_marker(&temporary, true)?;
     fs::rename(temporary, destination)?;
+    match fs::remove_file(directory.join("onboarding-step")) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
     crate::durable::sync_directory(directory)?;
     Ok(())
 }
@@ -972,9 +1031,16 @@ fn write_owner_only_marker(path: &Path, truncate: bool) -> color_eyre::Result<()
 }
 
 pub fn status(selection: &TranscriptionSelection) -> SetupStatus {
-    let transcription_model = crate::transcription::models::validate(selection)
-        .is_ok_and(|model| crate::transcription::models::is_installed(model, &selection.language));
-    status_with_transcription_model(transcription_model)
+    status_with_transcription_model(model_ready(selection))
+}
+
+/// Whether the model the listener runs for the saved `selection` is
+/// installed: the saved one, or the fallback in place of an import that
+/// can't run, so a lost import never holds dictation for setup.
+pub fn model_ready(selection: &TranscriptionSelection) -> bool {
+    let selection = crate::transcription::custom_models::runnable(selection);
+    crate::transcription::models::validate(&selection)
+        .is_ok_and(|model| crate::transcription::models::is_installed(model, &selection.language))
 }
 
 #[cfg(target_os = "macos")]
@@ -1128,7 +1194,7 @@ pub fn open_env_arguments(
 }
 
 #[cfg(target_os = "macos")]
-fn microphone_state() -> PermissionState {
+pub(crate) fn microphone_state() -> PermissionState {
     // A WAV fixture stands in for the microphone, which is never opened.
     if crate::audio::uses_fixture() {
         return PermissionState::Ready;
@@ -1138,7 +1204,15 @@ fn microphone_state() -> PermissionState {
     };
     let status: isize =
         unsafe { msg_send![class, authorizationStatusForMediaType: &*AVMediaTypeAudio] };
-    microphone_authorization_state(status)
+    if status == 3 {
+        return PermissionState::Ready;
+    }
+    microphone_authorization_state(status, unsafe { hex_microphone_preflight() })
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn hex_microphone_preflight() -> i32;
 }
 
 /// Accessibility reaches a running Hex: `AXIsProcessTrusted` follows the
@@ -1156,11 +1230,16 @@ const fn accessibility_state(post_event_preflight: bool, trusted: bool) -> Permi
     }
 }
 
+/// The microphone from AVFoundation's `status` and TCC's own `preflight`
+/// (0 granted, 1 refused, 2 not asked, -1 unavailable). AVFoundation keeps
+/// the answer it read first until Hex itself asks, so a grant or refusal
+/// that came another way shows only in the preflight.
 #[cfg(any(target_os = "macos", test))]
-const fn microphone_authorization_state(status: isize) -> PermissionState {
-    match status {
-        0 => PermissionState::NeedsRequest,
-        3 => PermissionState::Ready,
+const fn microphone_authorization_state(status: isize, preflight: i32) -> PermissionState {
+    match (status, preflight) {
+        (3, _) | (_, 0) => PermissionState::Ready,
+        (0, 1) => PermissionState::NeedsSettings,
+        (0, _) => PermissionState::NeedsRequest,
         _ => PermissionState::NeedsSettings,
     }
 }
@@ -1186,6 +1265,43 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_import_waits_only_for_a_downloaded_fallback_and_stays_saved() {
+        use crate::transcription::custom_models::{self, CustomModelId, FallbackReason};
+        use crate::transcription::models::{self, ModelRuntime, TranscriptionModelId};
+        let directory =
+            std::env::temp_dir().join(format!("hex-lost-import-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        models::set_test_models_dir(Some(directory.clone()));
+        let id = CustomModelId::parse(&format!("custom-{}", "0f".repeat(8))).unwrap();
+        let saved = TranscriptionSelection {
+            model: TranscriptionModelId::Custom(id),
+            language: "de".into(),
+        };
+        let original = saved.clone();
+        assert_eq!(
+            custom_models::fallback_reason(&saved),
+            Some(FallbackReason::Missing)
+        );
+        // Nothing downloaded: setup waits to offer the recommendation.
+        assert!(!model_ready(&saved));
+        let fallback = custom_models::fallback();
+        let ModelRuntime::Gguf(artifact) = models::definition(fallback.model).runtime else {
+            panic!("the fallback is a download");
+        };
+        fs::File::create(directory.join(artifact.filename))
+            .unwrap()
+            .set_len(artifact.bytes)
+            .unwrap();
+        assert!(model_ready(&saved));
+        assert!(status(&saved).transcription_model);
+        assert_eq!(custom_models::runnable(&saved), fallback);
+        assert_eq!(saved, original);
+        models::set_test_models_dir(None);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -1242,14 +1358,30 @@ mod tests {
     #[test]
     fn denied_microphone_permission_requires_system_settings() {
         assert_eq!(
-            microphone_authorization_state(0),
+            microphone_authorization_state(0, 2),
             PermissionState::NeedsRequest
         );
         assert_eq!(
-            microphone_authorization_state(2),
+            microphone_authorization_state(0, -1),
+            PermissionState::NeedsRequest
+        );
+        assert_eq!(
+            microphone_authorization_state(2, 1),
             PermissionState::NeedsSettings
         );
-        assert_eq!(microphone_authorization_state(3), PermissionState::Ready);
+        assert_eq!(microphone_authorization_state(3, 2), PermissionState::Ready);
+    }
+
+    #[test]
+    fn a_microphone_answer_avfoundation_has_not_seen_reads_from_tcc() {
+        // macOS prompted for CoreAudio, or the switch moved in System
+        // Settings, while AVFoundation still holds its first answer.
+        assert_eq!(microphone_authorization_state(0, 0), PermissionState::Ready);
+        assert_eq!(microphone_authorization_state(2, 0), PermissionState::Ready);
+        assert_eq!(
+            microphone_authorization_state(0, 1),
+            PermissionState::NeedsSettings
+        );
     }
 
     #[test]
@@ -1338,6 +1470,31 @@ mod tests {
         assert_eq!(
             fs::read(directory.join("models/model.gguf")).unwrap(),
             b"weights"
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_tour_quit_part_way_stays_unfinished_until_it_finishes() {
+        let directory =
+            std::env::temp_dir().join(format!("hex-onboarding-unfinished-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        // Settings the tour saved, with no pending marker (Linux and Windows).
+        fs::write(directory.join("settings.json"), b"{}").unwrap();
+        record_step_at(&directory, Step::TryIt).unwrap();
+
+        assert!(!completion_recorded_at(&directory));
+        assert!(!directory.join("onboarding-complete").exists());
+        assert_eq!(saved_step_at(&directory), Some(Step::TryIt));
+
+        record_completion_at(&directory).unwrap();
+        assert!(completion_recorded_at(&directory));
+        assert_eq!(
+            saved_step_at(&directory),
+            None,
+            "completion replaces the step"
         );
 
         fs::remove_dir_all(directory).unwrap();
@@ -1586,6 +1743,39 @@ mod tests {
             flow.on(Input::Grant(SetupItem::Model)),
             Effect::None,
             "a running download is not restarted"
+        );
+    }
+
+    #[test]
+    fn a_permission_switched_off_after_its_grant_is_asked_for_afresh() {
+        let mut flow = Flow::new(Step::Setup, fresh_status(), true, true);
+        let denied = SetupStatus {
+            microphone: PermissionState::NeedsSettings,
+            ..fresh_status()
+        };
+        flow.on(Input::Status(denied, ModelProgress::default()));
+        flow.on(Input::Grant(SetupItem::Microphone));
+        flow.on(Input::Grant(SetupItem::Accessibility));
+        assert_eq!(
+            statuses(&flow),
+            [
+                (SetupItem::Microphone, ItemStatus::Waiting, false),
+                (SetupItem::Accessibility, ItemStatus::Waiting, false),
+            ]
+        );
+        let granted = SetupStatus {
+            transcription_model: false,
+            ..ready_status()
+        };
+        flow.on(Input::Status(granted, ModelProgress::default()));
+        flow.on(Input::Status(denied, ModelProgress::default()));
+        assert_eq!(
+            statuses(&flow),
+            [
+                (SetupItem::Microphone, ItemStatus::Denied, true),
+                (SetupItem::Accessibility, ItemStatus::Todo, false),
+            ],
+            "not still waiting on the earlier ask"
         );
     }
 
@@ -2118,6 +2308,51 @@ mod tests {
         tracker.note_asked(t0);
         assert!(!tracker.poll(t0 + Duration::from_secs(5), true, back_in_hex));
         assert!(tracker.poll(t0 + STALE_SIDE_BY_SIDE_DELAY, true, back_in_hex));
+    }
+
+    #[test]
+    fn hex_returns_after_a_grant_only_while_system_settings_is_in_front() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let in_settings = SettingsFocus {
+            settings_open: true,
+            settings_frontmost: true,
+            hex_active: false,
+        };
+        let sheet_closing = SettingsFocus {
+            settings_open: true,
+            settings_frontmost: false,
+            hex_active: false,
+        };
+        let back_in_hex = SettingsFocus {
+            settings_open: true,
+            settings_frontmost: false,
+            hex_active: true,
+        };
+        let mut returning = ReturnFromSettings::default();
+        assert!(!returning.poll(t0, in_settings));
+
+        // Granted with System Settings in front: Hex comes back once.
+        returning.note_granted(t0);
+        assert!(returning.poll(t0, in_settings));
+        assert!(!returning.is_pending());
+        assert!(!returning.poll(t0 + Duration::from_millis(500), in_settings));
+
+        // An authentication sheet still closing: wait for Settings.
+        returning.note_granted(t0);
+        assert!(!returning.poll(t0, sheet_closing));
+        assert!(returning.poll(t0 + Duration::from_secs(1), in_settings));
+
+        // Another app in front (or the sheet never clearing): Hex stays put.
+        returning.note_granted(t0);
+        assert!(!returning.poll(t0 + Duration::from_secs(1), sheet_closing));
+        assert!(!returning.poll(t0 + Duration::from_secs(4), in_settings));
+        assert!(!returning.is_pending());
+
+        // Already back in Hex: nothing to do.
+        returning.note_granted(t0);
+        assert!(!returning.poll(t0, back_in_hex));
+        assert!(!returning.is_pending());
     }
 
     #[test]
