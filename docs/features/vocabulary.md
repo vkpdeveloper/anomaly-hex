@@ -12,8 +12,6 @@ General › Vocabulary   // vocabulary.settings; after Language
 │   -> muted note on the row and under the sheet's description: "SenseVoice
 │   Small doesn't use these terms; rewriting and search still do"; Parakeet,
 │   Underdog Bark, Whisper, and Qwen3-ASR (QwenCleo too) show none
-├── Parakeet-based model with Labs › Vocabulary biasing off -> the sheet says
-│   transcription uses the terms only with it on
 ├── Selected model reads fewer terms than the list holds -> muted line under
 │   the sheet's description: "This model reads the first 38 of 52 terms"
 │   (dictation::vocabulary::terms_read: Parakeet's 64-term cap or the
@@ -27,6 +25,24 @@ General › Vocabulary   // vocabulary.settings; after Language
 ├── Add term -> New empty row, focused; the list glides to its end and the row
 │   rises 8 pt as it fades in (SETTLE, bounce 0; Reduce Motion: fade only);
 │   saved once the term has text
+├── Labs › Vocabulary files (off by default, every OS) -> Import… and Export… join
+│   the footer beside Add term; off, the sheet is exactly as before (labs.md)
+│   ├── Import… -> one CSV or TXT regular file (at most 1 MiB, UTF-8), Teams' custom
+│   │   dictionary columns: term, then comma-separated "sounds like" spellings; a "Term"
+│   │   header, blank rows, and further columns are ignored. A folder, device, or FIFO, a
+│   │   larger or non-UTF-8 file, and an unclosed quote are refused with that reason.
+│   │   Existing terms keep their entry and gain new spellings; new terms append in file
+│   │   order; a term this file added never also counts as updated and a term counts as
+│   │   updated once. Skipped counts each refused term once (over 64 characters, or a new
+│   │   term past 500) and each dropped spelling (over 64 characters, or past the 16th).
+│   │   The merged rows save through the sheet's own draft path, then "Added 12 terms",
+│   │   "Added 3 terms, updated 2", "Updated 2 terms, skipped 1", "No new terms in that
+│   │   file" only when nothing changed, "No terms found in that file", or the error; a
+│   │   failed save says so instead of reporting success
+│   └── Export… -> a save dialog named hex-vocabulary.csv; appends .csv only when the
+│       name has no extension and <name>.csv doesn't exist, writes the four-column
+│       header then term, spellings joined by ", ", and two empty cells, quoting what
+│       needs it, atomically; "Exported N terms"
 ├── Edits -> Debounced drafts, like Modes' corrections -> settings.json `vocabulary`
 ├── × -> Removes that row at any click speed or focus; rows keep an identity,
 │   so a late edit, focus change, or second × for a removed row touches nothing
@@ -38,11 +54,14 @@ General › Vocabulary   // vocabulary.settings; after Language
     (settings.json `vocabulary_boost`)  // vocabulary.boost
 
 Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too)  // vocabulary.transcription; transcription::gguf_session::with_vocabulary
-├── Only with Labs › Vocabulary biasing on (`labs.vocabulary_biasing`, off by
-│   default; labs.md) -> off: no run takes the list; the sheet says so, and
-│   rewriting and search still use it
+├── Parakeet takes the list unless the boost is Off (labs.md)
 ├── Every run and live stream reads the list and the boost at its start:
 │   dictation, meetings, captures, the local API
+│   └── `hex transcribe` with no Hex running starts `hex service --embedded`,
+│       as does the TypeScript SDK's direct child on every start; it reads
+│       the saved vocabulary, boost, Labs switches, and speech engine once
+│       when it starts (AppSettings::apply_for_embedded_service); a saved
+│       change reaches a running child only after it restarts
 ├── First 64 terms (the engine's cap) and their spellings; empty or Off -> unchanged
 ├── Whole-clip run on an RNN-T model (Parakeet unified): meetings, captures,
 │   the local API, dictation that falls back to the whole clip
@@ -69,7 +88,7 @@ Transcription (Parakeet: RNN-T and TDT, Underdog Bark and Nemotron 3.5 ASR too) 
 │   ("Kip" -> Kit)
 └── SenseVoice, Cohere, GigaAM, Granite, Apple Speech -> no vocabulary in transcription
 
-Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
+Context prompt (Whisper incl. ivrit.ai, NB-Whisper and KB-Whisper, Qwen3-ASR, QwenCleo)  // vocabulary.prompt-transcription; transcription::gguf_session::with_vocabulary
 ├── Always on (not Labs): replaced the per-model Recognition hints box (#129)
 ├── Every whole-clip run reads the list at its start: dictation, meetings,
 │   captures, the local API; live streams run without it
@@ -85,7 +104,7 @@ Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // 
 │   both models return it on silence or noise (README.md#get-ready)
 └── "Sounds like" spellings are not sent; rewriting and search use them
 
-Screen vocabulary (Labs › Screen vocabulary, macOS)  // vocabulary.screen
+Words on screen (Labs › Words on screen, macOS)  // vocabulary.screen
 ├── Off by default; off, or for a model that ignores vocabulary, no
 │   Accessibility read happens for a dictation
 ├── On, as a capture becomes real: one background read of the focused
@@ -100,8 +119,8 @@ Screen vocabulary (Labs › Screen vocabulary, macOS)  // vocabulary.screen
 ├── Joins that dictation after the mode's terms and the shared list, inside
 │   the same 64-term/character budgets; a model with VocabularyUse::None gets
 │   nothing
-├── Parakeet reads them only with Labs › Vocabulary biasing on and a boost
-│   other than Off; Whisper and Qwen3-ASR read them as a prompt
+├── Parakeet reads them only with a boost other than Off; Whisper and
+│   Qwen3-ASR read them as a prompt
 ├── A capture with terms for a model that reads them uses its whole-clip run
 │   rather than a live stream's text: a stream fixes its vocabulary when it
 │   starts, so the text arrives after release with a little more latency
@@ -114,10 +133,46 @@ Screen vocabulary (Labs › Screen vocabulary, macOS)  // vocabulary.screen
     // acronyms, long all-caps words, stoplist and log levels, hashes, ordinals,
     // times, units, random tokens, the 24-term cap, dedup against the saved
     // list), a_captures_screen_terms_come_last_and_leave_with_it and
-    // parakeet_terms_need_the_biasing_lab_and_a_boost in vocabulary.rs,
+    // parakeet_terms_need_a_boost in vocabulary.rs,
     // a_cancelled_capture_leaves_no_stale_screen_terms and
     // one_screen_read_runs_at_a_time in screen_vocabulary.rs; not observed on
     // a real Mac
+
+Learn from corrections (Labs › Learn from corrections, macOS)  // vocabulary.learn
+├── Off by default; after a dictation is pasted, Hex watches only the field it
+│   pasted into, reading it about every 100 ms for up to 5 minutes
+├── The first read retries for up to a second until the app shows the paste;
+│   it compares what Hex actually inserted, never the transcript
+├── It stops on a focus change, an empty or vanished field, a newer paste, or
+│   the timeout; the lab turned off stops it too and learns nothing, and a
+│   read a newer paste overtook is discarded
+├── Only a real Paste starts a watch: a copy, a Service or Print output, a
+│   YOLO send, and Hex's own window start none
+├── It compares the final text with what it pasted and adds up to 5 name-like
+│   corrected words to Vocabulary: capitalized mid-sentence, all caps, mixed
+│   case, letters with digits, and short phrases of those. A word after a
+│   line break, colon, or sentence end is never name-like; neither is I'm
+├── Password fields, fields over 20,000 characters, text over 400 words,
+│   rewrites (more than 3 inserted words and over 60% changed), plain
+│   lowercase words, and terms already in Vocabulary are skipped
+├── A learned term is saved like `hex vocabulary add` (vocabulary.add on the
+│   saved list, then one settings update that applies it, and an open window
+│   adopts it; vocabulary.cli)
+└── Nothing leaves the Mac; the one logged event holds the term count only
+    // checks: learn_from_corrections_is_its_own_switch_and_macos_only in
+    // labs.rs; a_tick_stops_in_the_order_the_watch_reads,
+    // a_reading_a_newer_paste_overtook_is_discarded,
+    // only_the_lab_turning_off_discards_a_correction,
+    // only_a_paste_the_person_can_still_fix_is_watched,
+    // learned_terms_join_the_list_the_way_hex_vocabulary_add_does, and
+    // a_full_list_keeps_its_terms_and_takes_no_more in correction_watch.rs;
+    // learns_a_short_correction_past_its_sixty_percent,
+    // ignores_a_long_rewrite, the_pasted_text_matches_only_on_word_boundaries,
+    // a_punctuation_edge_needs_no_word_boundary, an_im_word_is_never_a_name,
+    // a_name_with_an_apostrophe_is_learned, a_line_break_starts_a_sentence,
+    // a_colon_starts_a_sentence, and
+    // a_closing_quote_after_a_period_still_starts_a_sentence in
+    // correction_terms.rs; not observed on a real Mac
 
 Recognition hints, folded in                // vocabulary.hints
 ├── Loading settings.json -> `recognition_hints` of the selected model and the
@@ -211,13 +266,24 @@ Boost strengths (nats per term piece)    // dictation/vocabulary.rs: VocabularyB
 ```
 
 Sources: [dictation/vocabulary.rs](../../src/dictation/vocabulary.rs),
+[dictation/vocabulary/csv.rs](../../src/dictation/vocabulary/csv.rs),
 [rune_ui/vocabulary.rs](../../src/rune_ui/vocabulary.rs),
 [meeting/query.rs](../../src/meeting/query.rs) (`vocabulary_aliases`,
 `sounds_alike`), [dictation/processor.rs](../../src/dictation/processor.rs)
 (`vocabulary_lines`), and [control.rs](../../src/control.rs)
 (`edit_vocabulary`).
 
-Checks: `dictation::vocabulary::tests` (dedupe and merge, clamping, case-insensitive removal,
+Checks: `dictation::vocabulary::csv::tests` (header skip, quotes and embedded
+newlines, an unclosed quote, BOM, CRLF, blank rows, merge with existing terms
+and spellings, duplicate terms, dropped spellings, the caps, a folder, and an
+export→import round trip), `merge_status` and the sheet's import
+and export through its draft path in [rune_ui/vocabulary.rs](../../src/rune_ui/vocabulary.rs),
+`the_vocabulary_sheet_offers_files_only_with_its_lab_on` in
+[rune_ui/tests.rs](../../src/rune_ui/tests.rs), and
+`vocabulary_files_is_its_own_switch_and_everywhere` in
+[labs.rs](../../src/labs.rs). The native open and save dialogs were not opened
+in a desktop session.
+`dictation::vocabulary::tests` (dedupe and merge, clamping, case-insensitive removal,
 comma splitting, reading the saved list without settings, the
 first 64 terms and their spellings reaching transcription, the prompt bounded
 by characters alone (`the_prompt_keeps_the_first_terms_that_fit`), the
@@ -225,6 +291,12 @@ sheet's count matching both (`terms_read_counts_exactly_what_transcription_takes
 folding hints, boost names);
 `loading_folds_saved_recognition_hints_into_the_vocabulary_once` in
 [app_settings.rs](../../src/app_settings.rs);
+`the_embedded_service_reads_the_saved_vocabulary` in
+[app_settings/persistence/tests.rs](../../src/app_settings/persistence/tests.rs)
+reads the saved list, boost, and Labs switches through the no-write path and
+checks the bias they produce; publishing them into the embedded service's
+globals, and `run_service` calling that, have no automated check, so only a
+separate `hex service --embedded` process shows them;
 `recognition_hints_alias_the_vocabulary` in
 [control/settings.rs](../../src/control/settings.rs);
 `whisper_and_qwen3_asr_read_the_vocabulary_as_a_prompt_and_parakeet_biases` in
@@ -249,8 +321,11 @@ trip in control.rs; `vocabulary_lists_terms_with_their_spellings` in
 `a_reload_retires_the_old_rows` in
 [rune_ui/vocabulary.rs](../../src/rune_ui/vocabulary.rs);
 `the_vocabulary_row_opens_its_sheet`,
-`add_term_scrolls_the_new_row_into_view`, and
-`the_vocabulary_row_says_when_the_model_ignores_the_list` in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
+`add_term_scrolls_the_new_row_into_view`,
+`the_vocabulary_row_says_when_the_model_ignores_the_list`, and
+`an_outside_press_on_a_settle_frame_still_exits_the_vocabulary_sheet` (an
+outside press on the first frame after the window comes back still plays the
+sheet's exit) in [rune_ui/tests.rs](../../src/rune_ui/tests.rs);
 `only_parakeet_based_models_use_the_vocabulary` in
 [transcription/models.rs](../../src/transcription/models.rs); transcribe.cpp's
 `tests/parakeet_vocabulary_unit.cpp` (fork branch

@@ -50,6 +50,14 @@ let
       wayland
       libxkbcommon
       fontconfig
+      # The X11 window and its XWayland overlay dlopen their libraries, so no
+      # DT_NEEDED entry finds them: x11rb's `dl-libxcb` loads libxcb.so.1, and
+      # winit's X11 backend loads libX11.so.6, libXcursor.so.1, libXi.so.6 and
+      # libX11-xcb.so.1 (in libx11), plus libxkbcommon-x11 (in libxkbcommon).
+      libxcb
+      libx11
+      libxcursor
+      libxi
       # Linux Annotate dlopens libpipewire-0.3, libva and libva-drm. libva finds VA-API
       # drivers through its built-in /run/opengl-driver path or LIBVA_DRIVERS_PATH.
       pipewire
@@ -79,14 +87,19 @@ let
       hash = "sha256-MJJiug3LfbKsuHcL2+LJk95+j5kk/MWzb5ihdBlHLmE=";
     };
     "rune-0.0.1" = {
-      rev = "d6715352fb0cb3ab3551853c3ba92a7995a9bce5";
-      hash = "sha256-lENb2aPCQcUryfKFLXLt90WvQfeW4+0oUzqWne+AMEI=";
+      rev = "c853811c8e0e60a632eaa2e72992f871225737ef";
+      hash = "sha256-0yJb+UFu47T2pgDIi9B9IAxbCWNu0/OMVG5uGNF6lyI=";
     };
     "transcribe-cpp-sys-0.4.1" = {
-      rev = "bcb639faa4c74a2300ba19e30360cb2355b1663a";
-      hash = "sha256-1VztJ0VhPTjAuk4J0NT9KapDOqplegpHOqHsTpfHXWc=";
+      rev = "60bed89dab84f7c1fddc3a17ad7fa8a27ddfba19";
+      hash = "sha256-zyvuCkvze16s9ve2FI2Q6m80h61FuBwdD4HVAc4EnUA=";
     };
   };
+  # The vendor tree names every Git crate `<name>-<version>`, so the rune
+  # package's directory follows its key in the table above.
+  runeVendor = builtins.head (
+    builtins.filter (name: lib.hasPrefix "rune-" name) (builtins.attrNames cargoGitDependencies)
+  );
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "hex";
@@ -106,16 +119,103 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ../resources
       ../assets
       ../packaging
+      # The Annotate skill the CLI reads into its instructions.
+      ../skills
+      # The iOS cleaner's instructions, compared by a test.
+      ../ios/HEXMobile/TranscriptCleanup.swift
+      # The Labs registry's published copy: a Rust test compares it to the registry.
+      ../site/src/labs.json
       ../macos/HexMicrophoneDriver/Info.plist
       # Built in: a 2.3.1 install moves itself into this installer's layout.
       ../.github/release/install-linux.sh
     ];
   };
 
-  cargoLock = {
-    lockFile = ../Cargo.lock;
-    outputHashes = builtins.mapAttrs (_: dependency: dependency.hash) cargoGitDependencies;
-  };
+  # nixpkgs' vendor directory keeps every crate in one place, keyed by name and
+  # version, so it cannot hold two copies from different sources. Rune's
+  # `vendor/tiny-skia-path` is a path dependency inside Rune (a Git crate here)
+  # at 0.11.4, the same name and version as resvg's from crates.io, so this
+  # vendors crates.io's crates in `registry/` and every Git source's crates in
+  # `git/`, and points each source at its own directory: Cargo tells them apart
+  # by source. The script is importCargoLock's, rewritten; each fragment below
+  # must still be in it (the guard says which is gone), so a nixpkgs change
+  # fails loudly here instead of vendoring something wrong.
+  cargoDeps =
+    (rustPlatform.importCargoLock {
+      lockFile = ../Cargo.lock;
+      outputHashes = builtins.mapAttrs (_: dependency: dependency.hash) cargoGitDependencies;
+    }).overrideAttrs
+      (old: {
+        buildCommand =
+          let
+            # importCargoLock's script, and what this override turns it into.
+            fragments = [
+              {
+                what = "the single vendored-sources config";
+                from = ''
+                  [source.crates-io]
+                  replace-with = "vendored-sources"
+
+                  [source.vendored-sources]
+                  directory = "cargo-vendor-dir"'';
+                to = ''
+                  [source.crates-io]
+                  replace-with = "registry-vendor-dir"
+
+                  [source.registry-vendor-dir]
+                  directory = "cargo-vendor-dir/registry"
+
+                  [source.git-vendor-dir]
+                  directory = "cargo-vendor-dir/git"'';
+              }
+              {
+                what = "the one-directory crate link";
+                from = ''ln -s "$crate" $out/$(basename "$crate" | cut -c 34-)'';
+                to = ''
+                  dest=$(basename "$crate" | cut -c 34-)
+                        if [ -e "$crate/.cargo-config" ]; then
+                          mkdir -p $out/git
+                          ln -s "$crate" $out/git/$dest
+                        else
+                          mkdir -p $out/registry
+                          ln -s "$crate" $out/registry/$dest
+                        fi'';
+              }
+              {
+                what = "the Git source config append";
+                from = ''cat "$crate/.cargo-config" >> $out/.cargo/config.toml'';
+                to = ''sed 's/replace-with = "vendored-sources"/replace-with = "git-vendor-dir"/' "$crate/.cargo-config" >> $out/.cargo/config.toml'';
+              }
+            ];
+            missing = builtins.filter (fragment: !(lib.hasInfix fragment.from old.buildCommand)) fragments;
+          in
+          if missing != [ ] then
+            throw (
+              "nix/package.nix: importCargoLock's vendor script changed; re-apply the split into "
+              + "a registry and a Git vendor directory. Missing: "
+              + lib.concatMapStringsSep ", " (fragment: fragment.what) missing
+            )
+          else
+            lib.replaceStrings (map (fragment: fragment.from) fragments) (map (
+              fragment: fragment.to
+            ) fragments) old.buildCommand
+            + "\n"
+            + ''
+              # Rune's `crates/rune-text` loads its default fonts from
+              # `crates/rune/assets` through a path relative to Rune's
+              # workspace root (`../../../rune/assets/…`). A vendored crate
+              # sits in `git/` beside the rune package, not inside that
+              # workspace, so point that path at the rune package's own
+              # assets. Drop this once Rune moves the fonts into rune-text.
+              mkdir -p $out/git
+              rune_vendor=${runeVendor}
+              if [ ! -d "$out/git/$rune_vendor/assets" ]; then
+                echo "nix/package.nix: $out/git/$rune_vendor/assets is missing; rune-text's font include needs it" >&2
+                exit 1
+              fi
+              ln -sfn "$rune_vendor" $out/git/rune
+            '';
+      });
 
   nativeBuildInputs = [
     pkg-config
@@ -154,6 +254,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   env = buildEnv;
   # Desktop and installed-model tests are #[ignore]; run the remaining suite.
   doCheck = true;
+  # Hex's suite keeps process-global state (the lab switches, a model download
+  # in flight), while CI and `scripts/check` run nextest, which isolates each
+  # test in its own process. Plain `cargo test` shares one process, so let
+  # cargoCheckHook run it one test at a time (it sets RUST_TEST_THREADS=1).
+  dontUseCargoParallelTests = true;
   preCheck = ''
     export HOME="$TMPDIR/hex-test-home"
     mkdir -p "$HOME"

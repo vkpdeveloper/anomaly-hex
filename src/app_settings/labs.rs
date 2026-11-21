@@ -56,12 +56,15 @@ impl AppearanceTheme {
     }
 }
 
-/// The `labs` switches (`crate::labs`), each off by default; older Labs features keep their own keys, and retired switches (`labs.enabled`, `labs.collapsible_meeting_sections`, `labs.meeting_platform_icons`) are ignored.
+/// The `labs` switches (`crate::labs`), each off by default; older Labs features keep their own keys, and retired switches (`labs.enabled`, `labs.collapsible_meeting_sections`, `labs.meeting_platform_icons`, `labs.transcribe_files`, `labs.restore_shortcut_default`, `labs.yearly_stats`, and the graduated meeting labs) are ignored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct LabsSettings {
     /// Live text beside the HUD while dictating.
     pub live_text: bool,
+    /// Live text with a shorter lookahead, so its words appear sooner at a
+    /// little more GPU work (Parakeet buffered streaming).
+    pub faster_live_text: bool,
     /// A failed dictation's explanation beside the HUD for a few seconds.
     pub failure_notices: bool,
     /// Provisional words in the focused text field as a Wayland input-method
@@ -69,11 +72,15 @@ pub struct LabsSettings {
     pub live_typing: bool,
     pub live_chapters: bool,
     pub playground: bool,
-    /// Parakeet transcription biased toward the vocabulary.
-    pub vocabulary_biasing: bool,
     /// Names and terms shown in the focused window become temporary
     /// vocabulary for each dictation (macOS).
     pub screen_vocabulary: bool,
+    /// A name fixed in text Hex just pasted is added to Vocabulary, read
+    /// from that field alone for a few minutes after the paste (macOS).
+    pub learn_from_corrections: bool,
+    /// The mode's OpenCode rewrite reads the text around the cursor as
+    /// context (macOS); password fields are never read.
+    pub cursor_context: bool,
     /// Mouse buttons may be recorded as shortcuts (macOS, issue 209).
     pub mouse_shortcuts: bool,
     /// The engine unloads the speech model after `unload_idle_minutes` (5, 15 default, 30, 60) unused (issue 442).
@@ -87,8 +94,6 @@ pub struct LabsSettings {
     /// default.
     #[serde(deserialize_with = "deserialize_keep_microphone_open_seconds")]
     pub keep_microphone_open_seconds: u32,
-    /// Paste last dictation's row offers its default shortcut back (issue 613).
-    pub restore_shortcut_default: bool,
     /// A pasted dictation stays on the clipboard, not the previous one (macOS and Windows, issue 200).
     pub keep_on_clipboard: bool,
     /// A dictation is put on the clipboard and never pasted (macOS and Windows, issue 629).
@@ -100,8 +105,11 @@ pub struct LabsSettings {
     pub spoken_formatting: bool,
     /// Filler words such as "um" and "uh" are removed from dictations (issue 631).
     pub filler_words: bool,
-    /// `hex meetings show --srt|--vtt` exports a transcript as timed subtitles (macOS, issue 633).
-    pub subtitle_export: bool,
+    pub clean_up_with_apple_intelligence: bool,
+    /// A dictation in a mode that opts in is rewritten into plain, neutral
+    /// wording on this Mac instead of the OpenCode rewrite and the cleanup
+    /// (macOS).
+    pub neutral_voice: bool,
     /// `second_dictation_hotkey` dictates like the dictation shortcut (issue 627).
     pub second_dictation_shortcut: bool,
     /// Up to four more dictation shortcuts, each with its own activation
@@ -130,33 +138,29 @@ pub struct LabsSettings {
     /// Menu, Pause, and Scroll Lock may be shortcut keys (Linux, issue 767).
     pub standalone_special_keys: bool,
     pub history_stats: bool,
-    /// History selects several dictations at once, with Shift, Command (Ctrl
-    /// on Windows and Linux), or a drag, to copy or delete them together.
-    pub history_multi_select: bool,
     pub recent_dictations: bool,
     pub skip_pauses: bool,
-    /// An automatic meeting recording stops after its call ends (macOS, issue 835).
-    pub stop_when_call_ends: bool,
     /// Output's Try card offers Vocabulary and Fix this beside its result (issue 989).
     pub output_fixes: bool,
-    /// The speech model picker lists the model in use first (issue 1019).
-    pub picker_active_first: bool,
     /// The picker's "Use model file where it is…" adds a GGUF file without copying it (issue 941).
     pub model_in_place: bool,
+    /// An import may use Q6_K, Q5_K, or Q4_K weights, which Metal runs and
+    /// Hex hasn't verified (macOS).
+    pub k_quant_models: bool,
     /// The picker's All speech models view offers "Only downloaded models" (issue 1018).
     pub picker_downloaded: bool,
     /// The ISO section key, left of 1, may be a shortcut on its own (Linux
     /// and macOS, issue 1050).
     pub section_key_alone: bool,
+    /// The microphone (dictation) key in a laptop keyboard's top row may be
+    /// a shortcut on its own (macOS, issue 181).
+    pub microphone_key: bool,
     /// Dictations saved to History keep their audio, for Transcribe again (issue 1032).
     pub keep_recordings: bool,
-    /// General's pane starts with a search field that filters its rows.
-    pub settings_search: bool,
-    /// The sidebar footer links this build's release notes.
-    pub release_notes_link: bool,
+    /// A kept recording may be copied from History and the menu bar or tray
+    /// as a file on the clipboard; it stores no audio itself.
+    pub copy_dictation_audio: bool,
     pub hide_menu_bar_icon: bool,
-    /// ⌘Q closes the Settings window instead of quitting Hex (macOS).
-    pub quit_closes_window: bool,
     /// A Caps Lock press starts and stops dictation, and its light follows
     /// Hex's recording and processing (macOS).
     pub caps_lock_dictation: bool,
@@ -168,40 +172,28 @@ pub struct LabsSettings {
     pub appearance: bool,
     /// Which appearance the window shows while `appearance` is on.
     pub appearance_theme: AppearanceTheme,
-    pub movable_meeting_capsules: bool,
     /// A paste restores the clipboard through a running XWayland on Wayland desktops without data-control, such as GNOME (Linux, issue 1111).
     pub gnome_clipboard_restore: bool,
     /// A shortcut runs the focused app's Output steps on the text already
     /// typed there and replaces it (`typed_text_hotkey`, unbound by default).
     pub typed_text: bool,
-    /// Meeting titles and summaries read the vocabulary (issue 1154).
-    pub meeting_notes_vocabulary: bool,
     /// At either visible indicator position, the HUD grows out of the notch on a screen with one (macOS).
     pub notch_indicator: bool,
-    /// The local API's `GET /meetings/events` tells a subscriber each finished meeting's id (issue 964).
-    pub meeting_finished_event: bool,
     /// The meeting capsules float on a running XWayland on Wayland desktops without layer-shell, such as GNOME (Linux, issue 1274).
     pub gnome_meeting_capsules: bool,
     /// Annotate's capsule and ink float on a running XWayland on Wayland desktops without layer-shell, such as GNOME (Linux).
     pub gnome_annotate: bool,
+    /// On Wayland, a screen capture asks the desktop for the monitor under the
+    /// pointer, and each monitor keeps its own ScreenCast choice (Linux).
+    pub annotate_pointer_screen: bool,
     /// The screenshot shortcut takes an area or a window (macOS); its
     /// shortcut and folder are `screenshots.*`.
     pub screenshots: bool,
     /// A written Annotate capture copies as one light zip file (macOS,
     /// Linux, and Windows).
     pub copy_capture_zip: bool,
-    /// A recording meeting's transcript scrolls to its newest line, until scrolled up (issue 1332).
-    pub follow_live_transcript: bool,
     /// Meetings offers Import audio…: a local audio file becomes a meeting (macOS).
     pub meeting_import: bool,
-    /// Notes or a rename rename an exported meeting's Markdown to the meeting's title, keeping its date and time.
-    pub meeting_descriptive_filenames: bool,
-    /// A meeting's notes are written to their own file beside the transcript,
-    /// sharing its name and linking back to it.
-    pub meeting_notes_file: bool,
-    /// Finished meetings drop their WAV tracks on `meetings.audio_retention`,
-    /// keeping their transcripts, notes, and summary.
-    pub expire_meeting_audio: bool,
     /// With `labs.annotate_replay` on, keeps a rolling 15 s display buffer via `SCClipBufferingOutput` (macOS 27+).
     pub annotate_replay: bool,
     /// Hex for Android dictates through this computer's model
@@ -209,59 +201,124 @@ pub struct LabsSettings {
     pub phone_dictation: bool,
     /// The port phone dictation listens on; 0 picks one automatically.
     pub phone_dictation_port: u16,
-    /// Calls in more apps (Signal, Telegram, WeChat, LINE, Webex, Element, Phone) and on more websites are offered and named.
-    pub more_call_apps: bool,
     /// An OpenCode service running in the default WSL distribution is used
-    /// for Modes rewriting and the Modes model picker when no Windows
-    /// service answers (Windows).
+    /// for Modes rewriting and the Modes model picker ahead of a Windows one
+    /// when it answers; Windows answers when WSL answers nothing (Windows).
     pub opencode_in_wsl: bool,
-    /// `hex transcribe <file>` turns a WAV recording into text with the
-    /// dictation model.
-    pub transcribe_files: bool,
+    /// Press Return after pasting a shortcut dictation.
+    pub yolo_mode: bool,
+    /// The apps Labs › YOLO mode sends in, by the names
+    /// Modes match; empty means every app.
+    pub yolo_mode_apps: Vec<String>,
+    /// A WAV, MP3, AAC, M4A, MP4, MOV, AIFF, CAF, FLAC, OGG, Opus, WebM, or
+    /// MKV file dropped on the window is transcribed and saved as a text file
+    /// beside it.
+    pub drop_transcribe: bool,
+    /// Holding Paste Last opens a picker of recent dictations and
+    /// annotations, and History lists them together (macOS).
+    pub paste_last_picker: bool,
+    /// The Vocabulary sheet imports terms from a CSV file and exports the
+    /// list as one (Labs › Vocabulary files).
+    pub vocabulary_files: bool,
+    /// `hex annotate inspect`, `zoom`, `frames`, and `skill` read a capture
+    /// bundle for a coding agent (Labs › Agent tools for captures).
+    pub annotate_agent_tools: bool,
+    /// The Annotate pane's Agents section writes the hex-annotate skill into
+    /// coding agents' own folders and, on macOS, links `hex` onto PATH
+    /// (Labs › Install agent skill from Annotate).
+    pub annotate_agent_install: bool,
     /// The local API's `process=global` returns transcripts after Global
     /// mode's output processing.
     pub api_processing: bool,
     /// The local API's `timestamps=segment|word` returns the speech model's
     /// own segment and word times.
     pub api_timestamps: bool,
-    /// Web pages from `api_browser_origins` may call Hex's local API from
-    /// the browser (Labs › Browser access to the local API).
-    pub api_browser_access: bool,
-    /// The origins allowed while `api_browser_access` is on, each
-    /// `scheme://host[:port]`; an entry that isn't one is ignored.
-    pub api_browser_origins: Vec<String>,
     /// "While dictating" applies only while the default output is speakers;
     /// headphones are left alone.
     pub speakers_only: bool,
     /// A dictation mode's speech model and language follow the foreground
     /// application (macOS and Windows).
     pub app_model_switching: bool,
+    /// The menu bar lists the next calendar meetings, each a local start and
+    /// end time and title; choosing one with a call link opens it (macOS,
+    /// with Meetings on and a calendar connected).
+    pub calendar_menu: bool,
+    /// Meetings › Settings › Calendar shows Select all or Deselect all beside
+    /// the Calendars row, so every calendar is included or left out at once
+    /// (macOS).
+    pub calendar_bulk_select: bool,
     /// The menu bar offers Pause Hex, which makes every capture shortcut
     /// inert until Resume (macOS).
     pub pause_menu: bool,
-    /// `hex dictation start --print` records a dictation whose transcript
-    /// goes to the command that started it, however it ends (macOS).
-    pub print_start: bool,
     /// A spoken trigger phrase inside a dictation hands the mode's OpenCode
     /// model a one-off instruction for that dictation.
     pub voice_prompt: bool,
     /// The words that start a voice prompt: at least two words and six
     /// letters, or the default. Another value fails to load, so the field
     /// returns to its default.
-    #[serde(deserialize_with = "deserialize_voice_prompt_phrase")]
+    #[serde(deserialize_with = "deserialize_phrase")]
     pub voice_prompt_phrase: String,
+    /// A spoken phrase at the end of a hands-free dictation finishes it as if
+    /// the shortcut were pressed again, and never reaches the pasted text.
+    pub stop_phrase: bool,
+    /// The phrase that finishes a hands-free dictation: at least two words
+    /// and six letters, or the default. Another value fails to load, so the
+    /// field returns to its default.
+    #[serde(deserialize_with = "deserialize_phrase")]
+    pub stop_phrase_text: String,
+    /// A key or click joining a held modifier-only shortcut a second or more
+    /// after it went down reaches the app in front and leaves the dictation
+    /// recording, which the release still finishes (macOS and Windows).
+    pub hold_through_keys: bool,
+    /// The Modes editor joins the sidebar: every mode's apps, corrections,
+    /// OpenCode rewrite, and transformations.
+    pub modes_editor: bool,
     /// Settings › Labs' groups opened or closed by hand, by `labs::Group`
     /// id; a group not here is open while it holds a lab that's on.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub groups: std::collections::BTreeMap<String, bool>,
+    /// Retired switches the `meeting-labs-settings` migration reads into
+    /// `meetings.*` once: `meetings.stop_when_call_ends`,
+    /// `meetings.export.descriptive_filenames`, `meetings.export.notes_file`,
+    /// and whether `meetings.audio_retention` stays. Never written.
+    #[serde(skip_serializing)]
+    pub stop_when_call_ends: Option<bool>,
+    #[serde(skip_serializing)]
+    pub meeting_descriptive_filenames: Option<bool>,
+    #[serde(skip_serializing)]
+    pub meeting_notes_file: Option<bool>,
+    #[serde(skip_serializing)]
+    pub expire_meeting_audio: Option<bool>,
+    /// Retired: `labs.yearly_stats`, read into `history_stats` once by the
+    /// `yearly-stats-merge` migration, since the daily rollup and the year
+    /// heatmap are part of Dictation stats now. Never written.
+    #[serde(skip_serializing)]
+    pub yearly_stats: Option<bool>,
 }
 
-/// The idle times Labs › Unload model when idle offers, in minutes.
+/// The idle times Labs › Free memory when idle offers, in minutes.
 pub const UNLOAD_IDLE_MINUTES: [u32; 4] = [5, 15, 30, 60];
 
 /// The times Labs › Keep mic open after dictating offers, in seconds:
 /// 30 s, 1, 3, 5, and 30 minutes.
 pub const KEEP_MICROPHONE_OPEN_SECONDS: [u32; 5] = [30, 60, 180, 300, 1_800];
+
+/// The retired Yearly stats lab merged into Dictation stats: its daily
+/// rollup and year heatmap are part of the one lab now.
+pub(super) const YEARLY_STATS_MERGE_MIGRATION: &str = "yearly-stats-merge";
+
+impl AppSettings {
+    /// A saved `labs.yearly_stats` reads into `labs.history_stats` once, so
+    /// someone who had Yearly stats on keeps their heatmap and all-time
+    /// totals without a second switch. A later choice sticks.
+    pub(super) fn migrate_yearly_stats_lab(&mut self) {
+        if !self.has_migration(YEARLY_STATS_MERGE_MIGRATION) {
+            self.labs.history_stats |= self.labs.yearly_stats == Some(true);
+            self.migrations.push(YEARLY_STATS_MERGE_MIGRATION.into());
+        }
+        self.labs.yearly_stats = None;
+    }
+}
 
 impl LabsSettings {
     /// The default [`KEEP_MICROPHONE_OPEN_SECONDS`] choice.
@@ -298,10 +355,10 @@ where
     }
 }
 
-/// A saved `voice_prompt_phrase` must pass
+/// A saved phrase (`voice_prompt_phrase`, `stop_phrase_text`) must pass
 /// [`crate::dictation::voice_prompt::phrase_problem`]; another value fails to
 /// load, so the field returns to the default with the usual launch note.
-fn deserialize_voice_prompt_phrase<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_phrase<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -317,24 +374,26 @@ impl Default for LabsSettings {
     fn default() -> Self {
         Self {
             live_text: false,
+            faster_live_text: false,
             failure_notices: false,
             live_typing: false,
             live_chapters: false,
             playground: false,
-            vocabulary_biasing: false,
             screen_vocabulary: false,
+            learn_from_corrections: false,
+            cursor_context: false,
             mouse_shortcuts: false,
             unload_idle: false,
             unload_idle_minutes: 15,
             keep_microphone_open: false,
             keep_microphone_open_seconds: Self::DEFAULT_KEEP_MICROPHONE_OPEN_SECONDS,
-            restore_shortcut_default: false,
             keep_on_clipboard: false,
             copy_only: false,
             return_to_app: false,
             spoken_formatting: false,
             filler_words: false,
-            subtitle_export: false,
+            clean_up_with_apple_intelligence: false,
+            neutral_voice: false,
             second_dictation_shortcut: false,
             more_dictation_shortcuts: false,
             terminal_paste_shortcut: false,
@@ -348,56 +407,60 @@ impl Default for LabsSettings {
             parakeet_ultra: false,
             standalone_special_keys: false,
             history_stats: false,
-            history_multi_select: false,
             recent_dictations: false,
             skip_pauses: false,
-            stop_when_call_ends: false,
             output_fixes: false,
-            picker_active_first: false,
             model_in_place: false,
+            k_quant_models: false,
             picker_downloaded: false,
             section_key_alone: false,
+            microphone_key: false,
             keep_recordings: false,
-            settings_search: false,
-            release_notes_link: false,
+            copy_dictation_audio: false,
             hide_menu_bar_icon: false,
-            quit_closes_window: false,
             caps_lock_dictation: false,
             caps_lock_light: CapsLockLight::Steady,
             appearance: false,
             appearance_theme: AppearanceTheme::System,
-            movable_meeting_capsules: false,
             gnome_clipboard_restore: false,
             typed_text: false,
-            meeting_notes_vocabulary: false,
             notch_indicator: false,
-            meeting_finished_event: false,
             annotate_replay: false,
-            more_call_apps: false,
             opencode_in_wsl: false,
-            transcribe_files: false,
+            yolo_mode: false,
+            yolo_mode_apps: Vec::new(),
+            drop_transcribe: false,
+            paste_last_picker: false,
+            vocabulary_files: false,
+            annotate_agent_tools: false,
+            annotate_agent_install: false,
             api_processing: false,
             api_timestamps: false,
-            api_browser_access: false,
-            api_browser_origins: Vec::new(),
             speakers_only: false,
             app_model_switching: false,
+            calendar_menu: false,
+            calendar_bulk_select: false,
             pause_menu: false,
-            print_start: false,
             voice_prompt: false,
             voice_prompt_phrase: crate::dictation::voice_prompt::DEFAULT_PHRASE.to_owned(),
+            stop_phrase: false,
+            stop_phrase_text: crate::dictation::stop_phrase::DEFAULT_PHRASE.to_owned(),
+            hold_through_keys: false,
+            modes_editor: false,
             gnome_meeting_capsules: false,
             gnome_annotate: false,
+            annotate_pointer_screen: false,
             screenshots: false,
             copy_capture_zip: false,
-            follow_live_transcript: false,
             phone_dictation: false,
             phone_dictation_port: 0,
             meeting_import: false,
-            meeting_descriptive_filenames: false,
-            meeting_notes_file: false,
-            expire_meeting_audio: false,
             groups: std::collections::BTreeMap::new(),
+            stop_when_call_ends: None,
+            meeting_descriptive_filenames: None,
+            meeting_notes_file: None,
+            expire_meeting_audio: None,
+            yearly_stats: None,
         }
     }
 }

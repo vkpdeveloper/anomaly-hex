@@ -19,6 +19,7 @@ use super::controls::{
 };
 use super::list_detail::{self as ld, Item};
 use super::lists::{Tone, dismissible_error_panel, error_panel, section_label, tone_tag};
+use super::notes_writer::NotesWriter;
 use super::platform::MeetingRequest;
 use super::{Menu, Ui};
 use crate::desktop::file_dialog::{Dialog, Filter, Pending, Target};
@@ -26,7 +27,7 @@ use crate::desktop::i18n::{tr, tr_fill, tr_named};
 
 mod fixture;
 
-static MORE_ICON: rune::Icon = rune::Icon {
+pub(super) static MORE_ICON: rune::Icon = rune::Icon {
     name: "hex-more",
     view: 16.0,
     body: r#"<circle cx="3.5" cy="8" r="1.25" fill="currentColor"/><circle cx="8" cy="8" r="1.25" fill="currentColor"/><circle cx="12.5" cy="8" r="1.25" fill="currentColor"/>"#,
@@ -157,24 +158,19 @@ pub(super) fn available(ui: &Ui) -> bool {
 /// Summaries chooses it, otherwise Apple Intelligence on a Mac that has it.
 fn notes_available(ui: &Ui) -> bool {
     ui.settings.meetings.summaries == crate::app_settings::MeetingSummaries::OpenCode
-        || apple_intelligence_writes(ui)
+        || apple_intelligence_here(ui)
 }
 
-/// Whether Apple Intelligence writes notes asked for now: Summaries isn't
-/// OpenCode and this Mac has it.
-fn apple_intelligence_writes(ui: &Ui) -> bool {
-    ui.settings.meetings.summaries != crate::app_settings::MeetingSummaries::OpenCode
-        && ui.platform.caps.os == super::platform::Os::Macos
-        && ui.platform.notes.is_available()
+/// Whether this Mac has Apple Intelligence: the other half of the writer
+/// choice, which [`NotesWriter`] makes with the Summaries setting.
+fn apple_intelligence_here(ui: &Ui) -> bool {
+    ui.platform.caps.os == super::platform::Os::Macos && ui.platform.notes.is_available()
 }
 
 /// What writes the notes now, as the generator picks it.
 fn notes_running_label(ui: &Ui) -> &'static str {
-    if apple_intelligence_writes(ui) {
-        tr("Writing a title and summary with Apple Intelligence…")
-    } else {
-        tr("Writing a title and summary with OpenCode…")
-    }
+    NotesWriter::for_choice(ui.settings.meetings.summaries, apple_intelligence_here(ui))
+        .running_label()
 }
 
 #[derive(Default)]
@@ -205,7 +201,7 @@ pub(super) struct MeetingsPane {
 }
 
 /// `42 min`, `1 h 05 min`, or `< 1 min`.
-fn length(milliseconds: u64) -> String {
+pub(super) fn length(milliseconds: u64) -> String {
     let minutes = milliseconds / 60_000;
     match minutes {
         0 => tr("< 1 min").into(),
@@ -959,14 +955,10 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
         ))
 }
 
-/// Labs › Follow live transcript: a recording meeting's transcript keeps
-/// its newest line in view while scrolled to the bottom. Off, and for any
-/// meeting not recording, the card scrolls only by hand, as before.
+/// A recording meeting's transcript keeps its newest line in view while
+/// scrolled to the bottom. Any meeting not recording scrolls only by hand.
 fn follows_live_transcript(ui: &Ui, meeting: &Meeting) -> bool {
-    ui.settings.labs.follow_live_transcript
-        && crate::labs::Feature::FollowLiveTranscript.shipped()
-        && matches!(meeting.status, Status::Starting | Status::Recording)
-        && !ui.meetings.stop_pending
+    matches!(meeting.status, Status::Starting | Status::Recording) && !ui.meetings.stop_pending
 }
 
 /// The meeting's chapters, each with its start, name, line, and Copy
@@ -1290,18 +1282,13 @@ mod tests {
         assert_eq!(name("preview-failed"), "hex-row-call");
     }
 
-    /// Labs › Follow live transcript: only a recording meeting's transcript
-    /// follows its newest line, and only with the lab on (#1332).
+    /// Only a recording meeting's transcript follows its newest line (#1332).
     #[test]
-    fn only_a_recording_transcript_follows_and_only_with_its_lab() {
-        let mut settings = crate::app_settings::AppSettings::default();
+    fn only_a_recording_transcript_follows() {
+        let settings = crate::app_settings::AppSettings::default();
         let pane = MeetingsPane::fixture();
         let live = pane.meeting("preview-live").unwrap();
         let finished = pane.meeting("preview-notes").unwrap();
-        let ui = Ui::with(settings.clone(), Service::Fixture(Vec::new()));
-        assert!(!follows_live_transcript(&ui, live));
-        assert!(!follows_live_transcript(&ui, finished));
-        settings.labs.follow_live_transcript = true;
         let mut ui = Ui::with(settings, Service::Fixture(Vec::new()));
         assert!(follows_live_transcript(&ui, live));
         assert!(!follows_live_transcript(&ui, finished));

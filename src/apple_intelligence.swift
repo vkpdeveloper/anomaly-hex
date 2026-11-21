@@ -28,6 +28,12 @@ private struct BridgeChapterLines: Codable {
     let lines: [Int]
 }
 
+/// One cleaned dictation: plain text out, wrapped so Rust decodes it the way
+/// it decodes every other bridge answer.
+private struct BridgeText: Codable {
+    let text: String
+}
+
 /// Distinguishes an oversized prompt so Rust can shorten the excerpt once.
 private let contextWindowMarker = "context-window:"
 /// A refused or guardrail-blocked transcript, which retrying won't change.
@@ -87,6 +93,36 @@ private func respond<Content: Generable>(
             to: prompt,
             generating: type,
             options: GenerationOptions(temperature: 0.2, maximumResponseTokens: maximumResponseTokens)
+        ).content
+    } catch LanguageModelSession.GenerationError.exceededContextWindowSize(let context) {
+        throw BridgeError("\(contextWindowMarker) \(context.debugDescription)")
+    } catch LanguageModelSession.GenerationError.refusal(_, let context) {
+        throw BridgeError("\(refusalMarker) \(context.debugDescription)")
+    } catch LanguageModelSession.GenerationError.guardrailViolation(let context) {
+        throw BridgeError("\(refusalMarker) \(context.debugDescription)")
+    }
+}
+
+/// One plain-text pass: a cleaned or restyled transcript, with no guided
+/// structure. The answer is the model's own words, so a caller judges it
+/// before using it. `temperature` lets a caller ask for more variation than
+/// the cleanup's 0.2.
+@available(macOS 26.0, *)
+private func respondText(
+    instructions: String,
+    prompt: String,
+    temperature: Double,
+    maximumResponseTokens: Int
+) async throws -> String {
+    let model = SystemLanguageModel(
+        useCase: .general,
+        guardrails: .permissiveContentTransformations
+    )
+    let session = LanguageModelSession(model: model, instructions: instructions)
+    do {
+        return try await session.respond(
+            to: prompt,
+            options: GenerationOptions(temperature: temperature, maximumResponseTokens: maximumResponseTokens)
         ).content
     } catch LanguageModelSession.GenerationError.exceededContextWindowSize(let context) {
         throw BridgeError("\(contextWindowMarker) \(context.debugDescription)")
@@ -194,8 +230,17 @@ public func hexAppleIntelligenceAvailability() -> Int32 {
 @_cdecl("hex_apple_intelligence_context_size")
 public func hexAppleIntelligenceContextSize() -> Int {
     #if canImport(FoundationModels)
+    // `contextSize` arrived with the macOS 26.4 SDK (Swift 6.3). An older
+    // Xcode then builds without it and reports no context size, and the Rust
+    // excerpt budget falls back to the on-device model's documented
+    // 4,096-token window (`meeting/notes.rs`'s `FALLBACK_CONTEXT_TOKENS`), so
+    // notes still work.
+    #if compiler(>=6.3)
     guard #available(macOS 26.0, *) else { return 0 }
     return SystemLanguageModel.default.contextSize
+    #else
+    return 0
+    #endif
     #else
     return 0
     #endif
@@ -321,6 +366,34 @@ public func hexAppleIntelligenceChapterLines(
             maximumResponseTokens: 240
         )
         return BridgeChapterLines(lines: lines.lines)
+    }
+    #else
+    writeError(BridgeError("Apple Intelligence requires macOS 26."), to: errorOutput)
+    return nil
+    #endif
+}
+
+@_cdecl("hex_apple_intelligence_text")
+public func hexAppleIntelligenceText(
+    _ instructions: UnsafePointer<CChar>?,
+    _ prompt: UnsafePointer<CChar>?,
+    _ temperature: Double,
+    _ timeoutMs: UInt64,
+    _ errorOutput: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> UnsafeMutablePointer<CChar>? {
+    #if canImport(FoundationModels)
+    guard #available(macOS 26.0, *) else {
+        writeError(BridgeError("Apple Intelligence requires macOS 26."), to: errorOutput)
+        return nil
+    }
+    return bridgeCall(instructions, prompt, timeoutMs, errorOutput) { instructions, prompt in
+        let text = try await respondText(
+            instructions: instructions,
+            prompt: prompt,
+            temperature: temperature,
+            maximumResponseTokens: 1024
+        )
+        return BridgeText(text: text)
     }
     #else
     writeError(BridgeError("Apple Intelligence requires macOS 26."), to: errorOutput)

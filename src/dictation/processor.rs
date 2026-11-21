@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, WrapErr, eyre};
@@ -8,15 +7,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::desktop::opencode_service::Service;
 use crate::dictation::context::{ContextSelector, ContextSnapshot};
+use crate::dictation::numbers::numbers_only;
 use crate::dictation::text_replacements::ReplacementSet;
 use crate::dictation::vocabulary::VocabularyEntry;
 
+mod generation;
+
+use self::generation::{
+    Request, Response, generate_single_model, post_generation, remaining_generation_deadline,
+};
+
 const PROTOCOL_PROMPT: &str = "You transform dictated speech into replacement text. Return only the text that should be pasted. Do not add an explanation, label, alternative, or Markdown fence.\n\nNumbers: keep every number the speaker said. Never drop, merge, reorder, round, or reinterpret a number, and never add thousands separators or other formatting to a number that the transcript already writes in digits.\n\nLists: unless the profile instructions say otherwise, when the speaker enumerates items (for example \"point one ... point two ...\", \"first ... second ...\", or \"number one ... number two ...\"), keep every item and write them as a numbered list, one item per line (\"1. ...\", \"2. ...\"), without the spoken cue words.";
 const CATALOG_DEADLINE: Duration = Duration::from_secs(10);
-/// Newest one-shot generation route first; older OpenCode V2 builds only serve the later name.
-const GENERATE_ENDPOINTS: [&str; 2] = ["/api/experimental/generate", "/api/generate"];
 
 pub use crate::app_settings::DictationPostProcessing as PostProcessingSettings;
+
+/// The processing profile a run records when only the person's
+/// transformations ran, with no mode or voice-prompt rewrite. It is not a
+/// mode, so Output time leaves these runs out.
+pub const CUSTOM_TRANSFORMATIONS: &str = "Custom transformations";
 
 /// Where the text a mode processes came from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +81,9 @@ pub struct Profile {
     /// The mode's speech model and language while it matches the foreground
     /// app (Labs › Switch model with app).
     speech: Option<crate::app_settings::KeyboardModelChoice>,
+    /// Rewrite this mode's dictations into plain, neutral wording on this Mac
+    /// (Labs › Neutral voice, macOS).
+    neutral_voice: bool,
 }
 
 impl Profile {
@@ -86,6 +98,7 @@ impl Profile {
             transformations: Vec::new(),
             vocabulary: Vec::new(),
             speech: None,
+            neutral_voice: false,
         }
     }
 
@@ -151,14 +164,16 @@ impl Profile {
         } else {
             &mode.name
         };
-        Self::configured(
+        let mut profile = Self::configured(
             name,
             ReplacementSet::new(&mode.replacements),
             mode.transformations.clone(),
             &mode.post_processing,
         )
         .vocabulary(mode.vocabulary.clone())
-        .speech(mode.speech.clone())
+        .speech(mode.speech.clone());
+        profile.neutral_voice = mode.neutral_voice;
+        profile
     }
 
     /// Builds a runtime profile from persisted settings. A malformed model key
@@ -397,7 +412,12 @@ impl Profiles {
 
     pub fn processes(&self, context: &ContextSnapshot) -> bool {
         let profile = self.select(context);
-        profile.ai_enabled || !profile.transformations.is_empty()
+        // A cleanup-only or neutral-only dictation still shows the HUD's
+        // processing stage.
+        profile.ai_enabled
+            || !profile.transformations.is_empty()
+            || crate::dictation::apple_cleanup::runs_here()
+            || (profile.neutral_voice && crate::dictation::neutral_voice::runs_here())
     }
 
     fn corrected(
@@ -468,7 +488,7 @@ impl Profiles {
     }
 
     /// [`Self::process_cancellable`] with the voice prompt phrase already
-    /// resolved: `None` is Labs › Voice prompt off, or locked.
+    /// resolved: `None` is Labs › Rewrite by voice off, or locked.
     fn process_cancellable_with(
         &self,
         transcript: &str,
@@ -489,7 +509,24 @@ impl Profiles {
             source,
             DictationLabs::current(),
         );
-        // Labs › Voice prompt: heard speech may carry a spoken instruction
+        // A transcript of numbers alone has nothing to rewrite; a model only
+        // turns it into digits and re-punctuates it (#949). The neutral pass
+        // and Labs › Clean up with Apple Intelligence skip those too.
+        let numbers_only = numbers_only(&corrected);
+        // Labs › Neutral voice replaces both the rewrite and the cleanup for
+        // an opted-in mode, and outranks the voice prompt too, so a privacy
+        // dictation never reaches OpenCode.
+        if let Some(processed) = crate::dictation::neutral_voice::processed(
+            &corrected,
+            numbers_only,
+            cancelled,
+            profile.neutral_voice,
+            source,
+            &profile.transformations,
+        ) {
+            return processed;
+        }
+        // Labs › Rewrite by voice: heard speech may carry a spoken instruction
         // that replaces the mode's rewrite with one request of its own.
         if source == Source::Dictation
             && let Some(phrase) = voice_prompt
@@ -498,10 +535,7 @@ impl Profiles {
         {
             return voice_prompt_processed(profile, &instruction, &corrected, context, cancelled);
         }
-        // A transcript of numbers alone has nothing to rewrite; a model only
-        // turns it into digits and re-punctuates it (#949).
-        let numbers_only = profile.ai_enabled && numbers_only(&corrected);
-        if numbers_only {
+        if profile.ai_enabled && numbers_only {
             tracing::info!(
                 profile = profile.name,
                 "dictation post-processing skipped for a numbers-only transcript"
@@ -514,10 +548,17 @@ impl Profiles {
             );
         }
         if !profile.ai_enabled || numbers_only {
+            // A mode with no OpenCode rewrite leaves the corrections alone
+            // for one on-device pass; a mode that rewrites keeps its model.
+            let (text, observation) = if profile.ai_enabled || source != Source::Dictation {
+                (corrected, None)
+            } else {
+                crate::dictation::apple_cleanup::stage(&corrected, numbers_only, cancelled)
+            };
             return Processed {
-                text: corrected,
+                text,
                 nothing: false,
-                observation: None,
+                observation,
                 transformations: profile.transformations.clone(),
             };
         }
@@ -529,6 +570,7 @@ impl Profiles {
                 &profile.vocabulary,
                 &crate::dictation::vocabulary::entries(),
             ),
+            source,
         );
         let (text, observation) = generate_observed(
             &prompt,
@@ -538,15 +580,18 @@ impl Profiles {
             &profile.name,
             Instant::now(),
         );
+        let model = model_label(&observation);
         match &observation.fallback {
             None => tracing::info!(
                 profile = profile.name,
                 latency_ms = observation.latency_ms,
+                model = %model,
                 "dictation post-processing completed"
             ),
             Some(reason) => tracing::warn!(
                 profile = profile.name,
                 latency_ms = observation.latency_ms,
+                model = %model,
                 %reason,
                 "dictation post-processing failed; pasting the corrected transcript"
             ),
@@ -604,15 +649,18 @@ fn voice_prompt_processed(
         &profile.name,
         Instant::now(),
     );
+    let model = model_label(&observation);
     match &observation.fallback {
         None => tracing::info!(
             profile = profile.name,
             latency_ms = observation.latency_ms,
+            model = %model,
             "voice prompt completed"
         ),
         Some(reason) => tracing::warn!(
             profile = profile.name,
             latency_ms = observation.latency_ms,
+            model = %model,
             %reason,
             "voice prompt failed; pasting what the speaker dictated"
         ),
@@ -695,64 +743,6 @@ fn voice_prompt_fallback(
     }
 }
 
-/// Whether a transcript says nothing but numbers: digits or English number
-/// words, with punctuation between them.
-fn numbers_only(transcript: &str) -> bool {
-    const WORDS: &[&str] = &[
-        "zero",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-        "nine",
-        "ten",
-        "eleven",
-        "twelve",
-        "thirteen",
-        "fourteen",
-        "fifteen",
-        "sixteen",
-        "seventeen",
-        "eighteen",
-        "nineteen",
-        "twenty",
-        "thirty",
-        "forty",
-        "fifty",
-        "sixty",
-        "seventy",
-        "eighty",
-        "ninety",
-        "hundred",
-        "thousand",
-        "million",
-        "billion",
-    ];
-    /// Words that join numbers but are not numbers themselves.
-    const JOINERS: &[&str] = &["and", "point", "minus", "negative"];
-    let mut any_number = false;
-    for token in transcript.split(|c: char| c.is_whitespace() || c == '-') {
-        let word = token.trim_matches(|c: char| !c.is_alphanumeric());
-        if word.is_empty() {
-            continue;
-        }
-        if word
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
-            || WORDS.iter().any(|w| word.eq_ignore_ascii_case(w))
-        {
-            any_number = true;
-        } else if !JOINERS.iter().any(|w| word.eq_ignore_ascii_case(w)) {
-            return false;
-        }
-    }
-    any_number
-}
-
 /// One generation's text and the model that wrote it, when Hex named one
 /// (`None` when OpenCode's own default model answered).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -761,14 +751,36 @@ pub(crate) struct Generated {
     pub model: Option<Model>,
 }
 
-/// One generation from OpenCode's default ranked models, for work outside
-/// dictation such as meeting notes.
+/// One generation from OpenCode's own default model, for work outside
+/// dictation such as meeting notes: a request that names no model, so it
+/// never walks the ranked models into another provider.
 pub(crate) fn generate_text(
     prompt: &str,
     deadline: Duration,
     cancelled: &AtomicBool,
 ) -> Result<Generated> {
-    generate_cancellable(prompt, None, deadline, cancelled)
+    let started = Instant::now();
+    let service = generation_service(started, deadline, cancelled)?;
+    generate_default_model(prompt, &service, started, deadline, cancelled)
+}
+
+/// [`generate_text`]'s one request, through the running service.
+fn generate_default_model(
+    prompt: &str,
+    service: &Service,
+    started: Instant,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<Generated> {
+    let text = generate_single_model(
+        prompt,
+        None,
+        started,
+        deadline,
+        cancelled,
+        |data, remaining, cancelled| post_generation(service, data, remaining, cancelled),
+    )?;
+    Ok(Generated { text, model: None })
 }
 
 /// One generation from exactly `model`, never another provider's: a failure
@@ -793,19 +805,64 @@ fn generate_observed(
     profile_name: &str,
     started: Instant,
 ) -> (Option<String>, ProcessingObservation) {
-    let result = generate_cancellable(prompt, model, deadline, cancelled);
-    let (text, fallback) = match result.map(|generated| generated.text) {
-        Ok(text) if !text.trim().is_empty() => (Some(text.trim().into()), None),
-        Ok(_) => (None, Some("processor returned empty text".into())),
-        Err(error) => (None, Some(error.to_string())),
+    observed(
+        generate_cancellable(prompt, model, deadline, cancelled),
+        model,
+        profile_name,
+        started.elapsed(),
+    )
+}
+
+/// The text and observation for one generation. The observation names the
+/// model that answered, or the one the request asked for when nothing did, so
+/// logs and retained events say which model rewrote the text.
+fn observed(
+    result: Result<Generated>,
+    requested: Option<&Model>,
+    profile_name: &str,
+    elapsed: Duration,
+) -> (Option<String>, ProcessingObservation) {
+    let (text, model, fallback) = match result {
+        Ok(generated) => {
+            let trimmed = generated.text.trim();
+            let text = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            let fallback = text
+                .is_none()
+                .then(|| "processor returned empty text".to_owned());
+            (text, generated.model, fallback)
+        }
+        Err(error) => (None, requested.cloned(), Some(error.to_string())),
     };
     let observation = ProcessingObservation {
         profile: profile_name.into(),
-        latency_ms: started.elapsed().as_millis() as u64,
+        latency_ms: elapsed.as_millis() as u64,
+        model: model
+            .as_ref()
+            .map(|model| format!("{}/{}", model.provider, model.id)),
         fallback,
     };
     (text, observation)
 }
+
+/// What a processing log line names for the model that ran: the named model
+/// that answered, or on failure the one the request asked for; OpenCode's own
+/// default when no model was named and it answered; and Hex's automatic
+/// choice when no named model answered at all.
+fn model_label(observation: &ProcessingObservation) -> &str {
+    match observation.model.as_deref() {
+        Some(model) => model,
+        None if observation.fallback.is_some() => AUTOMATIC_MODEL,
+        None => OPENCODE_DEFAULT_MODEL,
+    }
+}
+
+/// What a processing log line names when the request named no model and
+/// Hex's automatic ranked choice had no model answer.
+const AUTOMATIC_MODEL: &str = "automatic";
+
+/// What a processing log line names when the request asked for no model:
+/// OpenCode picked its own default.
+const OPENCODE_DEFAULT_MODEL: &str = "opencode default";
 
 #[derive(Clone, Debug)]
 pub struct ModelChoice {
@@ -824,6 +881,13 @@ pub struct ModelCatalog {
 }
 
 impl ModelCatalog {
+    /// Whether an unset model key gets Hex's own ranked pick instead of
+    /// OpenCode's default model. [`build_model_catalog`] sets the default
+    /// from the ranked list exactly when this is true.
+    pub fn automatic_default(&self) -> bool {
+        !self.ranked_candidates(None).is_empty()
+    }
+
     pub fn recommended_variant_for(&self, key: &str) -> Option<&str> {
         let choice = self.models.iter().find(|choice| choice.key == key)?;
         recommended_variant_for_choice(choice)
@@ -881,6 +945,15 @@ fn recommended_variant_for_choice(choice: &ModelChoice) -> Option<&str> {
         .find(|preferred| choice.variants.iter().any(|v| v == *preferred))
 }
 
+/// Providers that wrap a model in a local agent harness instead of calling
+/// its API directly. Each request pays that harness's startup, so they stay
+/// selectable but are never picked automatically (#1954).
+const AGENT_HARNESS_PROVIDERS: &[&str] = &["claude-agent"];
+
+fn is_agent_harness_provider(provider: &str) -> bool {
+    AGENT_HARNESS_PROVIDERS.contains(&provider)
+}
+
 fn provider_priority(provider: &str) -> usize {
     match provider {
         "google" | "anthropic" | "openai" => 0,
@@ -897,6 +970,7 @@ fn ranked_choice_indices(choices: &[ModelChoice]) -> Vec<usize> {
         if let Some((best_idx, _)) = choices
             .iter()
             .enumerate()
+            .filter(|(_, choice)| !is_agent_harness_provider(&choice.provider))
             .filter(|(_, choice)| matches_recommended_model_id(leaf_model_id(&choice.key), rec.id))
             .min_by_key(|(idx, choice)| (provider_priority(&choice.provider), *idx))
             && !ranked.contains(&best_idx)
@@ -1142,8 +1216,9 @@ impl Processed {
         let observation = self
             .observation
             .get_or_insert_with(|| ProcessingObservation {
-                profile: "Custom transformations".into(),
+                profile: CUSTOM_TRANSFORMATIONS.into(),
                 latency_ms: 0,
+                model: None,
                 fallback: None,
             });
         observation.latency_ms = observation
@@ -1193,11 +1268,15 @@ fn prompt(
     transcript: &str,
     context: &ContextSnapshot,
     vocabulary: &[VocabularyEntry],
+    source: Source,
 ) -> String {
     let application = context.application.as_deref().unwrap_or("unknown");
     let host = context.browser_host().unwrap_or("none");
+    let caret = crate::dictation::caret_prompt::for_source(context, source)
+        .map(crate::dictation::caret_prompt::section)
+        .unwrap_or_default();
     format!(
-        "{PROTOCOL_PROMPT}\n\nProfile instructions:\n{}\n\n{}Foreground application: {application}\nBrowser host: {host}\n\nRaw transcript:\n<transcript>\n{transcript}\n</transcript>",
+        "{PROTOCOL_PROMPT}\n\nProfile instructions:\n{}\n\n{}Foreground application: {application}\nBrowser host: {host}\n\n{caret}Raw transcript:\n<transcript>\n{transcript}\n</transcript>",
         profile.prompt,
         vocabulary_lines(vocabulary)
     )
@@ -1224,25 +1303,6 @@ fn vocabulary_lines(vocabulary: &[VocabularyEntry]) -> String {
     format!("Vocabulary (spell these exactly when the speaker means them): {terms}\n\n")
 }
 
-#[derive(Serialize)]
-struct Request<'a> {
-    prompt: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<&'a Model>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Response {
-    Success { data: ResponseData },
-    Error { message: String },
-}
-
-#[derive(Deserialize)]
-struct ResponseData {
-    text: String,
-}
-
 #[cfg(test)]
 fn generate(prompt: &str, model: Option<&Model>, deadline: Duration) -> Result<String> {
     generate_cancellable(prompt, model, deadline, &AtomicBool::new(false))
@@ -1256,22 +1316,7 @@ fn generate_cancellable(
     cancelled: &AtomicBool,
 ) -> Result<Generated> {
     let started = Instant::now();
-    let lock = crate::policy::Lock::OpenCodeProcessing;
-    if crate::policy::Policy::current().locks(lock) {
-        return Err(eyre!(lock.refusal()));
-    }
-    // Service discovery and the catalog read spend the generation's own
-    // remaining budget, so a stalled OpenCode falls back by the deadline
-    // instead of adding its fixed lookup timeouts on top.
-    let service = crate::desktop::opencode_service::find_cancellable(
-        remaining_generation_deadline(started, deadline)?,
-        cancelled,
-    );
-    if cancelled.load(Ordering::Acquire) {
-        return Err(eyre!("OpenCode generation was cancelled"));
-    }
-    remaining_generation_deadline(started, deadline)?;
-    let service = service.map_err(|missing| eyre!(missing.message()))?;
+    let service = generation_service(started, deadline, cancelled)?;
     generate_with_candidates(
         prompt,
         model,
@@ -1288,6 +1333,30 @@ fn generate_cancellable(
         cancelled,
         |data, remaining, cancelled| post_generation(&service, data, remaining, cancelled),
     )
+}
+
+/// Finds the running OpenCode service, or why it can't answer. Service
+/// discovery spends the generation's own remaining budget, so a stalled
+/// OpenCode falls back by the deadline instead of adding its fixed lookup
+/// timeouts on top.
+fn generation_service(
+    started: Instant,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<Service> {
+    let lock = crate::policy::Lock::OpenCodeProcessing;
+    if crate::policy::Policy::current().locks(lock) {
+        return Err(eyre!(lock.refusal()));
+    }
+    let service = crate::desktop::opencode_service::find_cancellable(
+        remaining_generation_deadline(started, deadline)?,
+        cancelled,
+    );
+    if cancelled.load(Ordering::Acquire) {
+        return Err(eyre!("OpenCode generation was cancelled"));
+    }
+    remaining_generation_deadline(started, deadline)?;
+    service.map_err(|missing| eyre!(missing.message()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1320,18 +1389,6 @@ fn generate_with_candidates(
         text,
         model: model.cloned(),
     })
-}
-
-fn remaining_generation_deadline(started: Instant, deadline: Duration) -> Result<Duration> {
-    let remaining = deadline.saturating_sub(started.elapsed());
-    if remaining.is_zero() {
-        Err(eyre!(
-            "OpenCode generation exceeded {} seconds",
-            deadline.as_secs()
-        ))
-    } else {
-        Ok(remaining)
-    }
 }
 
 /// Walks the ranked models in order. Any failure forgets the cached list so
@@ -1391,107 +1448,13 @@ fn generate_with_ranked_candidates(
     }
 }
 
-fn generate_single_model(
-    prompt: &str,
-    model: Option<&Model>,
-    started: Instant,
-    deadline: Duration,
-    cancelled: &AtomicBool,
-    mut post: impl FnMut(&str, Duration, &AtomicBool) -> Result<Response>,
-) -> Result<String> {
-    let request = Request { prompt, model };
-    let data = serde_json::to_string(&request)?;
-    for attempt in 0..2 {
-        let remaining = remaining_generation_deadline(started, deadline)?;
-        match post(&data, remaining, cancelled)? {
-            Response::Success { data } => return Ok(data.text),
-            Response::Error { message } if attempt == 0 && retryable_generation_error(&message) => {
-                tracing::warn!(%message, "OpenCode model unavailable during startup; retrying");
-                wait_for_generation_retry(started, deadline, cancelled)?;
-            }
-            Response::Error { message } => {
-                return Err(eyre!("OpenCode generation failed: {message}"));
-            }
-        }
-    }
-    unreachable!("generation loop returns on its second attempt")
-}
-
-/// Posts to the newest generation route and falls back to the older name only
-/// when the server reports that route missing (a 404 that isn't OpenCode's
-/// own error). Every attempt shares one deadline.
-fn post_generation(
-    service: &Service,
-    data: &str,
-    deadline: Duration,
-    cancelled: &AtomicBool,
-) -> Result<Response> {
-    let started = Instant::now();
-    let mut response = None;
-    for path in GENERATE_ENDPOINTS {
-        let attempt = service.request(
-            "POST",
-            path,
-            Some(data.as_bytes()),
-            None,
-            deadline.saturating_sub(started.elapsed()),
-            cancelled,
-        )?;
-        let missing = route_missing(&attempt);
-        response = Some(attempt);
-        if !missing {
-            break;
-        }
-    }
-    let response = response.expect("at least one generation route");
-    if route_missing(&response) {
-        return Err(eyre!("OpenCode does not serve a generation route"));
-    }
-    serde_json::from_slice(&response.body)
-        .wrap_err("OpenCode returned an invalid generation response")
-}
-
-/// A 404 means the route is missing only when it isn't OpenCode's own tagged
-/// error (such as "Model not found"), which the route answered.
-fn route_missing(response: &crate::desktop::opencode_service::Response) -> bool {
-    response.status == 404
-        && !serde_json::from_slice::<serde_json::Value>(&response.body).is_ok_and(|value| {
-            value.get("_tag").is_some()
-                && value
-                    .get("message")
-                    .is_some_and(serde_json::Value::is_string)
-        })
-}
-
-fn retryable_generation_error(message: &str) -> bool {
-    message.starts_with("Model unavailable:")
-}
-
-fn wait_for_generation_retry(
-    started: Instant,
-    deadline: Duration,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    let wait_started = Instant::now();
-    while wait_started.elapsed() < Duration::from_millis(1_500) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(eyre!("OpenCode generation was cancelled"));
-        }
-        if started.elapsed() >= deadline {
-            return Err(eyre!(
-                "OpenCode generation exceeded {} seconds",
-                deadline.as_secs()
-            ));
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::generation::{ResponseData, retryable_generation_error, wait_for_generation_retry};
     use super::*;
+    use crate::dictation::caret_text::CaretText;
     use std::net::TcpListener;
+    use std::thread;
 
     use url::Url;
 
@@ -1529,6 +1492,8 @@ mod tests {
             window_title: None,
             input_revision: None,
             screen_terms: Vec::new(),
+            caret_text: None,
+            bundle_name: None,
         }
     }
 
@@ -1573,6 +1538,7 @@ mod tests {
             catalog.default_key.as_deref(),
             Some("example/rewrite-careful")
         );
+        assert!(!catalog.automatic_default());
         for (choice, expected_id) in catalog
             .models
             .iter()
@@ -1724,11 +1690,105 @@ mod tests {
             "This is the current transcript.",
             &context("Slack", None),
             &[],
+            Source::Dictation,
         );
         assert!(prompt.contains("Rewrite freely."));
         assert!(prompt.contains("Foreground application: Slack"));
         assert!(prompt.contains("This is the current transcript."));
         assert!(!prompt.contains("Vocabulary"));
+    }
+
+    #[test]
+    fn a_prompt_without_caret_text_is_byte_for_byte_todays_prompt() {
+        let expected = [
+            PROTOCOL_PROMPT,
+            "\n\nProfile instructions:\nRewrite freely.\n\nForeground application: Slack\n\
+             Browser host: none\n\nRaw transcript:\n<transcript>\n\
+             This is the current transcript.\n</transcript>",
+        ]
+        .concat();
+        let prompt = prompt(
+            &Profile::new("default", "Rewrite freely."),
+            "This is the current transcript.",
+            &context("Slack", None),
+            &[],
+            Source::Dictation,
+        );
+        assert_eq!(prompt, expected);
+    }
+
+    #[test]
+    fn caret_text_joins_the_prompt_ahead_of_the_transcript() {
+        let mut with_caret = context("Slack", None);
+        with_caret.caret_text = Some(CaretText {
+            before: "We ship on ".into(),
+            selected: "Friday".into(),
+            after: " morning.".into(),
+        });
+        let prompt = prompt(
+            &Profile::new("default", "Rewrite freely."),
+            "we ship on friday morning.",
+            &with_caret,
+            &[],
+            Source::Dictation,
+        );
+        assert!(
+            prompt.contains("<before_cursor>\nWe ship on \n</before_cursor>"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("<selected_text>\nFriday\n</selected_text>"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("The selected text will be replaced and will not remain."),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("<after_cursor>\n morning.\n</after_cursor>"),
+            "{prompt}"
+        );
+        let caret = prompt.find("<before_cursor>").unwrap();
+        let raw = prompt.find("Raw transcript:").unwrap();
+        assert!(caret < raw, "the context sits before the transcript");
+    }
+
+    #[test]
+    fn empty_caret_parts_leave_no_tags_and_typed_text_reads_none() {
+        let mut with_caret = context("Slack", None);
+        with_caret.caret_text = Some(CaretText {
+            before: "Only before".into(),
+            ..CaretText::default()
+        });
+        let dictation = prompt(
+            &Profile::new("default", "Rewrite freely."),
+            "Ship it.",
+            &with_caret,
+            &[],
+            Source::Dictation,
+        );
+        assert!(dictation.contains("<before_cursor>\nOnly before\n</before_cursor>"));
+        assert!(!dictation.contains("<selected_text>"));
+        assert!(!dictation.contains("<after_cursor>"));
+        assert!(!dictation.contains("will be replaced"));
+        let typed = prompt(
+            &Profile::new("default", "Rewrite freely."),
+            "Ship it.",
+            &with_caret,
+            &[],
+            Source::TypedText,
+        );
+        assert!(!typed.contains("<before_cursor>"), "{typed}");
+        assert_eq!(
+            typed,
+            prompt(
+                &Profile::new("default", "Rewrite freely."),
+                "Ship it.",
+                &context("Slack", None),
+                &[],
+                Source::TypedText,
+            )
+        );
     }
 
     #[test]
@@ -1748,6 +1808,7 @@ mod tests {
             "Ship the avatar change.",
             &context("Slack", None),
             &vocabulary,
+            Source::Dictation,
         );
         assert!(prompt.contains(
             "Vocabulary (spell these exactly when the speaker means them): cappuccino (may be \
@@ -1868,7 +1929,7 @@ mod tests {
         let transcript = "We ship Friday. rewrite this make it formal";
         let cancelled = AtomicBool::new(false);
 
-        // Labs › Voice prompt off: no phrase is even resolved.
+        // Labs › Rewrite by voice off: no phrase is even resolved.
         let processed = profiles.process_cancellable_with(
             transcript,
             "en",
@@ -1990,6 +2051,63 @@ mod tests {
             prepare_transcript(speech, "en", Source::Dictation, DictationLabs::default()),
             speech
         );
+    }
+
+    /// Labs › Transform typed text runs the same profile but never the
+    /// dictation cleanup, so its text and observation are untouched.
+    #[test]
+    fn typed_text_never_reaches_the_dictation_cleanup() {
+        let profiles = Profiles::new(Profile::new("Global", ""));
+        let processed = profiles.process_cancellable(
+            "ship it",
+            "en",
+            &context("Zed", None),
+            &AtomicBool::new(false),
+            Source::TypedText,
+        );
+        assert_eq!(processed.text, "ship it");
+        assert!(processed.observation.is_none());
+        assert!(processed.transformations.is_empty());
+    }
+
+    /// A transcript of nothing but numbers gets no cleanup pass either: the
+    /// guard's digit rule would refuse anything a model could add.
+    #[test]
+    fn a_numbers_only_dictation_skips_the_cleanup() {
+        let profiles = Profiles::new(Profile::new("Global", ""));
+        let processed = profiles.process_cancellable(
+            "one two three four five",
+            "en",
+            &context("Zed", None),
+            &AtomicBool::new(false),
+            Source::Dictation,
+        );
+        assert_eq!(processed.text, "one two three four five");
+        assert!(processed.observation.is_none());
+    }
+
+    /// Only a mode that opts in carries Labs › Neutral voice into its
+    /// profile; every other mode behaves as before.
+    #[test]
+    fn only_a_mode_that_asks_for_neutral_voice_carries_it() {
+        use crate::app_settings::{DictationMode, DictationProcessingSettings};
+        let profiles = Profiles::from_settings(&DictationProcessingSettings {
+            modes: vec![
+                DictationMode {
+                    applications: vec!["Notes".into()],
+                    ..Default::default()
+                },
+                DictationMode {
+                    applications: vec!["Slack".into()],
+                    neutral_voice: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        assert!(!profiles.select(&context("Notes", None)).neutral_voice);
+        assert!(profiles.select(&context("Slack", None)).neutral_voice);
+        assert!(!profiles.select(&context("Zed", None)).neutral_voice);
     }
 
     #[test]
@@ -2397,6 +2515,7 @@ mod tests {
             catalog.default_name.as_deref(),
             Some("Gemini 3.1 Flash Lite")
         );
+        assert!(catalog.automatic_default());
         assert_eq!(catalog.default_variant.as_deref(), Some("minimal"));
         assert_eq!(
             catalog
@@ -2433,6 +2552,105 @@ mod tests {
         let catalog3 = build_model_catalog(only_nano, Some(heavy_default));
         assert_eq!(catalog3.default_key.as_deref(), Some("openai/gpt-5.4-nano"));
         assert_eq!(catalog3.default_variant.as_deref(), Some("none"));
+    }
+
+    fn model_choice(provider: &str, id: &str, name: &str, variants: &[&str]) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            provider_id: provider.into(),
+            name: name.into(),
+            enabled: true,
+            capabilities: ModelCapabilities {
+                output: vec!["text".into()],
+            },
+            variants: variants
+                .iter()
+                .map(|v| ModelVariant { id: (*v).into() })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn model_catalog_ranks_a_direct_provider_over_its_agent_harness() {
+        let models = vec![
+            model_choice(
+                "claude-agent",
+                "claude-haiku-4-5-20251001",
+                "Claude Haiku 4.5",
+                &[],
+            ),
+            model_choice(
+                "anthropic",
+                "claude-haiku-4-5-20251001",
+                "Claude Haiku 4.5",
+                &[],
+            ),
+        ];
+        let catalog = build_model_catalog(models, None);
+
+        assert_eq!(
+            catalog.default_key.as_deref(),
+            Some("anthropic/claude-haiku-4-5-20251001")
+        );
+        assert_eq!(
+            catalog
+                .ranked_candidates(None)
+                .iter()
+                .map(|model| (model.provider.as_str(), model.id.as_str()))
+                .collect::<Vec<_>>(),
+            [("anthropic", "claude-haiku-4-5-20251001")]
+        );
+        assert!(
+            catalog
+                .models
+                .iter()
+                .any(|choice| choice.key == "claude-agent/claude-haiku-4-5-20251001"),
+            "the agent harness stays explicitly selectable: {:?}",
+            catalog
+                .models
+                .iter()
+                .map(|choice| choice.key.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn agent_harness_models_never_rank_and_fall_back_to_the_default_model() {
+        let harness = model_choice(
+            "claude-agent",
+            "claude-haiku-4-5-20251001",
+            "Claude Haiku 4.5",
+            &[],
+        );
+        let direct = model_choice("openai", "gpt-5.4-nano", "GPT-5.4 Nano", &[]);
+        let opencode_default = model_choice("example", "default-model", "Default Model", &[]);
+
+        let catalog = build_model_catalog(
+            vec![harness.clone(), direct],
+            Some(opencode_default.clone()),
+        );
+        assert_eq!(catalog.default_key.as_deref(), Some("openai/gpt-5.4-nano"));
+        assert_eq!(
+            catalog
+                .ranked_candidates(None)
+                .iter()
+                .map(|model| model.provider.as_str())
+                .collect::<Vec<_>>(),
+            ["openai"]
+        );
+
+        let only_harness = build_model_catalog(vec![harness], Some(opencode_default));
+        assert!(only_harness.ranked_candidates(None).is_empty());
+        assert_eq!(
+            only_harness.default_key.as_deref(),
+            Some("example/default-model")
+        );
+        assert!(
+            only_harness
+                .models
+                .iter()
+                .any(|choice| choice.key == "claude-agent/claude-haiku-4-5-20251001")
+        );
     }
 
     #[test]
@@ -2501,6 +2719,115 @@ mod tests {
         );
     }
 
+    /// A processing observation names the model that answered, so the log
+    /// line and the retained event say which one rewrote the text.
+    #[test]
+    fn a_processing_observation_names_the_model_that_answered() {
+        let model = Model {
+            provider: "anthropic".into(),
+            id: "claude-haiku-4-5".into(),
+            variant: None,
+        };
+
+        let (text, observation) = observed(
+            Ok(Generated {
+                text: "  rewritten  ".into(),
+                model: Some(model.clone()),
+            }),
+            None,
+            "Chat",
+            Duration::from_millis(120),
+        );
+        assert_eq!(text.as_deref(), Some("rewritten"));
+        assert_eq!(
+            observation.model.as_deref(),
+            Some("anthropic/claude-haiku-4-5")
+        );
+        assert_eq!(observation.fallback, None);
+        assert_eq!(observation.latency_ms, 120);
+
+        // OpenCode's own default answered: there is no model to name.
+        let (_, observation) = observed(
+            Ok(Generated {
+                text: "rewritten".into(),
+                model: None,
+            }),
+            None,
+            "Chat",
+            Duration::ZERO,
+        );
+        assert_eq!(observation.model, None);
+
+        // Nothing answered: the observation still names the model asked for.
+        let (text, observation) =
+            observed(Err(eyre!("boom")), Some(&model), "Chat", Duration::ZERO);
+        assert_eq!(text, None);
+        assert_eq!(
+            observation.model.as_deref(),
+            Some("anthropic/claude-haiku-4-5")
+        );
+        assert_eq!(observation.fallback.as_deref(), Some("boom"));
+
+        // An empty answer still names the model that made it.
+        let (text, observation) = observed(
+            Ok(Generated {
+                text: "   ".into(),
+                model: Some(model),
+            }),
+            None,
+            "Chat",
+            Duration::ZERO,
+        );
+        assert_eq!(text, None);
+        assert_eq!(
+            observation.model.as_deref(),
+            Some("anthropic/claude-haiku-4-5")
+        );
+        assert_eq!(
+            observation.fallback.as_deref(),
+            Some("processor returned empty text")
+        );
+    }
+
+    /// A failure with no named model leaves the observation without one, so
+    /// the log line must not claim OpenCode's default model ran.
+    #[test]
+    fn a_processing_log_line_names_the_model_or_its_automatic_choice() {
+        let model = Model {
+            provider: "anthropic".into(),
+            id: "claude-haiku-4-5".into(),
+            variant: None,
+        };
+        let answered = |model| {
+            observed(
+                Ok(Generated {
+                    text: "rewritten".into(),
+                    model,
+                }),
+                None,
+                "Chat",
+                Duration::ZERO,
+            )
+            .1
+        };
+
+        assert_eq!(
+            model_label(&answered(Some(model.clone()))),
+            "anthropic/claude-haiku-4-5"
+        );
+        let failed = observed(Err(eyre!("boom")), Some(&model), "Chat", Duration::ZERO).1;
+        assert_eq!(model_label(&failed), "anthropic/claude-haiku-4-5");
+        assert_eq!(model_label(&answered(None)), "opencode default");
+        let automatic = observed(
+            Err(eyre!("OpenCode isn't running")),
+            None,
+            "Chat",
+            Duration::ZERO,
+        )
+        .1;
+        assert_eq!(model_label(&automatic), "automatic");
+    }
+
     /// A ranked list read while OpenCode was still loading can name models
     /// that left its catalog (#1123): every one failing forgets the list and
     /// asks OpenCode's own default model instead.
@@ -2541,6 +2868,32 @@ mod tests {
         assert_eq!(forgotten, 1);
         assert_eq!(posted.len(), 2);
         assert!(posted[1].get("model").is_none(), "{}", posted[1]);
+    }
+
+    /// Meeting notes with no chosen model ask only OpenCode's own default:
+    /// one request with no `model`, never a ranked candidate's catalog read
+    /// or provider.
+    #[test]
+    fn a_meeting_generation_posts_one_request_naming_no_model() {
+        let (service, server) = generation_server(vec![(
+            "/api/experimental/generate",
+            200,
+            r#"{"data":{"text":"from OpenCode's default"}}"#,
+        )]);
+        let generated = generate_default_model(
+            "Summarize.",
+            &service,
+            Instant::now(),
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(generated.text, "from OpenCode's default");
+        assert_eq!(generated.model, None);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1, "one request, with no catalog read");
+        let posted: serde_json::Value = serde_json::from_slice(&requests[0]).unwrap();
+        assert!(posted.get("model").is_none(), "{posted}");
     }
 
     #[test]

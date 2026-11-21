@@ -18,6 +18,8 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
     private(set) var isHeld = false
     private var typedWhileHeld = false
     private var lastTapDown: TimeInterval?
+    /// This press turned shift on (from off).
+    private var pressTurnedOn = false
 
     init(state: ShiftState = .off) {
         self.state = state
@@ -25,9 +27,16 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
 
     var isUppercase: Bool { state != .off || isHeld }
 
+    /// Whether the keys still look as they did before this press. Apple's keyboard shows a press
+    /// that turns shift on only when it lifts (iOS 27.2: held from off, the key isn't shaded and
+    /// the letters stay lowercase), though a letter typed meanwhile is a capital; a press that
+    /// turns shift or caps lock off shades the key at once.
+    var pressShowsOff: Bool { isHeld && pressTurnedOn && !typedWhileHeld }
+
     mutating func shiftDown(now: TimeInterval) {
         isHeld = true
         typedWhileHeld = false
+        pressTurnedOn = false
         if state == .locked {
             state = .off
             lastTapDown = nil
@@ -35,6 +44,7 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
             state = .locked
             lastTapDown = nil
         } else {
+            pressTurnedOn = state == .off
             state = state == .off ? .on : .off
             lastTapDown = now
         }
@@ -42,6 +52,7 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
 
     mutating func shiftUp() {
         isHeld = false
+        pressTurnedOn = false
         if typedWhileHeld {
             // A chord, not a tap: it neither stays on nor counts toward a double tap.
             typedWhileHeld = false
@@ -95,8 +106,9 @@ nonisolated enum AutoCapitalization {
 
     /// Whether the next letter should be a capital. `before` is the text before the cursor,
     /// which web views sometimes report as `nil` even when the field has text: only the
-    /// start of an empty field capitalizes then.
-    static func shouldCapitalize(mode: Mode, before: String?, hasText: Bool) -> Bool {
+    /// start of an empty field capitalizes then. In Greek, ; is the question mark and ends a
+    /// sentence too, as on the system Greek keyboard ("Τι κάνεις; Καλά").
+    static func shouldCapitalize(mode: Mode, before: String?, hasText: Bool, language: KeyboardLanguage = .english) -> Bool {
         switch mode {
         case .none:
             return false
@@ -121,7 +133,7 @@ nonisolated enum AutoCapitalization {
             trimmed = trimmed.dropLast()
         }
         guard let ender = trimmed.last else { return false }
-        return sentenceEnders.contains(ender)
+        return sentenceEnders.contains(ender) || (language == .greek && (ender == ";" || ender == "\u{037E}"))
     }
 }
 

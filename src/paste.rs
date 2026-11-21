@@ -1,3 +1,11 @@
+#[cfg(hex_capture)]
+pub(crate) mod browse;
+#[cfg(hex_capture)]
+pub(crate) mod capture;
+#[cfg(hex_capture)]
+pub(crate) mod gesture;
+#[cfg(hex_capture)]
+pub(crate) mod recent;
 pub(crate) mod return_to_app;
 
 use std::ffi::{c_char, c_void};
@@ -5,6 +13,7 @@ use std::fs;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -16,13 +25,32 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSData, NSString};
 
+use crate::continuation::{Continuation, InputActivity};
 use crate::keyboard;
-use crate::suppression::InputActivity;
+
+/// Every paste into another app since this process started, bumped before
+/// the app is touched. A watch that outlives its paste compares it to tell a
+/// reading taken before a newer paste from one a newer paste may have
+/// replaced. Not gated by any lab: it only orders pastes.
+static PASTE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The newest paste's generation, read after a paste and again after every
+/// read of a watched field.
+pub(crate) fn paste_generation() -> u64 {
+    PASTE_GENERATION.load(Ordering::Acquire)
+}
+
+/// Marks a paste into another app that goes around [`Paster::insert_text`]
+/// (a capture's sheet and summary), so a running watch knows the field may
+/// have changed under it.
+pub(crate) fn note_paste() {
+    PASTE_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
 
 pub struct Paster {
     clipboard: Retained<NSPasteboard>,
     activity: InputActivity,
-    continuation: Option<Continuation>,
+    continuation: Continuation,
     clipboard_restore: Arc<Mutex<ClipboardRestore>>,
     prepared_clipboard: Option<PreparedClipboard>,
 }
@@ -34,6 +62,12 @@ pub enum PasteMode {
     /// Labs › Copy dictation only: the text goes to the clipboard as an
     /// ordinary entry and nothing is pasted, typed, or restored.
     CopyOnly,
+    /// Labs › YOLO mode: pastes as `Continue` does, but what may be sent
+    /// can't be continued. `Return` sends it.
+    Send,
+    /// Labs › YOLO mode: presses Return after a `Send` paste; the text is
+    /// ignored.
+    Return,
 }
 
 struct PreparedClipboard {
@@ -42,9 +76,14 @@ struct PreparedClipboard {
     capture_ms: u128,
 }
 
-struct Continuation {
-    revision: u64,
-    inserted: String,
+/// How Hex inserts a dictation into an app that can't take a paste.
+enum Typing {
+    /// Type the text as fast as its events post: Chromium 155 and 156 can drop
+    /// a ⌘V that races their own pasteboard change notification.
+    Burst,
+    /// Type one character at a time, paced: Microsoft's Windows App reads a
+    /// synthetic shortcut as its bare key (#1048), so it gets typed text.
+    Paced,
 }
 
 #[derive(Default)]
@@ -106,6 +145,10 @@ const PASTE_SETTLE_DELAY: Duration = Duration::from_millis(100);
 // change notification, however long Hex waits first (#136, #212). The bug
 // arrived with Chromium CL 8217390 and is fixed by CL 8503629 in 157.
 const CLIPBOARD_RACE_CHROMIUM: RangeInclusive<u32> = 155..=156;
+// Microsoft's Windows App (formerly Microsoft Remote Desktop) reads Hex's
+// synthetic ⌘V as a bare "v" (#1048), so Hex types its dictation instead,
+// one paced key at a time.
+const REMOTE_DESKTOP_CLIENTS: &[&str] = &["com.microsoft.rdc.macos", "com.microsoft.windowsapp"];
 const SYSTEM_TRANSLATED_FLAVOR: u32 = 1 << 8;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -183,7 +226,7 @@ impl Paster {
         Self {
             clipboard: NSPasteboard::generalPasteboard(),
             activity,
-            continuation: None,
+            continuation: Continuation::default(),
             clipboard_restore: Arc::new(Mutex::new(ClipboardRestore::default())),
             prepared_clipboard: None,
         }
@@ -216,44 +259,121 @@ impl Paster {
         }
     }
 
-    pub fn paste(&mut self, text: &str, mode: PasteMode) -> Result<()> {
+    /// Inserts `text` and returns exactly what reached the app: the
+    /// continuation join's capitalization and leading space, or smart
+    /// spacing, are part of what the app holds and so of what a watch
+    /// compares. Copy-only returns an empty string, as nothing was inserted.
+    pub fn paste(&mut self, text: &str, mode: PasteMode) -> Result<String> {
         if matches!(mode, PasteMode::CopyOnly) {
-            return self.copy_only(text);
+            self.copy_only(text)?;
+            return Ok(String::new());
         }
+        if matches!(mode, PasteMode::Send) {
+            let inserted = self.paste(text, PasteMode::Continue)?;
+            self.continuation.clear();
+            return Ok(inserted);
+        }
+        if matches!(mode, PasteMode::Return) {
+            keyboard::post_return()?;
+            return Ok(String::new());
+        }
+        self.insert_text(text, mode, None)
+    }
+
+    /// A selected dictation is text only. The picker has no route, Return,
+    /// or copy-only mode, and it never activates another app.
+    #[cfg(hex_capture)]
+    fn insert_recent_text(&mut self, text: &str, target: &recent::Target) -> Result<()> {
+        self.insert_text(text, PasteMode::Continue, Some(&|| target.unchanged()))
+            .map(drop)
+    }
+
+    fn insert_text(
+        &mut self,
+        text: &str,
+        mode: PasteMode,
+        target: Option<&dyn Fn() -> bool>,
+    ) -> Result<String> {
+        // Before anything reaches the app: a watch still reading another
+        // field may only learn from text taken before this paste.
+        note_paste();
         let revision = self.activity.revision();
-        let continuation = self.continuation.as_ref().filter(|continuation| {
-            !matches!(mode, PasteMode::Standalone) && continuation.revision == revision
-        });
-        let text = match continuation {
-            Some(continuation) => join(&continuation.inserted, text),
-            // Read as the paste commits, so the toggle applies at once.
-            None if crate::labs::smart_spacing() => with_smart_spacing(text),
-            None => text.to_string(),
-        };
-        if crate::dictation::context::frontmost_bundle_path()
-            .is_some_and(|bundle| has_clipboard_race(&bundle))
-        {
-            if matches!(mode, PasteMode::Standalone) {
-                self.continuation = None;
-            }
-            tracing::debug!("typing instead of pasting into Chromium 155 or 156");
-            keyboard::type_text(&text)?;
-            if crate::labs::keep_on_clipboard() {
-                self.clipboard_restore
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .keep();
-                if let Err(error) = write_clipboard_text(&self.clipboard, &text, false) {
-                    tracing::warn!(%error, "could not leave the dictation on the clipboard");
+        let joinable = !matches!(mode, PasteMode::Standalone);
+        let text = self
+            .continuation
+            .join(revision, joinable, text)
+            .unwrap_or_else(|| {
+                // Read as the paste commits, so the toggle applies at once.
+                if crate::labs::smart_spacing() {
+                    with_smart_spacing(text)
+                } else {
+                    text.to_string()
                 }
+            });
+        // Paste Last rechecks the app and field it captured, so a new focus
+        // never receives an older dictation or capture.
+        let focused = || target.is_none_or(|check| check());
+        match typing_for_frontmost() {
+            Some(_) if target.is_some() && text.contains(['\r', '\n']) => {
+                return Err(eyre!(
+                    "this app requires typing; Paste Last cannot type line breaks"
+                ));
             }
-        } else {
-            self.paste_through_clipboard(&text, mode)?;
+            Some(typing) if focused() => {
+                self.type_into_frontmost(&text, joinable, typing, focused)?
+            }
+            Some(_) => return Err(eyre!("paste target changed")),
+            None => self.paste_through_clipboard(&text, joinable, focused)?,
         }
-        self.continuation = (!matches!(mode, PasteMode::Standalone)).then_some(Continuation {
-            revision,
-            inserted: text,
-        });
+        self.continuation.record(revision, joinable, text.clone());
+        Ok(text)
+    }
+
+    /// Inserts `text` as synthesized key events instead of a clipboard paste,
+    /// for the apps [`typing_for_frontmost`] names. Nothing is captured for a
+    /// restore; Labs › Keep dictation on clipboard still leaves the text on
+    /// the clipboard after typing.
+    fn type_into_frontmost(
+        &mut self,
+        text: &str,
+        joinable: bool,
+        typing: Typing,
+        focused: impl Fn() -> bool,
+    ) -> Result<()> {
+        // Standalone text starts its own sentence, never a continuation of
+        // the dictation before it.
+        if !joinable {
+            self.continuation.clear();
+        }
+        match typing {
+            Typing::Burst => {
+                tracing::debug!("typing instead of pasting into Chromium 155 or 156");
+                keyboard::type_text(text)?;
+            }
+            Typing::Paced => {
+                tracing::debug!("typing instead of pasting into Windows App");
+                // Typing a transcript takes seconds, so the app in front is
+                // watched at each character: keys the user meant for another
+                // app never land there, and stopping keeps the text for Paste
+                // last dictation instead of pasting it a second time.
+                keyboard::type_text_paced(text, || {
+                    let in_front = remote_desktop_client_in_front() && focused();
+                    if !in_front {
+                        tracing::warn!("stopped typing into Windows App: another app is in front");
+                    }
+                    in_front
+                })?;
+            }
+        }
+        if crate::labs::keep_on_clipboard() {
+            self.clipboard_restore
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keep();
+            if let Err(error) = write_clipboard_text(&self.clipboard, text, false) {
+                tracing::warn!(%error, "could not leave the dictation on the clipboard");
+            }
+        }
         Ok(())
     }
 
@@ -261,7 +381,7 @@ impl Paster {
     /// text, and no restore. A pending restore stands down and no earlier
     /// snapshot comes back, and the next paste starts a new continuation.
     fn copy_only(&mut self, text: &str) -> Result<()> {
-        self.continuation = None;
+        self.continuation.clear();
         self.prepared_clipboard = None;
         self.clipboard_restore
             .lock()
@@ -270,7 +390,12 @@ impl Paster {
         write_clipboard_text(&self.clipboard, text, false)
     }
 
-    fn paste_through_clipboard(&mut self, text: &str, mode: PasteMode) -> Result<()> {
+    fn paste_through_clipboard(
+        &mut self,
+        text: &str,
+        joinable: bool,
+        focused: impl Fn() -> bool,
+    ) -> Result<()> {
         let generation = {
             let mut restore = self
                 .clipboard_restore
@@ -295,11 +420,17 @@ impl Paster {
                 );
                 snapshot
             };
+            if !focused() {
+                return Err(eyre!("paste target changed"));
+            }
             if self.clipboard.changeCount() != previous_change_count {
                 return Err(eyre!("clipboard changed while Hex was preserving it"));
             }
-            if matches!(mode, PasteMode::Standalone) {
-                self.continuation = None;
+            // Standalone text starts its own sentence, once the clipboard is
+            // safely preserved; a failure before this leaves the continuation
+            // alone, as it inserted nothing.
+            if !joinable {
+                self.continuation.clear();
             }
             // Read as the paste commits, so the toggle applies at once.
             let keep = crate::labs::keep_on_clipboard();
@@ -320,7 +451,13 @@ impl Paster {
 
         let clipboard_restore = self.clipboard_restore.clone();
         complete_paste(
-            || keyboard::post_command('v'),
+            || {
+                if focused() {
+                    keyboard::post_command('v')
+                } else {
+                    Err(eyre!("paste target changed"))
+                }
+            },
             move || {
                 let Some(generation) = generation else {
                     return;
@@ -352,6 +489,30 @@ impl Paster {
             thread::sleep,
         )
     }
+}
+
+/// How this paste inserts the text, or `None` for a clipboard paste. The
+/// bundle identifier decides first, so a remote desktop client never pays for
+/// the Chromium check; every other app keeps it.
+fn typing_for_frontmost() -> Option<Typing> {
+    if remote_desktop_client_in_front() {
+        return Some(Typing::Paced);
+    }
+    let bundle = crate::dictation::context::frontmost_bundle_path()?;
+    has_clipboard_race(&bundle).then_some(Typing::Burst)
+}
+
+/// Whether the app in front is a remote desktop client that gets typed text.
+fn remote_desktop_client_in_front() -> bool {
+    crate::dictation::context::frontmost_bundle_id()
+        .as_deref()
+        .is_some_and(is_remote_desktop_client)
+}
+
+fn is_remote_desktop_client(bundle_id: &str) -> bool {
+    REMOTE_DESKTOP_CLIENTS
+        .iter()
+        .any(|client| client.eq_ignore_ascii_case(bundle_id))
 }
 
 /// Whether the app at `bundle` embeds a Chromium 155 or 156 framework. Every
@@ -652,23 +813,6 @@ fn cf_data(value: CfDataRef) -> Result<Vec<u8>> {
     Ok(unsafe { std::slice::from_raw_parts(bytes, length as usize) }.to_vec())
 }
 
-fn join(previous: &str, next: &str) -> String {
-    let sentence_start = ends_sentence(previous);
-    let mut next = set_initial_case(next, sentence_start);
-    let needs_space = previous
-        .chars()
-        .next_back()
-        .is_some_and(|character| !character.is_whitespace() && !is_opening(character))
-        && next
-            .chars()
-            .next()
-            .is_some_and(|character| !character.is_whitespace() && !is_closing(character));
-    if needs_space {
-        next.insert(0, ' ');
-    }
-    next
-}
-
 /// Labs › Smart spacing: one leading space when the character before the
 /// focused app's cursor asks for it. A selection, or a cursor the app
 /// doesn't expose through Accessibility, leaves the text unchanged.
@@ -700,73 +844,11 @@ fn needs_leading_space(previous: char, text: &str) -> bool {
         )
 }
 
-fn ends_sentence(text: &str) -> bool {
-    text.trim_end()
-        .trim_end_matches(['\'', '"', ')', ']', '}'])
-        .ends_with(['.', '?', '!'])
-}
-
-fn is_opening(character: char) -> bool {
-    matches!(character, '(' | '[' | '{')
-}
-
 fn is_closing(character: char) -> bool {
     matches!(
         character,
         ',' | '.' | '?' | '!' | ';' | ':' | ')' | ']' | '}'
     )
-}
-
-fn set_initial_case(text: &str, uppercase: bool) -> String {
-    let Some((index, character)) = text
-        .char_indices()
-        .find(|(_, character)| character.is_alphabetic())
-    else {
-        return text.to_string();
-    };
-    if uppercase && character.is_lowercase() {
-        return replace_character(text, index, character.to_uppercase());
-    }
-    if !uppercase && character.is_uppercase() && sentence_initial_word(text, index) {
-        return replace_character(text, index, character.to_lowercase());
-    }
-    text.to_string()
-}
-
-fn sentence_initial_word(text: &str, start: usize) -> bool {
-    let word = text[start..]
-        .split(|character: char| !character.is_alphabetic() && character != '\'')
-        .next()
-        .unwrap_or_default();
-    matches!(
-        word.to_ascii_lowercase().as_str(),
-        "a" | "an"
-            | "and"
-            | "as"
-            | "because"
-            | "but"
-            | "for"
-            | "if"
-            | "nor"
-            | "or"
-            | "so"
-            | "the"
-            | "then"
-            | "though"
-            | "to"
-            | "when"
-            | "while"
-            | "yet"
-    )
-}
-
-fn replace_character(text: &str, index: usize, replacement: impl Iterator<Item = char>) -> String {
-    let character_length = text[index..].chars().next().unwrap().len_utf8();
-    let mut output = String::with_capacity(text.len());
-    output.push_str(&text[..index]);
-    output.extend(replacement);
-    output.push_str(&text[index + character_length..]);
-    output
 }
 
 #[cfg(test)]
@@ -776,6 +858,12 @@ mod tests {
     use super::*;
 
     static PASTEBOARD_TEST: Mutex<()> = Mutex::new(());
+
+    fn continuation_of(revision: u64, inserted: &str) -> Continuation {
+        let mut continuation = Continuation::default();
+        continuation.record(revision, true, inserted.into());
+        continuation
+    }
 
     #[test]
     fn sequential_pastes_settle_before_overwrite() {
@@ -846,6 +934,22 @@ mod tests {
 
         assert_eq!(result.unwrap_err().to_string(), "post failed");
         assert_eq!(steps.into_inner(), ["post", "restore"]);
+    }
+
+    /// Microsoft's Windows App and the Remote Desktop client it replaced are
+    /// the apps whose dictation is typed instead of pasted (#1048).
+    #[test]
+    fn recognises_the_remote_desktop_clients_by_bundle_identifier() {
+        assert!(is_remote_desktop_client("com.microsoft.rdc.macos"));
+        assert!(is_remote_desktop_client("com.microsoft.windowsapp"));
+        assert!(is_remote_desktop_client("COM.MICROSOFT.WINDOWSAPP"));
+        for other in [
+            "com.apple.Safari",
+            "com.microsoft.Word",
+            "com.microsoft.rdc.macos.beta",
+        ] {
+            assert!(!is_remote_desktop_client(other), "{other}");
+        }
     }
 
     #[test]
@@ -937,20 +1041,6 @@ mod tests {
     }
 
     #[test]
-    fn joins_contiguous_dictation_with_sentence_aware_spacing() {
-        assert_eq!(
-            join("Because if I don't do that,", "And if you see it."),
-            " and if you see it."
-        );
-        assert_eq!(
-            join("And if you see it.", "well, that works."),
-            " Well, that works."
-        );
-        assert_eq!(join("Already spaced. ", "Next sentence."), "Next sentence.");
-        assert_eq!(join("Hello", ", world."), ", world.");
-    }
-
-    #[test]
     fn smart_spacing_adds_a_space_only_where_one_belongs() {
         for previous in ['a', 'Z', '7', '.', '?', ')', '”'] {
             assert!(needs_leading_space(previous, "in progress"), "{previous:?}");
@@ -964,12 +1054,6 @@ mod tests {
         assert!(!needs_leading_space('a', ""));
         assert!(!needs_leading_space('a', " already spaced"));
         assert!(!needs_leading_space('a', ", then more"));
-    }
-
-    #[test]
-    fn preserves_likely_proper_nouns_mid_sentence() {
-        assert_eq!(join("Open", "GitHub next."), " GitHub next.");
-        assert_eq!(join("Message", "Slack now."), " Slack now.");
     }
 
     #[test]
@@ -1062,10 +1146,7 @@ mod tests {
         let mut paster = Paster {
             clipboard: clipboard.clone(),
             activity: InputActivity::default(),
-            continuation: Some(Continuation {
-                revision: 0,
-                inserted: "earlier".into(),
-            }),
+            continuation: continuation_of(0, "earlier"),
             clipboard_restore: Arc::new(Mutex::new(ClipboardRestore::default())),
             prepared_clipboard: None,
         };
@@ -1102,7 +1183,7 @@ mod tests {
         assert_eq!(restore.original, None);
         assert_eq!(restore.last_change_count, None);
         drop(restore);
-        assert!(paster.continuation.is_none());
+        assert_eq!(paster.continuation.join(0, true, "next"), None);
     }
 
     #[test]
@@ -1152,7 +1233,7 @@ mod tests {
         let mut paster = Paster {
             clipboard: clipboard.clone(),
             activity: InputActivity::default(),
-            continuation: None,
+            continuation: Continuation::default(),
             clipboard_restore: Arc::new(Mutex::new(ClipboardRestore::default())),
             prepared_clipboard: None,
         };

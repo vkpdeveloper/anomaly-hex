@@ -77,6 +77,14 @@ pub enum DictationAudioEvent {
         /// A programmatic capture's audio delivered before the gap.
         kept: Option<DictationClip>,
     },
+    /// Labs › Stop phrase: the capture's live text ended with the phrase
+    /// (committed, or read twice in a row), so its listener finishes it as the
+    /// shortcut's press would. The words are the ones that matched, and the
+    /// generation keeps a request from outliving its capture.
+    StopPhrase {
+        capture_generation: u64,
+        phrase: String,
+    },
 }
 
 /// A capture the microphone ended before its finish reached the owner.
@@ -103,6 +111,9 @@ struct State {
     device_name: Mutex<String>,
     recording: AtomicBool,
     recovering: AtomicBool,
+    /// Whether the microphone stream is open, for the listener: while it is
+    /// not, a press anchors its capture to wall-clock time.
+    open: AtomicBool,
     recognition_generation: AtomicU64,
     outstanding_recognition_frames: Arc<AtomicU64>,
     capture_generation: AtomicU64,
@@ -135,11 +146,21 @@ enum Command {
     Cancel {
         reply: SyncSender<()>,
     },
+    #[cfg(hex_capture)]
+    CancelSpoken {
+        at: CaptureInstant,
+        reply: SyncSender<Vec<f32>>,
+    },
     SelectMicrophone {
         revision: u64,
         device: Option<String>,
     },
     SetReleaseWhileIdle(bool),
+    /// The person demonstrably cannot dictate (the display asleep, the
+    /// session locked, or the Mac asleep): a warm microphone released for
+    /// that reason closes at once instead of waiting out Labs › Keep mic
+    /// open after dictating's window.
+    SetAway(bool),
     Shutdown,
     #[cfg(test)]
     InvalidateRecognition {
@@ -161,6 +182,10 @@ enum Command {
 struct Owner {
     input: RecoveringAudioInput,
     release_while_idle: bool,
+    /// Whether the person is demonstrably away (the display asleep, the
+    /// session locked, or the Mac asleep). Away releases the warm microphone
+    /// without the lab's linger window.
+    away: bool,
     /// Labs › Keep mic open after dictating: how long a finished or
     /// cancelled capture's microphone keeps open before it is released.
     linger: MicrophoneLinger,
@@ -184,6 +209,9 @@ struct Owner {
     stream_opened_at: Option<Instant>,
     /// When the timeline last had a gap or the stream last failed.
     discontinuity_at: Option<Instant>,
+    /// Labs › Stop phrase: this capture's detector, fresh for every capture
+    /// (a finished one never counts toward the next).
+    stop_phrase: crate::dictation::stop_phrase::Detector,
     /// The `capture` experiment's sink. While set, the microphone stays open
     /// even with release-while-idle and switches only once it closes.
     #[cfg(hex_capture)]
@@ -293,6 +321,13 @@ impl DictationAudio {
         self.state.recovering.load(Ordering::Acquire)
     }
 
+    /// Whether the microphone stream is open now. A press makes its capture
+    /// start at wall-clock time until this is true again, because a closed
+    /// input has no timeline to anchor to.
+    pub fn is_open(&self) -> bool {
+        self.state.open.load(Ordering::Acquire)
+    }
+
     pub fn request_selection(&self, revision: u64, device: Option<&str>) {
         let _ = self.commands.send(Command::SelectMicrophone {
             revision,
@@ -302,6 +337,13 @@ impl DictationAudio {
 
     pub fn set_release_while_idle(&self, release: bool) {
         let _ = self.commands.send(Command::SetReleaseWhileIdle(release));
+    }
+
+    /// Tells the owner whether the person is away (the display asleep, the
+    /// session locked, or the Mac asleep): away closes the released warm
+    /// microphone at once rather than after the lab's linger window.
+    pub fn set_away(&self, away: bool) {
+        let _ = self.commands.send(Command::SetAway(away));
     }
 
     pub fn recognition_generation(&self) -> u64 {
@@ -356,6 +398,11 @@ impl DictationAudio {
 
     pub fn cancel(&self) -> Result<()> {
         self.call(|reply| Command::Cancel { reply })
+    }
+
+    #[cfg(hex_capture)]
+    pub fn cancel_spoken(&self, at: CaptureInstant) -> Result<Vec<f32>> {
+        self.call(|reply| Command::CancelSpoken { at, reply })
     }
 
     #[cfg(hex_capture)]
@@ -482,6 +529,9 @@ impl DictationAudio {
                 }
                 | DictationAudioEvent::CaptureDiscontinuity {
                     capture_generation, ..
+                }
+                | DictationAudioEvent::StopPhrase {
+                    capture_generation, ..
                 } => Some(*capture_generation),
                 _ => None,
             };
@@ -553,6 +603,7 @@ impl Owner {
             device_name: Mutex::new(device_name),
             recording: AtomicBool::new(false),
             recovering: AtomicBool::new(input.is_recovering()),
+            open: AtomicBool::new(input.is_open()),
             recognition_generation: AtomicU64::new(0),
             outstanding_recognition_frames: Arc::new(AtomicU64::new(0)),
             capture_generation: AtomicU64::new(0),
@@ -572,6 +623,7 @@ impl Owner {
         let owner = Self {
             input,
             release_while_idle,
+            away: false,
             linger: MicrophoneLinger::default(),
             pending_capture: None,
             capture,
@@ -588,6 +640,7 @@ impl Owner {
             keep_on_loss: false,
             stream_opened_at,
             discontinuity_at: None,
+            stop_phrase: crate::dictation::stop_phrase::Detector::new(),
             #[cfg(hex_capture)]
             capture_sink: None,
         };
@@ -634,6 +687,9 @@ impl Owner {
     fn handle(&mut self, command: Command) -> bool {
         match command {
             Command::Start { at, kind, reply } => {
+                // Labs › Stop phrase: a new capture listens for the phrase
+                // from its own words.
+                self.stop_phrase = crate::dictation::stop_phrase::Detector::new();
                 // Draining can discover a failure belonging to the previous capture or idle
                 // period. Validate and advance the new capture only after that drain.
                 if self.input.is_open() && !self.input.is_recovering() {
@@ -682,6 +738,11 @@ impl Owner {
                 let _ = reply.send(became_intentional);
             }
             Command::Finish { at, tail, reply } => {
+                // The clip keeps audio through `at + tail` (a grown tail only
+                // ever keeps more), so the live stream must hear no further:
+                // everything past it is audio the clip trims away, and the
+                // engine treats a stream fed well past the clip as unusable.
+                self.capture.limit_stream_to(at, tail);
                 self.drain_through(at);
                 let announced = self.pending_capture.is_none()
                     && !tail.is_zero()
@@ -717,6 +778,23 @@ impl Owner {
                     self.handle_input(event);
                 }
             }
+            #[cfg(hex_capture)]
+            Command::CancelSpoken { at, reply } => {
+                self.state.recording.store(false, Ordering::Release);
+                let samples = if self.pending_capture.take().is_some() {
+                    if !self.input.is_open() && !self.capture_sink_open() {
+                        self.input.cancel_open();
+                    }
+                    self.capture.cancel();
+                    Vec::new()
+                } else {
+                    match self.capture.finish_with_tail(at, Duration::ZERO) {
+                        Finish::Transcribe(clip) => clip.into_cancel_samples(),
+                        Finish::Discard => Vec::new(),
+                    }
+                };
+                let _ = reply.send(samples);
+            }
             Command::Cancel { reply } => {
                 self.pending_capture = None;
                 if !self.input.is_open() && !self.capture_sink_open() {
@@ -730,7 +808,19 @@ impl Owner {
                 self.input.request_selection(revision, device.as_deref());
             }
             Command::SetReleaseWhileIdle(release) => {
+                let turning_warm = self.release_while_idle && !release;
                 self.release_while_idle = release;
+                // A policy-driven reopen is a plain open, not a failed
+                // stream's recovery: a press during it becomes a pending
+                // capture and starts when the stream does (#1953).
+                if turning_warm && !self.capture_sink_open() {
+                    self.input.request_open();
+                }
+            }
+            Command::SetAway(away) => {
+                self.away = away;
+                // The lab's window never outlives the person's absence.
+                self.linger.clear();
             }
             #[cfg(test)]
             Command::InvalidateRecognition { reply } => {
@@ -846,6 +936,14 @@ impl Owner {
         self.capture_idle() && !self.capture_sink_open()
     }
 
+    /// Mirrors whether the stream is open for the listener, which decides
+    /// press boundaries on its own thread.
+    fn note_open(&mut self) {
+        self.state
+            .open
+            .store(self.input.is_open(), Ordering::Release);
+    }
+
     fn capture_sink_open(&self) -> bool {
         #[cfg(hex_capture)]
         return self.capture_sink.is_some();
@@ -917,7 +1015,27 @@ impl Owner {
                 {
                     self.capture.begin_stream(engine);
                 }
-                self.capture.report_live_text();
+                if let Some(partial) = self.capture.report_live_text()
+                    && crate::labs::stop_phrase()
+                {
+                    // Labs › Stop phrase: a capture whose committed words, or
+                    // words read twice in a row, end with the phrase asks its
+                    // listener to finish it; the listener decides whether it is
+                    // still hands-free. The words ride along, read once here.
+                    let phrase = crate::labs::stop_phrase_text();
+                    if self
+                        .stop_phrase
+                        .observe(&partial.stable, &partial.tentative, &phrase)
+                    {
+                        let _ = self.events.send(DictationAudioEvent::StopPhrase {
+                            capture_generation: self
+                                .state
+                                .capture_generation
+                                .load(Ordering::Acquire),
+                            phrase,
+                        });
+                    }
+                }
                 #[cfg(hex_capture)]
                 {
                     let sample_rate = self.sample_rate();
@@ -1021,6 +1139,7 @@ impl Owner {
                 }
             }
         }
+        self.note_open();
     }
 
     fn forward_recognition(&mut self, samples: Vec<f32>) {
@@ -1089,9 +1208,14 @@ impl Owner {
         if self.release_while_idle && !self.capture_sink_open() {
             // Labs › Keep mic open after dictating: a capture's end keeps the
             // microphone open for the lab's window, and closing waits for it.
-            // Off, this is the plain idle close.
-            if self.input.is_active() && self.linger.may_close(Instant::now(), !self.capture_idle())
+            // Off, this is the plain idle close. Away skips the window: it can
+            // be up to 30 minutes, and the person cannot dictate until they
+            // return anyway. Either way a capture keeps its microphone (#1953).
+            let busy = !self.capture_idle();
+            if self.input.is_active()
+                && ((self.away && !busy) || self.linger.may_close(Instant::now(), busy))
             {
+                self.linger.clear();
                 self.close_input();
             }
         } else {
@@ -1107,6 +1231,7 @@ impl Owner {
                 self.state.recovering.store(true, Ordering::Release);
             }
         }
+        self.note_open();
     }
 
     fn start_capture_at(&mut self, kind: CaptureKind, at: CaptureInstant) {
@@ -1205,6 +1330,7 @@ impl Owner {
         self.next_recognition_generation();
         self.state.captured_through.store(0, Ordering::Release);
         self.state.recovering.store(false, Ordering::Release);
+        self.note_open();
     }
 }
 
@@ -1282,7 +1408,7 @@ impl OwnerForTest {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::dictation::POST_RELEASE_TAIL;
 
@@ -1329,6 +1455,18 @@ mod tests {
             kind: CaptureKind::Hotkey,
             reply,
         }));
+    }
+
+    /// The next input event that isn't a timeout: a stream the test opens on
+    /// a worker arrives a moment later.
+    fn next_input_event(owner: &mut Owner) -> RecoveringAudioInputEvent {
+        for _ in 0..200 {
+            let event = owner.input.recv_timeout(Duration::from_millis(5), false);
+            if !matches!(event, RecoveringAudioInputEvent::Timeout) {
+                return event;
+            }
+        }
+        panic!("the microphone never opened");
     }
 
     #[test]
@@ -1758,6 +1896,70 @@ mod tests {
         control(owner, |reply| Command::Finish { at, tail, reply })
     }
 
+    /// Drives synthetic device chunks through the real microphone timeline
+    /// and the Hold shortcut's own Escape decision, without installing a tap.
+    #[cfg(hex_capture)]
+    pub(crate) fn cancel_fixture(pcm: &[f32], writer: crate::recognition::cancelled_words::Writer) {
+        use crate::{
+            app_settings::{HotkeyModifiers, RuntimeHotkey},
+            suppression::{DictationHotkey, HotkeyAction, InputEvent},
+        };
+        let (mut owner, input, _feed) = owner_for_test(true);
+        let at = capture_time();
+        owner.handle_input(RecoveringAudioInputEvent::Chunk {
+            samples: vec![0.; 480],
+            captured_through: at,
+        });
+        let flags = 1 << 19;
+        let mut key = DictationHotkey::with_binding(
+            false,
+            at,
+            false,
+            RuntimeHotkey {
+                modifiers: HotkeyModifiers::option(),
+                key_code: None,
+            },
+        );
+        assert_eq!(
+            key.process(InputEvent::Flags(flags), at),
+            Some(HotkeyAction::Start)
+        );
+        start(&mut owner, at);
+        let mut count = 0;
+        for chunk in pcm.chunks(480) {
+            count += chunk.len();
+            owner.handle_input(RecoveringAudioInputEvent::Chunk {
+                samples: chunk.to_vec(),
+                captured_through: at + Duration::from_secs_f64(count as f64 / 48_000.),
+            });
+        }
+        let boundary = at + Duration::from_secs_f64(count as f64 / 48_000.);
+        assert_eq!(
+            key.process(
+                InputEvent::Key {
+                    code: 53,
+                    down: true,
+                    flags
+                },
+                boundary
+            ),
+            Some(HotkeyAction::CancelShortcut)
+        );
+        // A delayed key delivery cannot pick up the next 100 ms of audio.
+        owner.handle_input(RecoveringAudioInputEvent::Chunk {
+            samples: vec![0.75; 4800],
+            captured_through: boundary + Duration::from_millis(100),
+        });
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                writer.cancel(&input, boundary).unwrap();
+                assert!(!input.is_recording());
+                writer.drain();
+            });
+            OwnerForTest(owner).serve(1);
+        });
+    }
+
     #[test]
     fn release_waits_for_its_tail_and_keeps_no_later_audio() {
         let (mut owner, input, samples) = owner_for_test(true);
@@ -2073,6 +2275,90 @@ mod tests {
             assert!(input.is_recovering());
             acknowledge();
         }
+    }
+
+    /// The microphone is released while the person is away even with the
+    /// setting off, comes back when they return, and a press during that
+    /// reopen is kept instead of being refused as a failure (#1953).
+    #[test]
+    fn a_warm_microphone_releases_while_away_and_keeps_a_press_during_its_reopen() {
+        let (mut owner, input, _samples) = owner_for_test(true);
+        assert!(owner.input.is_open());
+        assert!(input.is_open());
+        let at = capture_time();
+        start(&mut owner, at);
+
+        // Away closes an idle microphone, never one a capture holds.
+        assert!(owner.handle(Command::SetReleaseWhileIdle(true)));
+        owner.reconcile_input();
+        assert!(owner.input.is_open(), "a capture keeps its microphone");
+        control(&mut owner, |reply| Command::Cancel { reply });
+        owner.reconcile_input();
+        assert!(!owner.input.is_open());
+        assert!(!input.is_open(), "the listener sees the closed timeline");
+
+        // Back opens through the plain request, not a failure's recovery: a
+        // press during that open becomes a pending capture.
+        let (streams, opened) = mpsc::channel();
+        owner.input = RecoveringAudioInput::with_stream_opener_for_test(None, move || {
+            let (stream, samples) = crate::audio::AudioInput::channel_for_test();
+            let _ = streams.send(samples);
+            Ok(crate::audio::Opened::Input(Box::new(stream)))
+        });
+        assert!(owner.handle(Command::SetReleaseWhileIdle(false)));
+        assert!(owner.input.is_opening());
+        assert!(!owner.input.is_recovering());
+        let pressed_at = at + Duration::from_millis(200);
+        start(&mut owner, pressed_at);
+        assert!(input.is_recording(), "the press is kept while it reopens");
+        assert!(!input.is_open());
+
+        let event = next_input_event(&mut owner);
+        assert!(matches!(event, RecoveringAudioInputEvent::Reopened));
+        owner.handle_input(event);
+        assert!(owner.input.is_open());
+        assert!(input.is_open());
+        assert!(input.is_recording());
+        let samples = opened
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the reopened stream feeds the pending capture");
+        samples
+            .send((vec![0.25; 4_800], pressed_at + Duration::from_millis(500)))
+            .unwrap();
+        owner.reconcile_input();
+        assert!(owner.input.is_open(), "a warm microphone stays open");
+    }
+
+    /// Away closes the released warm microphone at once, even while Labs ›
+    /// Keep mic open after dictating's window runs: that window can be half
+    /// an hour, and nobody can dictate until they come back (#1953).
+    #[test]
+    fn an_away_release_bypasses_the_labs_linger_window() {
+        let (mut owner, input, _samples) = owner_for_test(true);
+        owner.release_while_idle = true;
+        owner.linger.keep_open_for_test(Duration::from_secs(1_800));
+        assert!(input.is_open());
+
+        // The lab's window holds an ordinary idle pass open.
+        owner.reconcile_input();
+        owner.reconcile_input();
+        assert!(owner.input.is_open(), "the lab's window keeps it open");
+
+        // Away never closes a capture's microphone, whatever the window says.
+        start(&mut owner, capture_time());
+        assert!(owner.handle(Command::SetAway(true)));
+        owner.reconcile_input();
+        assert!(owner.input.is_open(), "a capture keeps its microphone");
+
+        // Its end closes at once, not after the lab's window.
+        control(&mut owner, |reply| Command::Cancel { reply });
+        owner.reconcile_input();
+        assert!(!owner.input.is_open());
+        assert!(!input.is_open(), "the listener sees the closed timeline");
+
+        // And a later idle pass does not bring it back.
+        owner.reconcile_input();
+        assert!(!owner.input.is_open());
     }
 
     #[test]

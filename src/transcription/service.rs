@@ -33,8 +33,9 @@ const SHARED_RETRY: Duration = Duration::from_millis(50);
 /// using a copy of the service's own.
 const SHARED_WAIT: Duration = Duration::from_secs(20);
 /// Longer host audio would hold a dictation released during it behind it on
-/// the shared engine, so it runs on a copy of the service's own.
-const SHARED_MAX_SAMPLES: usize = 30 * 16_000;
+/// the shared engine, so it runs on a copy of the service's own. `hex
+/// transcribe` sends a long file in pieces of this length.
+pub(crate) const SHARED_MAX_SAMPLES: usize = 30 * 16_000;
 
 pub struct TranscriptionService {
     commands: Option<SyncSender<Command>>,
@@ -122,7 +123,7 @@ enum Command {
         selection: TranscriptionSelection,
         clip: AudioClip,
         timings: TimestampLevel,
-        _admission: AudioAdmission,
+        admission: AudioAdmission,
         canceled: Arc<AtomicBool>,
         response: SyncSender<std::result::Result<Transcript, TranscriptionServiceError>>,
     },
@@ -200,7 +201,7 @@ impl TranscriptionServiceHandle {
             selection,
             clip,
             timings,
-            _admission: admission,
+            admission,
             canceled: canceled.clone(),
             response,
         })?;
@@ -349,11 +350,15 @@ fn run(commands: Receiver<Command>) {
                 selection,
                 clip,
                 timings,
-                _admission,
+                admission,
                 canceled,
                 response,
             } => {
                 let result = transcribe(&mut active, &selection, clip, &canceled, timings);
+                // A client woken by this result admits its next clip at once
+                // (a long file is one clip after another), so the slot must be
+                // free before the send, not when the worker loops again.
+                drop(admission);
                 let _ = response.send(result);
             }
         }
@@ -497,6 +502,9 @@ fn transcribe(
 ) -> std::result::Result<Transcript, TranscriptionServiceError> {
     check_canceled(canceled)?;
     let mut samples = clip.samples;
+    if heard_nothing(selection, &samples, timings) {
+        return Ok(Transcript::default());
+    }
     let engine_has_model = if samples.len() <= SHARED_MAX_SAMPLES {
         let audio = Arc::new(samples);
         let shared = {
@@ -525,6 +533,25 @@ fn transcribe(
     let transcript = transcript?;
     check_canceled(canceled)?;
     Ok(transcript)
+}
+
+/// Whether a GGUF clip holds only silence, as a long GGUF clip's silent
+/// chunks are skipped: models invent text for silence (#1194) or run to their
+/// generation cap (#968). Only an installed speech detector is asked, so a
+/// request never starts its download, and a timed request still gets the
+/// model's own answer or refusal.
+fn heard_nothing(
+    selection: &TranscriptionSelection,
+    samples: &[f32],
+    timings: TimestampLevel,
+) -> bool {
+    timings == TimestampLevel::None
+        && matches!(
+            crate::transcription::models::definition(selection.model).runtime,
+            crate::transcription::models::ModelRuntime::Gguf(_)
+        )
+        && crate::transcription::models::speech_detector_installed()
+        && !crate::transcription::gguf_session::chunk_may_hold_speech(samples)
 }
 
 /// Transcribes `samples` on a held model, with the model's own timings only
@@ -688,6 +715,69 @@ mod tests {
         assert!(handle.admit_audio().is_none());
         drop(admission);
         assert!(handle.admit_audio().is_some());
+    }
+
+    /// A file worker or API client woken by its result admits its next clip
+    /// right away, so the slot is already free when the result arrives. The
+    /// response is a rendezvous channel and the test does not receive until
+    /// the slot reads free, so a send that still holds the admission blocks
+    /// with no one to answer it and this fails every time. The job is
+    /// cancelled before the worker can read it, so it answers `Cancelled`
+    /// without loading a model.
+    #[test]
+    fn a_jobs_result_arrives_only_after_its_slot_is_free() {
+        let (commands, receiver) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let handle = TranscriptionServiceHandle {
+            commands,
+            audio_busy: Arc::new(AtomicBool::new(false)),
+        };
+        let admission = handle.admit_audio().expect("the slot starts free");
+        let canceled = Arc::new(AtomicBool::new(true));
+        // A rendezvous channel: the worker's send returns only once this test
+        // receives, so a send before the admission drops would keep the slot
+        // busy here for as long as this test waits.
+        let (response, result) = mpsc::sync_channel(0);
+        handle
+            .submit(Command::Transcribe {
+                selection: TranscriptionSelection::default(),
+                clip: AudioClip {
+                    samples: vec![0.0; 16],
+                    duration_ms: 1,
+                },
+                timings: TimestampLevel::None,
+                admission,
+                canceled: canceled.clone(),
+                response,
+            })
+            .unwrap();
+        let worker = thread::spawn(move || run(receiver));
+        let job = TranscriptionJob { canceled, result };
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let next = loop {
+            if let Some(next) = handle.admit_audio() {
+                break next;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the client can admit its next clip before the result arrives"
+            );
+            thread::sleep(Duration::from_millis(1));
+        };
+        drop(next);
+
+        let outcome = job
+            .wait_timeout(Duration::from_secs(10))
+            .expect("the worker answers")
+            .expect("the job returns a result");
+
+        assert!(matches!(outcome, Err(TranscriptionServiceError::Cancelled)));
+        assert!(
+            handle.admit_audio().is_some(),
+            "the client can admit its next clip the moment the result arrives"
+        );
+        drop(handle);
+        worker.join().unwrap();
     }
 
     #[test]

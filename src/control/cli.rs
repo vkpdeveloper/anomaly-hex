@@ -7,7 +7,13 @@
 //! heard no speech. Nothing here launches Hex except `start` and `restart`.
 
 use std::io::Write;
+pub(crate) mod annotate_read;
+mod completions;
+mod embedded;
 mod human;
+mod launch;
+mod prepare;
+mod progress;
 mod transcribe;
 
 use clap::{Args, Subcommand};
@@ -69,10 +75,9 @@ pub enum ControlCli {
     Dictation {
         #[arg(value_enum)]
         action: CaptureAction,
-        /// With `start` (Labs › Print-only CLI dictation, macOS) or `stop`:
-        /// answer with the transcript instead of pasting it. A printing start
-        /// waits for its recording to end. Exits 4, printing nothing, when no
-        /// speech was heard.
+        /// With `start` (macOS) or `stop`: answer with the transcript
+        /// instead of pasting it. A printing start waits for its recording to
+        /// end. Exits 4, printing nothing, when no speech was heard.
         #[arg(long)]
         print: bool,
         /// With `start` or `toggle`: paste the transcript as heard,
@@ -96,12 +101,14 @@ pub enum ControlCli {
         #[command(flatten)]
         output: Output,
     },
-    /// Transcribe a WAV file with the selected model and print it
-    /// (Labs › Transcribe files).
+    /// Transcribe an audio or video file with the selected model and print
+    /// the text.
     ///
-    /// Nothing is pasted, saved to History, or processed.
+    /// Reads WAV, M4A/MP4/MOV (AAC, ALAC), CAF, AIFF, MP3, FLAC, Ogg and
+    /// WebM (Vorbis, Opus). Works with Hex stopped. Nothing is pasted, saved
+    /// to History, or processed.
     Transcribe {
-        /// The WAV file to transcribe.
+        /// The recording to transcribe.
         file: std::path::PathBuf,
         /// A model id from `hex model list` (default: the selected model).
         #[arg(long)]
@@ -199,6 +206,13 @@ pub enum ControlCli {
     Annotate {
         #[command(subcommand)]
         command: CaptureCommand,
+    },
+    /// Print a shell completion script for `hex` (bash, zsh, fish, elvish,
+    /// or PowerShell).
+    Completions {
+        /// The shell to print a completion script for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
     /// Print Hex's recent log lines; works without Hex running.
     Logs {
@@ -413,10 +427,12 @@ pub fn finish(code: u8) -> ! {
     std::process::exit(code.into())
 }
 
-pub fn run(command: ControlCli) -> u8 {
+/// Runs `command`. `top_level` builds this OS's whole `hex` command tree, and
+/// only `completions` asks for it, so no other command pays for it.
+pub fn run(command: ControlCli, top_level: impl FnOnce() -> clap::Command) -> u8 {
     match command {
         ControlCli::Status { output } => send(ControlCommand::Status, output),
-        ControlCli::Start { output } => start(output),
+        ControlCli::Start { output } => launch::start(output),
         ControlCli::Quit { force, output } => send(ControlCommand::Quit { force }, output),
         ControlCli::Restart { force, output } => {
             if !running() {
@@ -424,8 +440,12 @@ pub fn run(command: ControlCli) -> u8 {
                 if crate::linux::service::instance_answers() {
                     return print(restart_older_hex(), output);
                 }
-                return start(output);
+                return launch::start(output);
             }
+            // Hex's instance outlives its local API, so take a handle on the
+            // process to wait for before Hex gets the quit.
+            #[cfg(not(target_os = "macos"))]
+            let restarting = crate::local_api::watch_running();
             #[cfg(target_os = "linux")]
             if let Err(error) = crate::linux::service::prepare_restart() {
                 return print(ControlReply::error("failed", format!("{error:#}")), output);
@@ -437,7 +457,7 @@ pub fn run(command: ControlCli) -> u8 {
                 Ok(ControlResponse {
                     reply: ControlReply::Done { .. },
                     ..
-                }) => print(reopen_after_restart(), output),
+                }) => print(launch::reopen_after_restart(restarting), output),
                 Ok(response) => print(response.reply, output),
                 Err(reply) => print(reply, output),
             }
@@ -560,6 +580,7 @@ pub fn run(command: ControlCli) -> u8 {
             lines,
             follow,
         } => logs(process, lines, follow),
+        ControlCli::Completions { shell } => completions::run(shell, top_level()),
         ControlCli::History(crate::control::transcript_cli::HistoryArgs {
             action: Some(crate::control::transcript_cli::HistoryAction::Clear { yes, output }),
             ..
@@ -581,7 +602,8 @@ pub fn run(command: ControlCli) -> u8 {
 }
 
 /// `hex model install`: the running Hex downloads in the background;
-/// without one, Linux and Windows download and select here.
+/// without one, Linux and Windows download here and macOS through an
+/// embedded service it starts, then the model is selected.
 fn install_model(model: Option<String>, language: Option<String>, output: Output) -> u8 {
     let model = match model {
         Some(model) => model,
@@ -590,17 +612,30 @@ fn install_model(model: Option<String>, language: Option<String>, output: Output
             Err(error) => return fail(&format!("couldn't read settings: {error:#}")),
         },
     };
-    #[cfg(not(target_os = "macos"))]
     if !running() {
         let selection = match selection(Some(model), language) {
             Ok(selection) => selection,
             Err(error) => return fail(&format!("{error:#}")),
         };
+        #[cfg(not(target_os = "macos"))]
         if let Err(error) = crate::transcription::local_transcriber::install(
             &selection,
             &std::sync::atomic::AtomicBool::new(false),
         ) {
             return fail(&format!("{error:#}"));
+        }
+        // macOS runs models only in a Hex process, so an embedded service
+        // downloads it, as `hex transcribe` does with Hex stopped.
+        #[cfg(target_os = "macos")]
+        {
+            embedded::exit_on_interrupt();
+            let prepared = embedded::endpoint()
+                .map_err(|message| ControlReply::error("unavailable", message))
+                .and_then(|endpoint| prepare::prepare(&endpoint, &selection));
+            embedded::done();
+            if let Err(reply) = prepared {
+                return print(reply, output);
+            }
         }
         return select_installed(&selection, output);
     }
@@ -611,7 +646,6 @@ fn install_model(model: Option<String>, language: Option<String>, output: Output
 /// made. A Hex that started while the model downloaded takes the choice;
 /// otherwise it is saved under the service lock `settings apply` uses, so a
 /// starting Hex is never written behind. An unchanged selection needs neither.
-#[cfg(not(target_os = "macos"))]
 fn select_installed(
     selection: &crate::transcription::models::TranscriptionSelection,
     output: Output,
@@ -652,7 +686,6 @@ fn select_installed(
 }
 
 /// Hands a downloaded model to a Hex that started while it downloaded.
-#[cfg(not(target_os = "macos"))]
 fn select_in_running_hex(
     selection: &crate::transcription::models::TranscriptionSelection,
     output: Output,
@@ -668,7 +701,6 @@ fn select_in_running_hex(
 
 /// Records a downloaded model as the selected one, as the app's own switch
 /// does. An unchanged selection is left alone.
-#[cfg(not(target_os = "macos"))]
 fn save_selection(
     selection: &crate::transcription::models::TranscriptionSelection,
 ) -> color_eyre::Result<String> {
@@ -706,7 +738,6 @@ fn imported(model: &str) -> color_eyre::Result<crate::transcription::models::Cus
 
 /// The selection a local model command names: `model` with its remembered
 /// language unless `language` is given, or the selected model.
-#[cfg(not(target_os = "macos"))]
 fn selection(
     model: Option<String>,
     language: Option<String>,
@@ -800,6 +831,9 @@ fn meetings(command: crate::control::transcript_cli::MeetingsCommand) -> u8 {
         }
         MeetingsCommand::Stop { output } => send(ControlCommand::MeetingStop, output),
         MeetingsCommand::CopyLast { output } => send(ControlCommand::MeetingCopyLast, output),
+        MeetingsCommand::Delete { id, output } => {
+            send(ControlCommand::MeetingDelete { id }, output)
+        }
         command => report(crate::control::transcript_cli::meetings(&command)),
     }
 }
@@ -920,16 +954,35 @@ pub enum CaptureCommand {
         #[command(flatten)]
         output: Output,
     },
+    /// Print a capture's summary, its marks, or its manifest, for a coding agent
+    /// (Labs › Agent tools for captures).
+    Inspect(annotate_read::Inspect),
+    /// A dense sheet of frames around a moment or a mark, for a coding agent
+    /// (Labs › Agent tools for captures).
+    Zoom(annotate_read::Zoom),
+    /// Extract frames across a time range, one PNG each, for a coding agent
+    /// (Labs › Agent tools for captures).
+    Frames(annotate_read::Frames),
+    /// Print the skill that teaches a coding agent to read captures
+    /// (Labs › Agent tools for captures).
+    Skill,
 }
 
 /// Runs `hex capture`: on macOS through the running Hex; on Linux the
 /// folder reads (`list`, `show`, `route`, `send`) run here, and the
 /// recording commands go to the running Hex's listener; on Windows every
-/// command goes to the running Hex. A build without the capture engine
-/// answers `unsupported`.
+/// command goes to the running Hex. The agent reads (`inspect`, `zoom`,
+/// `frames`, and `skill`) run here, in the CLI process, on every OS. A build
+/// without the capture engine answers `unsupported`.
 pub fn capture(command: CaptureCommand) -> u8 {
     use crate::control::{ControlCommand as C, ScrawlCaptureAction as A};
+    // The reads run here, on every OS: they only touch bundle files and the
+    // video decoder, so Hex needn't be running.
     let (command, output) = match command {
+        CaptureCommand::Inspect(args) => return annotate_read::inspect(args),
+        CaptureCommand::Zoom(args) => return annotate_read::zoom(args),
+        CaptureCommand::Frames(args) => return annotate_read::frames(args),
+        CaptureCommand::Skill => return annotate_read::skill(),
         #[cfg(target_os = "linux")]
         CaptureCommand::Start {
             area: Some(area),
@@ -1223,158 +1276,6 @@ fn restart_older_hex() -> ControlReply {
     ControlReply::done("Restarted Hex; it isn't answering yet (it may be loading its model)")
 }
 
-#[cfg(target_os = "macos")]
-fn start(output: Output) -> u8 {
-    use std::time::{Duration, Instant};
-
-    if let Some(pid) = crate::local_api::running_pid() {
-        return print(
-            ControlReply::unchanged(format!("Hex is already running (pid {pid})")),
-            output,
-        );
-    }
-    let arguments = open_arguments(
-        installed_bundle().as_deref(),
-        crate::app_paths::is_macos_test_build(),
-        std::env::vars_os(),
-    );
-    match std::process::Command::new("/usr/bin/open")
-        .args(arguments)
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(_) | Err(_) => {
-            return print(
-                ControlReply::error("failed", "couldn't open Hex.app; is it installed?"),
-                output,
-            );
-        }
-    }
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(20) {
-        if let Some(pid) = crate::local_api::running_pid() {
-            return print(
-                ControlReply::done(format!("Started Hex (pid {pid})")),
-                output,
-            );
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    print(
-        ControlReply::done("Opened Hex; it isn't answering yet (setup may be waiting)"),
-        output,
-    )
-}
-
-/// `hex start` on Linux and Windows: a detached `hex app --hidden`, which
-/// forwards to the running Hex, starts its systemd unit, or becomes Hex,
-/// then waits until it answers.
-#[cfg(not(target_os = "macos"))]
-fn start(output: Output) -> u8 {
-    print(start_reply(), output)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn start_reply() -> ControlReply {
-    use std::time::{Duration, Instant};
-
-    if running() {
-        return ControlReply::unchanged("Hex is already running");
-    }
-    #[cfg(target_os = "linux")]
-    if crate::linux::service::instance_answers() {
-        return older_hex();
-    }
-    let executable = match std::env::current_exe() {
-        Ok(executable) => executable,
-        Err(error) => return ControlReply::error("failed", format!("couldn't find hex: {error}")),
-    };
-    let mut command = std::process::Command::new(executable);
-    command
-        .args(["app", "--hidden"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(target_os = "linux")]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, and
-        // Ctrl-C in this terminal doesn't reach it.
-        command.creation_flags(0x0000_0008 | 0x0000_0200);
-    }
-    if let Err(error) = command.spawn() {
-        return ControlReply::error("failed", format!("couldn't start Hex: {error}"));
-    }
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(20) {
-        if running() {
-            return ControlReply::done("Started Hex");
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    ControlReply::done("Started Hex; it isn't answering yet (it may be loading its model)")
-}
-
-/// After a restart's quit on Linux and Windows: waits for the old Hex to
-/// go, then starts the new one. A Linux unit restarts by itself.
-#[cfg(not(target_os = "macos"))]
-fn reopen_after_restart() -> ControlReply {
-    use std::time::{Duration, Instant};
-
-    #[cfg(target_os = "linux")]
-    if crate::linux::service::supervised() {
-        return ControlReply::done("Restarting Hex");
-    }
-    let started = Instant::now();
-    while running() {
-        if started.elapsed() > Duration::from_secs(30) {
-            return ControlReply::error(
-                "failed",
-                "Hex is still finishing its work; run `hex start` once it quits",
-            );
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    start_reply()
-}
-
-/// `open` arguments for `hex start`: the caller's `HEX_*` environment, then
-/// the Hex.app this `hex` belongs to, or the installed app by bundle id.
-#[cfg(target_os = "macos")]
-fn open_arguments(
-    bundle: Option<&std::path::Path>,
-    test_build: bool,
-    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
-) -> Vec<std::ffi::OsString> {
-    let mut arguments = crate::desktop::onboarding::open_env_arguments(vars);
-    match bundle {
-        Some(bundle) => arguments.push(bundle.into()),
-        None => arguments.extend([
-            "-b".into(),
-            if test_build {
-                "anomaly.hex.test"
-            } else {
-                "anomaly.hex"
-            }
-            .into(),
-        ]),
-    }
-    arguments
-}
-
-/// The Hex.app this `hex` belongs to, when it runs from (or links into) one.
-#[cfg(target_os = "macos")]
-fn installed_bundle() -> Option<std::path::PathBuf> {
-    let executable = std::fs::canonicalize(std::env::current_exe().ok()?).ok()?;
-    executable
-        .ancestors()
-        .nth(3)
-        .filter(|path| path.extension().is_some_and(|extension| extension == "app"))
-        .map(ToOwned::to_owned)
-}
-
 fn logs(process: bool, lines: usize, follow: bool) -> u8 {
     use std::io::{BufRead, Seek, SeekFrom};
 
@@ -1495,44 +1396,6 @@ mod tests {
             &reply,
             ControlReply::Error { code, message } if code == "outdated" && message.contains("hex restart")
         ));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn start_forwards_the_callers_hex_environment() {
-        let vars = || {
-            [
-                ("HOME", "/Users/alex"),
-                ("HEX_RETAIN_DICTATION_AUDIO", "1"),
-                ("HEX_ENABLE_LLM", "1"),
-            ]
-            .map(|(key, value)| (key.into(), value.into()))
-        };
-        let strings = |arguments: Vec<std::ffi::OsString>| {
-            arguments
-                .into_iter()
-                .map(|argument| argument.into_string().unwrap())
-                .collect::<Vec<_>>()
-        };
-        let env = [
-            "--env",
-            "HEX_ENABLE_LLM=1",
-            "--env",
-            "HEX_RETAIN_DICTATION_AUDIO=1",
-        ];
-        let bundle = std::path::Path::new("/Applications/Hex.app");
-        assert_eq!(
-            strings(open_arguments(Some(bundle), false, vars())),
-            [&env[..], &["/Applications/Hex.app"]].concat()
-        );
-        assert_eq!(
-            strings(open_arguments(None, false, vars())),
-            [&env[..], &["-b", "anomaly.hex"]].concat()
-        );
-        assert_eq!(
-            strings(open_arguments(None, true, [])),
-            ["-b", "anomaly.hex.test"]
-        );
     }
 
     #[test]

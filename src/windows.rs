@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::{WrapErr, bail};
 use windows_sys::Win32::System::Console::{
@@ -157,7 +157,7 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
     // Control and read commands talk to the running Hex or read files: no
     // log, lock, or Hex of their own.
     if let Command::Control(command) = command {
-        crate::control::cli::finish(crate::control::cli::run(command));
+        crate::control::cli::finish(crate::control::cli::run(command, Cli::command));
     }
     // A headless render (`--snap`) draws fixtures without starting the
     // runtime or touching the data folder, and prints to the terminal that
@@ -344,7 +344,7 @@ fn stream_bench(wav: &Path, speed: f64, selection: &TranscriptionSelection) -> R
 
     let engine = crate::transcription::engine::TranscriptionEngine::start(transcriber)?;
     let mut stream = engine
-        .begin()
+        .begin_ignoring_head(0)
         .ok_or_else(|| color_eyre::eyre::eyre!("this model cannot stream on this device"))?;
     let held = samples.len().saturating_sub(3_200);
     let feeding = Instant::now();
@@ -557,6 +557,26 @@ fn fail_capture(events: &EventLog, device: &str, error: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cli_prints_completion_scripts() {
+        use clap::CommandFactory;
+        use clap_complete::Shell;
+
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "hex", &mut script);
+            let script = String::from_utf8(script).expect("a completion script is UTF-8");
+            assert!(
+                script.contains("dictation"),
+                "{shell:?} script has no dictation"
+            );
+            assert!(
+                script.contains("stream-bench"),
+                "{shell:?} script has no Windows-only stream-bench command"
+            );
+        }
+    }
 
     #[test]
     fn polish_selection_uses_the_multilingual_parakeet_model() {

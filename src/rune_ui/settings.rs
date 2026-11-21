@@ -218,7 +218,18 @@ pub(super) fn modifier_only_hint(peak: HotkeyModifiers) -> &'static str {
 }
 
 /// Saves a recorded chord, or keeps listening with why it was rejected.
+/// Plain ⌫ (or Delete) turns a shortcut that can be off off.
 fn record(ui: &mut Ui, target: ShortcutTarget, binding: Result<HotkeyBinding, &'static str>) {
+    if can_turn_off(target) && binding.as_ref().is_ok_and(HotkeyBinding::is_bare_erase) {
+        cancel_capture(ui);
+        if ui.update(|settings| turn_off(settings, target)) {
+            ui.capture = Capture::Saved {
+                target,
+                until: None,
+            };
+        }
+        return;
+    }
     let message = match binding.and_then(|binding| {
         validate(&ui.settings, target, &binding)?;
         Ok(binding)
@@ -329,7 +340,10 @@ pub(super) fn recorded_binding(event: &KeyEvent) -> Result<HotkeyBinding, &'stat
     // their Labs toggles in `validate` (Linux).
     let lone_labs_key = cfg!(target_os = "linux")
         && (HotkeyKey::section_name(&name) || HotkeyKey::special_name(&name));
-    if modifiers.is_empty() && !matches!(event.key, Key::Function(_)) && !lone_labs_key {
+    // Plain ⌫ or Delete turns an optional shortcut off (`record`);
+    // `validate` refuses it as a binding.
+    let erase = matches!(event.key, Key::Backspace | Key::Delete);
+    if modifiers.is_empty() && !matches!(event.key, Key::Function(_)) && !lone_labs_key && !erase {
         return Err(tr("Add a modifier"));
     }
     Ok(HotkeyBinding {
@@ -347,6 +361,12 @@ pub(super) fn validate(
     if binding.is_bare_primary_click() {
         return Err(tr("Add a modifier"));
     }
+    // Plain ⌫ turns a shortcut off rather than binding (`record`). Windows'
+    // cancel key may be any key alone, as it always could.
+    if binding.is_bare_erase() && !(cfg!(target_os = "windows") && target == ShortcutTarget::Cancel)
+    {
+        return Err(tr("Add a modifier"));
+    }
     // Menu, Pause, and Scroll Lock need Labs › Special keys alone (Linux).
     if cfg!(target_os = "linux")
         && binding.key.as_ref().is_some_and(HotkeyKey::is_special)
@@ -358,13 +378,27 @@ pub(super) fn validate(
             tr("Unsupported key")
         });
     }
-    // The ISO section key alone needs Labs › Section key alone (Linux,
+    // The ISO section key alone needs Labs › § key alone (Linux,
     // macOS).
     if cfg!(any(target_os = "linux", target_os = "macos"))
         && binding.is_lone_section_key()
         && !settings.section_key_allowed()
     {
         return Err(tr("Add a modifier"));
+    }
+    // Any shortcut on the microphone key needs Labs › Microphone key alone
+    // (macOS); a modifier doesn't excuse it.
+    if cfg!(target_os = "macos")
+        && binding.uses_microphone_key()
+        && !settings.microphone_key_allowed()
+    {
+        return Err(tr("Unsupported key"));
+    }
+    // macOS reads the microphone key at Hex's own session tap, before the
+    // annotated-session tap Screenshots' keys go through, so a shot never sees
+    // it however the labs are set.
+    if cfg!(target_os = "macos") && binding.uses_microphone_key() && is_screenshot(target) {
+        return Err(tr("Unsupported key"));
     }
     // A navigation key alone needs Labs › Special keys alone (Windows).
     if cfg!(target_os = "windows")
@@ -378,6 +412,21 @@ pub(super) fn validate(
         return Err(tr("Already in use"));
     }
     Ok(())
+}
+
+/// Whether `target` is one of the Screenshots keys, which read the keyboard at
+/// the annotated session, after Hex's microphone-key tap has taken the press.
+#[cfg(target_os = "macos")]
+fn is_screenshot(target: ShortcutTarget) -> bool {
+    matches!(
+        target,
+        ShortcutTarget::Screenshot | ShortcutTarget::ScreenshotRecord
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_screenshot(_: ShortcutTarget) -> bool {
+    false
 }
 
 /// Whether `binding` overlaps a shortcut `target` must not share: the other
@@ -489,7 +538,36 @@ pub(super) fn set_binding(
     }
 }
 
-/// Labs › Restore shortcut default: puts `default` back as `target`'s
+/// The shortcuts in General and Output that can be off: plain ⌫ while
+/// recording one turns it off.
+pub(super) fn can_turn_off(target: ShortcutTarget) -> bool {
+    match target {
+        ShortcutTarget::PasteLast
+        | ShortcutTarget::RawDictation
+        | ShortcutTarget::SecondDictation => true,
+        #[cfg(target_os = "linux")]
+        ShortcutTarget::TypedText => true,
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        ShortcutTarget::TerminalPaste => true,
+        _ => false,
+    }
+}
+
+/// Turns off a shortcut [`can_turn_off`] allows; others keep their binding.
+pub(super) fn turn_off(settings: &mut AppSettings, target: ShortcutTarget) {
+    match target {
+        ShortcutTarget::PasteLast => settings.paste_last_hotkey = None,
+        ShortcutTarget::RawDictation => settings.raw_dictation_hotkey = None,
+        ShortcutTarget::SecondDictation => settings.second_dictation_hotkey = None,
+        #[cfg(target_os = "linux")]
+        ShortcutTarget::TypedText => settings.typed_text_hotkey = None,
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        ShortcutTarget::TerminalPaste => settings.terminal_paste_hotkey = None,
+        _ => {}
+    }
+}
+
+/// A shortcut row's Reset: puts `default` back as `target`'s
 /// shortcut under the rules a recorded one meets. A default another
 /// shortcut already uses changes nothing and opens the recorder with the
 /// usual conflict, so another can be recorded.
@@ -815,6 +893,18 @@ pub(super) fn desktop_commands(ui: &Ui, p: Paint) -> El {
             &["hex dictation toggle --raw"],
         ),
     ];
+    // Annotate's shortcut goes through the same portal, so it needs a command
+    // here too while the feature is on.
+    #[cfg(hex_capture)]
+    if ui.platform.scrawl.is_some() && ui.settings.capture.enabled {
+        rows.push(command_row(
+            p,
+            "annotate",
+            tr("Annotate"),
+            tr("Start and stop an annotation"),
+            &["hex annotate toggle"],
+        ));
+    }
     // GNOME without a shortcuts portal (GNOME 46 and older, #781): Hex writes
     // the commands into GNOME's own custom shortcuts.
     if on_gnome() {
@@ -857,7 +947,13 @@ fn gnome_shortcuts_row(ui: &Ui, p: Paint) -> El {
     )
 }
 
-fn command_row(p: Paint, key: &str, title: &str, description: &str, commands: &[&str]) -> El {
+pub(super) fn command_row(
+    p: Paint,
+    key: &str,
+    title: &str,
+    description: &str,
+    commands: &[&str],
+) -> El {
     let lines = col()
         .key("commands")
         .gap(2.0)
@@ -1248,7 +1344,7 @@ mod special_keys_tests {
     }
 }
 
-/// Issue 1050: the ISO section key alone needs Labs › Section key alone on
+/// Issue 1050: the ISO section key alone needs Labs › § key alone on
 /// Linux and macOS; with a modifier it records as before. Linux's recorder
 /// checks the lab itself; macOS's recorder records the chord and `validate`
 /// refuses it here, before saving.
@@ -1310,6 +1406,90 @@ mod section_key_tests {
             validate(&settings, ShortcutTarget::Dictation, &dead_key),
             Ok(())
         );
+    }
+}
+
+/// Issue 181: any shortcut on the microphone (dictation) key needs Labs ›
+/// Microphone key alone on macOS, with or without a modifier. macOS's
+/// recorder records the chord and `validate` refuses it here, before saving,
+/// with the same "Unsupported key" the key gave before. Dictation, Cancel,
+/// and Screenshots all go through this check.
+#[cfg(all(test, target_os = "macos"))]
+#[path = "settings_microphone_key_tests.rs"]
+mod microphone_key_tests;
+
+/// Plain ⌫ while recording turns an optional shortcut off; a required one
+/// ignores it, and ⌫ with a modifier records like any key.
+#[cfg(test)]
+mod erase_tests {
+    use super::*;
+    use crate::app_settings::ModifierSide;
+
+    fn erase(modifiers: HotkeyModifiers) -> HotkeyBinding {
+        let key = if cfg!(target_os = "macos") {
+            HotkeyKey {
+                code: 51,
+                label: "Delete".into(),
+            }
+        } else {
+            HotkeyKey::named("backspace")
+        };
+        HotkeyBinding {
+            modifiers,
+            key: Some(key),
+        }
+    }
+
+    fn recording(target: ShortcutTarget) -> Ui {
+        let mut ui = super::super::scenes::mac_fixture();
+        ui.settings.paste_last_hotkey = Some(HotkeyBinding::paste_last_default());
+        begin_capture(&mut ui, target);
+        ui
+    }
+
+    #[test]
+    fn plain_erase_turns_an_optional_shortcut_off() {
+        let mut ui = recording(ShortcutTarget::PasteLast);
+        record(
+            &mut ui,
+            ShortcutTarget::PasteLast,
+            Ok(erase(HotkeyModifiers::default())),
+        );
+        assert_eq!(ui.settings.paste_last_hotkey, None);
+        assert!(matches!(ui.capture, Capture::Saved { .. }));
+    }
+
+    #[test]
+    fn a_required_shortcut_ignores_plain_erase() {
+        let mut ui = recording(ShortcutTarget::Dictation);
+        let dictation = ui.settings.dictation_hotkey.clone();
+        record(
+            &mut ui,
+            ShortcutTarget::Dictation,
+            Ok(erase(HotkeyModifiers::default())),
+        );
+        assert_eq!(ui.settings.dictation_hotkey, dictation);
+        assert!(matches!(
+            ui.capture,
+            Capture::Listening {
+                message: Some(_),
+                ..
+            }
+        ));
+        assert!(!can_turn_off(ShortcutTarget::Dictation));
+        assert!(!can_turn_off(ShortcutTarget::Cancel));
+    }
+
+    #[test]
+    fn erase_with_a_modifier_records() {
+        let mut ui = recording(ShortcutTarget::PasteLast);
+        let chord = erase(HotkeyModifiers {
+            control: Some(ModifierSide::Either),
+            ..HotkeyModifiers::default()
+        });
+        assert!(!chord.is_bare_erase());
+        record(&mut ui, ShortcutTarget::PasteLast, Ok(chord.clone()));
+        assert_eq!(ui.settings.paste_last_hotkey, Some(chord));
     }
 }
 

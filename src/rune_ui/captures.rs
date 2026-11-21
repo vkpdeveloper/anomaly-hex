@@ -20,6 +20,8 @@ use super::controls::{METRICS, Paint};
 use super::list_detail as ld;
 use crate::desktop::i18n::{event_age, tr};
 use crate::history::annotations::{self, Annotation};
+#[cfg(any(target_os = "macos", test))]
+use crate::history::captures::CaptureWord;
 use crate::history::captures::{self, CaptureEntry, CaptureKind};
 
 pub(super) static CAPTURES_ICON: Icon = Icon {
@@ -27,7 +29,7 @@ pub(super) static CAPTURES_ICON: Icon = Icon {
     view: 24.0,
     body: include_str!("../../assets/icons/captures.svg"),
 };
-static FINDER_ICON: &Icon = &rune_theme_opencode::icons::FOLDER;
+pub(super) static FINDER_ICON: &Icon = &rune_theme_opencode::icons::FOLDER;
 
 /// A row's thumbnail, the shape of a display.
 const THUMB: (f32, f32) = (72.0, 45.0);
@@ -47,14 +49,14 @@ pub(super) enum Listed {
 }
 
 impl Listed {
-    fn id(&self) -> u64 {
+    pub(super) fn id(&self) -> u64 {
         match self {
             Self::Saved(entry) => entry.id,
             Self::Annotated(annotation) => annotation.id,
         }
     }
 
-    fn at_ms(&self) -> u64 {
+    pub(super) fn at_ms(&self) -> u64 {
         match self {
             Self::Saved(entry) => entry.at_ms,
             Self::Annotated(annotation) => annotation.at_ms,
@@ -62,7 +64,7 @@ impl Listed {
     }
 
     /// Its words, else a name.
-    fn title(&self) -> String {
+    pub(super) fn title(&self) -> String {
         let words = match self {
             Self::Saved(entry) => &entry.words,
             Self::Annotated(annotation) => &annotation.words,
@@ -85,7 +87,7 @@ impl Listed {
 
     /// What a drag carries out and Show in Finder points at: the saved
     /// file, or an annotation's movie, else its picture, else its bundle.
-    fn file(&self) -> &Path {
+    pub(super) fn file(&self) -> &Path {
         match self {
             Self::Saved(entry) => &entry.file,
             Self::Annotated(annotation) => annotation
@@ -99,6 +101,8 @@ impl Listed {
 
 #[derive(Default)]
 pub(super) struct CapturesPane {
+    #[cfg(target_os = "macos")]
+    pub(super) confirm_trash: Option<(u64, PathBuf)>,
     pub(super) entries: Vec<Listed>,
     search: TextEdit,
     /// The query the entries were read for.
@@ -109,15 +113,38 @@ pub(super) struct CapturesPane {
     /// Decodes the thumbnails off the window's thread; the window sets it.
     cache: Option<rune::ImageCache>,
     thumbs: RefCell<HashMap<u64, rune::Image>>,
+    /// Larger pictures for the unified History's detail, decoded from the
+    /// same files; a fixture fills them directly.
+    #[cfg(all(target_os = "macos", hex_capture))]
+    pictures: RefCell<HashMap<u64, rune::Image>>,
     /// The entry whose Copy was pressed last.
     copied: Option<u64>,
     /// A fixture: its entries and thumbnails are set, never read.
-    fixture: bool,
+    pub(super) fixture: bool,
 }
 
 impl CapturesPane {
     pub(super) fn set_cache(&mut self, cache: rune::ImageCache) {
         self.cache = Some(cache);
+    }
+
+    /// Entry `entry`'s picture at `width` points, for the unified History's
+    /// detail; the list's own 72-point thumbs stay in [`Self::thumbnail`].
+    #[cfg(all(target_os = "macos", hex_capture))]
+    pub(super) fn picture(&self, entry: &Listed, width: f32) -> Option<rune::Pixels> {
+        if let Some(image) = self.pictures.borrow().get(&entry.id())
+            && image.is_ready()
+            && image.error().is_none()
+        {
+            return Some(image.pixels().clone());
+        }
+        let cache = self.cache.as_ref()?;
+        let path = match entry {
+            Listed::Saved(_) => captures::thumbnail(entry.id())?,
+            Listed::Annotated(annotation) => annotation.picture.clone()?,
+        };
+        let image: rune::Image = cache.file(path, width, 2.0);
+        (image.is_ready() && image.error().is_none()).then(|| image.pixels().clone())
     }
 
     /// While the pane shows, reads the list again when the search, the
@@ -245,6 +272,10 @@ impl CapturesPane {
                 std::thread::yield_now();
             }
             pane.thumbs.borrow_mut().insert(id, image);
+            #[cfg(all(target_os = "macos", hex_capture))]
+            pane.pictures
+                .borrow_mut()
+                .insert(id, cache.rgba(720, 450, fixture_thumbnail(720, 450, hue)));
         }
         Self {
             cache: Some(cache),
@@ -291,7 +322,7 @@ fn merged(saved: Vec<CaptureEntry>, annotated: Vec<Annotation>) -> Vec<Listed> {
 
 /// What a row says under its title: the kind, and a recording's length or
 /// a shot's size, or that an annotation's movie has expired.
-fn meta(entry: &Listed) -> String {
+pub(super) fn meta(entry: &Listed) -> String {
     let duration = super::screenshot_thumbnail::editor::clip::duration_label;
     match entry {
         Listed::Saved(entry) => {
@@ -318,34 +349,37 @@ fn meta(entry: &Listed) -> String {
 /// Opens entry `id` in the editor: a shot with the words said over it, a
 /// recording or an annotation's movie to trim, or the picture of an
 /// annotation whose movie expired.
-fn open(ui: &mut Ui, id: u64) {
+pub(super) fn open(ui: &mut Ui, id: u64) {
     let Some(entry) = ui.captures.entry(id) else {
         return;
     };
     #[cfg(target_os = "macos")]
     {
         use super::screenshot_thumbnail::editor;
-        use crate::history::captures::CaptureWord;
-        let words = |timed: &[CaptureWord]| {
-            timed
-                .iter()
+        let words = |text: &str, timed: &[CaptureWord], duration_ms: u64| {
+            words_for_editor(text, timed, duration_ms)
+                .into_iter()
                 .map(|word| editor::clip::Word {
                     t0: word.t0,
                     t1: word.t1,
-                    text: word.text.clone(),
+                    text: word.text,
                 })
                 .collect()
         };
         match entry {
             Listed::Saved(entry) => match entry.kind {
                 CaptureKind::Shot => editor::open_with(entry.file.clone(), entry.words.clone()),
-                CaptureKind::Recording => {
-                    editor::open_recording(entry.file.clone(), words(&entry.timed));
-                }
+                CaptureKind::Recording => editor::open_recording(
+                    entry.file.clone(),
+                    words(&entry.words, &entry.timed, entry.duration_ms),
+                ),
             },
             Listed::Annotated(annotation) => {
                 if let Some(movie) = &annotation.movie {
-                    editor::open_recording(movie.clone(), words(&annotation.timed));
+                    editor::open_recording(
+                        movie.clone(),
+                        words(&annotation.words, &annotation.timed, annotation.duration_ms),
+                    );
                 } else if let Some(picture) = &annotation.picture {
                     editor::open_with(picture.clone(), annotation.words.clone());
                 }
@@ -356,9 +390,30 @@ fn open(ui: &mut Ui, id: u64) {
     let _ = entry;
 }
 
+/// An entry's words for the editor: its own when the model timed them, else
+/// its text spread over its length as estimated times, the way the words path
+/// fills them for a model that gives none (GigaAM v3). A capture already
+/// written without times still opens with its words instead of reading
+/// "Nothing was said".
+#[cfg(any(target_os = "macos", test))]
+fn words_for_editor(text: &str, timed: &[CaptureWord], duration_ms: u64) -> Vec<CaptureWord> {
+    if !timed.is_empty() {
+        return timed.to_vec();
+    }
+    scrawl_capture::transcribe::spread_words(text, 0, duration_ms)
+        .1
+        .into_iter()
+        .map(|word| CaptureWord {
+            t0: word.t0,
+            t1: word.t1,
+            text: word.text,
+        })
+        .collect()
+}
+
 /// Copies entry `id` as its card or Annotate would; its Copy shows a check
 /// once the clipboard has it.
-fn copy(ui: &mut Ui, id: u64) {
+pub(super) fn copy(ui: &mut Ui, id: u64) {
     let Some(entry) = ui.captures.entry(id).cloned() else {
         return;
     };
@@ -393,7 +448,7 @@ fn copy(ui: &mut Ui, id: u64) {
     let _ = entry;
 }
 
-fn reveal(ui: &mut Ui, id: u64) {
+pub(super) fn reveal(ui: &mut Ui, id: u64) {
     if let Some(entry) = ui.captures.entry(id)
         && let Err(error) = std::process::Command::new("open")
             .arg("-R")
@@ -406,7 +461,7 @@ fn reveal(ui: &mut Ui, id: u64) {
 
 /// Moves entry `id`'s file, or an annotation's whole bundle, to the Trash;
 /// it leaves the list at once.
-fn trash(ui: &mut Ui, id: u64) {
+pub(super) fn trash(ui: &mut Ui, id: u64) {
     let Some(at) = ui
         .captures
         .entries
@@ -415,6 +470,21 @@ fn trash(ui: &mut Ui, id: u64) {
     else {
         return;
     };
+    #[cfg(target_os = "macos")]
+    if ui.history.unified.enabled {
+        let entry = &ui.captures.entries[at];
+        let target = (
+            id,
+            match entry {
+                Listed::Annotated(a) => a.bundle.clone(),
+                Listed::Saved(e) => e.file.clone(),
+            },
+        );
+        if ui.captures.confirm_trash.take().as_ref() != Some(&target) {
+            ui.captures.confirm_trash = Some(target);
+            return;
+        }
+    }
     let path = match ui.captures.entries.remove(at) {
         Listed::Saved(entry) => entry.file,
         Listed::Annotated(annotation) => annotation.bundle,
@@ -472,10 +542,28 @@ pub(super) fn pane(ui: &Ui, p: Paint) -> El {
         ))
 }
 
+/// The Copy action a unified History row shows in its hover, in the age's
+/// place: a capture's file or bundle goes on the clipboard.
+#[cfg(all(target_os = "macos", hex_capture))]
+pub(super) fn copy_action(ui: &Ui, p: Paint, id: u64, in_row: bool) -> El {
+    let copied = ui.captures.copied == Some(id);
+    ld::row_action(
+        p,
+        if in_row { "row-copy" } else { "detail-copy" },
+        if copied {
+            p.k.glyph.check_small
+        } else {
+            ld::COPY_ICON
+        },
+        if copied { tr("Copied") } else { tr("Copy") },
+        move |ui: &mut Ui, _| copy(ui, id),
+    )
+}
+
 /// One capture: its thumbnail, its words (or file name) over its kind and
 /// length, and its time, which Copy, Show in Finder, and Move to Trash take
 /// the place of on hover.
-fn item(ui: &Ui, p: Paint, entry: &Listed) -> El {
+pub(super) fn item(ui: &Ui, p: Paint, entry: &Listed) -> El {
     let c = &p.k.c;
     let id = entry.id();
     let title = entry.title();
@@ -525,6 +613,33 @@ fn item(ui: &Ui, p: Paint, entry: &Listed) -> El {
             move |ui: &mut Ui, _| trash(ui, id),
         ),
     ];
+    #[cfg(target_os = "macos")]
+    let actions = if ui.history.unified.enabled
+        && ui
+            .captures
+            .confirm_trash
+            .as_ref()
+            .is_some_and(|(armed, _)| *armed == id)
+    {
+        vec![
+            ld::row_action(
+                p,
+                "trash-cancel",
+                p.k.glyph.close,
+                tr("Cancel"),
+                |ui: &mut Ui, _| ui.captures.confirm_trash = None,
+            ),
+            ld::row_action(
+                p,
+                "trash-confirm",
+                p.k.glyph.check_small,
+                tr("Confirm delete"),
+                move |ui: &mut Ui, _| trash(ui, id),
+            ),
+        ]
+    } else {
+        actions
+    };
     let end = el()
         .key("end")
         .child(
@@ -599,4 +714,37 @@ fn item(ui: &Ui, p: Paint, entry: &Listed) -> El {
                 .map(|entry| rune::DragItem::new().file(entry.file().to_path_buf()))
         });
     super::lists::source_item(row_el, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture whose model gave no word times still opens in the editor
+    /// with its words spread over its length, rather than "Nothing was said".
+    #[test]
+    fn an_untimed_capture_gets_its_words_spread_over_its_length() {
+        let spread = words_for_editor("make it blue", &[], 4_000);
+        assert_eq!(
+            spread
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["make", "it", "blue"]
+        );
+        assert_eq!((spread[0].t0, spread[2].t1), (0, 4_000));
+
+        assert!(words_for_editor("   ", &[], 4_000).is_empty(), "silence");
+
+        let timed = vec![CaptureWord {
+            t0: 100,
+            t1: 300,
+            text: "make".into(),
+        }];
+        assert_eq!(
+            words_for_editor("make it blue", &timed, 4_000),
+            timed,
+            "a model's own times stay"
+        );
+    }
 }

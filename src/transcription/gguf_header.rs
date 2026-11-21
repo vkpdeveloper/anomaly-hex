@@ -15,12 +15,76 @@ const MAX_KEYS: u64 = 1 << 20;
 const MAX_TENSORS: u64 = 1 << 20;
 const MAX_STRING: u64 = 1 << 24;
 const MAX_ARRAY: u64 = 1 << 26;
+/// The longest int32 array kept, such as a Parakeet model's chunk menus.
+const MAX_MENU: u64 = 4_096;
+/// The Parakeet keys a buffered stream's frame size comes from. Only these
+/// scalars are kept: the header of a speech model is mostly tokenizer data.
+const STREAM_SCALARS: [&str; 3] = [
+    "stt.parakeet.encoder.subsampling_factor",
+    "stt.frontend.hop_length",
+    "stt.frontend.sample_rate",
+];
+/// The Parakeet keys its chunk menus come from, and the only int32 arrays
+/// kept.
+const STREAM_MENUS: [&str; 2] = [
+    "stt.parakeet.encoder.att_chunk_chunk_choices",
+    "stt.parakeet.encoder.att_chunk_right_choices",
+];
 const MAX_DIMS: u32 = 8;
 const DEFAULT_ALIGNMENT: u64 = 32;
 
 /// The ggml tensor types every Hex build runs on Metal and on Vulkan (the
 /// Linux and Windows builds embed Vulkan shaders for these alone).
 pub(crate) const SUPPORTED_TENSOR_TYPES: [(u32, &str); 3] = [(0, "F32"), (1, "F16"), (8, "Q8_0")];
+
+/// The ggml K-quant types, which Metal's kernels run and the Vulkan builds
+/// have no shaders for (Labs › Smaller model files, macOS). Their IDs are
+/// `GGML_TYPE_Q4_K`, `GGML_TYPE_Q5_K`, and `GGML_TYPE_Q6_K`.
+pub(crate) const K_QUANT_TENSOR_TYPES: [(u32, &str); 3] =
+    [(12, "Q4_K"), (13, "Q5_K"), (14, "Q6_K")];
+
+/// The tensor types a caller can run, decided by its caller rather than read
+/// from settings here: an import is checked against what the machine it runs
+/// on supports.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct TensorTypes {
+    /// Whether Q4_K, Q5_K, and Q6_K run too (Labs › Smaller model files).
+    pub(crate) k_quants: bool,
+}
+
+impl TensorTypes {
+    /// F32, F16, and Q8_0: every Hex build on Metal and Vulkan.
+    pub(crate) const STANDARD: Self = Self { k_quants: false };
+
+    /// Also the K quants, where the GPU backend has their kernels.
+    pub(crate) const WITH_K_QUANTS: Self = Self { k_quants: true };
+
+    /// Whether a tensor of `kind` can run.
+    fn allows(self, kind: u32) -> bool {
+        let listed = |types: &[(u32, &str)]| types.iter().any(|(id, _)| *id == kind);
+        listed(&SUPPORTED_TENSOR_TYPES) || (self.k_quants && listed(&K_QUANT_TENSOR_TYPES))
+    }
+
+    /// The types as an import's refusal reads them.
+    pub(crate) const fn names(self) -> &'static str {
+        if self.k_quants {
+            "F32, F16, Q8_0, Q4_K, Q5_K, and Q6_K"
+        } else {
+            "F32, F16, and Q8_0"
+        }
+    }
+
+    /// Where those types run, as an import's refusal reads it. The K quants
+    /// are macOS only (Metal), so that refusal speaks about this Mac rather
+    /// than backends the person may not be using.
+    pub(crate) const fn platform(self) -> &'static str {
+        if self.k_quants {
+            "on this Mac"
+        } else {
+            "on Metal and Vulkan"
+        }
+    }
+}
 
 /// What an import needs from the header.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -29,6 +93,12 @@ pub(crate) struct GgufHeader {
     pub(crate) strings: BTreeMap<String, String>,
     pub(crate) bools: BTreeMap<String, bool>,
     pub(crate) string_arrays: BTreeMap<String, Vec<String>>,
+    /// The Parakeet scalars a buffered stream's frame size comes from
+    /// (`STREAM_SCALARS`); empty for a model without them.
+    pub(crate) u32s: BTreeMap<String, u32>,
+    /// The Parakeet chunk menus (`STREAM_MENUS`), in encoder frames; empty
+    /// for a model without them, such as a cache-aware one.
+    pub(crate) int32_arrays: BTreeMap<String, Vec<i32>>,
     /// Tensor count per ggml type id.
     pub(crate) tensor_types: BTreeMap<u32, usize>,
     /// Where the tensor data ends: the file must be at least this long.
@@ -49,13 +119,21 @@ impl GgufHeader {
         self.bools.get(key).copied().unwrap_or(false)
     }
 
-    /// Tensor types outside [`SUPPORTED_TENSOR_TYPES`], by name, with counts.
-    pub(crate) fn unsupported_tensor_types(&self) -> Vec<String> {
+    /// Tensor types outside `types`, by name, with counts.
+    pub(crate) fn unsupported_tensor_types(&self, types: TensorTypes) -> Vec<String> {
         self.tensor_types
             .iter()
-            .filter(|(kind, _)| !SUPPORTED_TENSOR_TYPES.iter().any(|(id, _)| id == *kind))
+            .filter(|(kind, _)| !types.allows(**kind))
             .map(|(kind, count)| format!("{} ({count})", type_name(*kind)))
             .collect()
+    }
+
+    /// Whether any tensor uses a K-quant type, which needs Labs › Smaller
+    /// model files to run.
+    pub(crate) fn uses_k_quants(&self) -> bool {
+        K_QUANT_TENSOR_TYPES
+            .iter()
+            .any(|(kind, _)| self.tensor_types.contains_key(kind))
     }
 }
 
@@ -115,8 +193,14 @@ impl<R: Read + Seek> Reader<R> {
                     let value = self.u8()? != 0;
                     header.bools.insert(key, value);
                 }
-                4 if key == "general.alignment" => {
-                    alignment = u64::from(self.u32()?);
+                4 => {
+                    let value = self.u32()?;
+                    if key == "general.alignment" {
+                        alignment = u64::from(value);
+                    }
+                    if STREAM_SCALARS.contains(&key.as_str()) {
+                        header.u32s.insert(key, value);
+                    }
                 }
                 9 => {
                     let item = self.u32()?;
@@ -130,6 +214,16 @@ impl<R: Read + Seek> Reader<R> {
                             values.push(self.string()?);
                         }
                         header.string_arrays.insert(key, values);
+                    } else if item == 5 && count <= MAX_MENU && STREAM_MENUS.contains(&key.as_str())
+                    {
+                        // A streaming model's chunk menus are a handful of
+                        // frames; anything longer is not one, so it is
+                        // skipped rather than held in memory.
+                        let mut values = Vec::new();
+                        for _ in 0..count {
+                            values.push(self.i32()?);
+                        }
+                        header.int32_arrays.insert(key, values);
                     } else {
                         for _ in 0..count {
                             self.skip_value(item)?;
@@ -228,6 +322,10 @@ impl<R: Read + Seek> Reader<R> {
         Ok(u32::from_le_bytes(self.array()?))
     }
 
+    fn i32(&mut self) -> Result<i32> {
+        Ok(i32::from_le_bytes(self.array()?))
+    }
+
     fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.array()?))
     }
@@ -248,6 +346,11 @@ fn tensor_bytes(kind: u32, elements: u64) -> Option<u64> {
         1 => elements.checked_mul(2),
         // 32 values in 34 bytes: an f16 scale and 32 int8s.
         8 => elements.div_ceil(32).checked_mul(34),
+        // 256 values in one K super-block, sized by ggml-common.h's
+        // static_asserts: q4_K 144 bytes, q5_K 176, q6_K 210.
+        12 => elements.div_ceil(256).checked_mul(144),
+        13 => elements.div_ceil(256).checked_mul(176),
+        14 => elements.div_ceil(256).checked_mul(210),
         _ => None,
     }
 }
@@ -275,6 +378,36 @@ pub(crate) mod tests {
         bools: &[(&str, bool)],
         tensors: &[(&str, u32, u64)],
     ) -> Vec<u8> {
+        gguf_with(&GgufParts {
+            strings,
+            arrays,
+            bools,
+            tensors,
+            ..GgufParts::default()
+        })
+    }
+
+    /// The metadata a streaming model carries that the reader keeps for its
+    /// chunk menus: integer scalars and int32 arrays.
+    #[derive(Default)]
+    pub(crate) struct GgufParts<'a> {
+        pub(crate) strings: &'a [(&'a str, &'a str)],
+        pub(crate) arrays: &'a [(&'a str, &'a [&'a str])],
+        pub(crate) bools: &'a [(&'a str, bool)],
+        pub(crate) tensors: &'a [(&'a str, u32, u64)],
+        pub(crate) u32s: &'a [(&'a str, u32)],
+        pub(crate) int32_arrays: &'a [(&'a str, &'a [i32])],
+    }
+
+    pub(crate) fn gguf_with(parts: &GgufParts<'_>) -> Vec<u8> {
+        let GgufParts {
+            strings,
+            arrays,
+            bools,
+            tensors,
+            u32s,
+            int32_arrays,
+        } = *parts;
         fn string(out: &mut Vec<u8>, text: &str) {
             out.extend((text.len() as u64).to_le_bytes());
             out.extend(text.as_bytes());
@@ -283,7 +416,8 @@ pub(crate) mod tests {
         out.extend(MAGIC);
         out.extend(3_u32.to_le_bytes());
         out.extend((tensors.len() as u64).to_le_bytes());
-        out.extend(((strings.len() + arrays.len() + bools.len() + 1) as u64).to_le_bytes());
+        let keys = strings.len() + arrays.len() + bools.len() + u32s.len() + int32_arrays.len() + 1;
+        out.extend((keys as u64).to_le_bytes());
         // An unread u64 value the reader has to skip.
         string(&mut out, "general.file_type");
         out.extend(10_u32.to_le_bytes());
@@ -306,6 +440,20 @@ pub(crate) mod tests {
             string(&mut out, key);
             out.extend(7_u32.to_le_bytes());
             out.push(u8::from(*value));
+        }
+        for (key, value) in u32s {
+            string(&mut out, key);
+            out.extend(4_u32.to_le_bytes());
+            out.extend(value.to_le_bytes());
+        }
+        for (key, values) in int32_arrays {
+            string(&mut out, key);
+            out.extend(9_u32.to_le_bytes());
+            out.extend(5_u32.to_le_bytes());
+            out.extend((values.len() as u64).to_le_bytes());
+            for value in *values {
+                out.extend(value.to_le_bytes());
+            }
         }
         let mut offset = 0_u64;
         for (name, kind, elements) in tensors {
@@ -353,13 +501,104 @@ pub(crate) mod tests {
         assert!(header.bool("stt.capability.lang_detect"));
         assert!(!header.bool("stt.capability.streaming"));
         assert_eq!(header.tensor_types, [(0, 1), (1, 1), (8, 1)].into());
-        assert!(header.unsupported_tensor_types().is_empty());
+        assert!(
+            header
+                .unsupported_tensor_types(TensorTypes::STANDARD)
+                .is_empty()
+        );
+        assert!(!header.uses_k_quants());
+    }
+
+    /// A streaming model's frame size is three integer keys, and its chunk
+    /// menus are int32 arrays; the reader keeps both without the weights.
+    #[test]
+    fn a_streaming_models_frame_size_and_chunk_menus_are_read() {
+        let header = read_bytes(gguf_with(&GgufParts {
+            u32s: &[
+                ("stt.parakeet.encoder.subsampling_factor", 8),
+                ("stt.frontend.hop_length", 160),
+                ("stt.frontend.sample_rate", 16_000),
+            ],
+            int32_arrays: &[
+                ("stt.parakeet.encoder.att_chunk_left_choices", &[70]),
+                (
+                    "stt.parakeet.encoder.att_chunk_chunk_choices",
+                    &[1, 2, 7, 13],
+                ),
+                (
+                    "stt.parakeet.encoder.att_chunk_right_choices",
+                    &[0, 1, 2, 3, 4, 7, 13],
+                ),
+            ],
+            ..GgufParts::default()
+        }))
+        .unwrap();
+        assert_eq!(header.u32s["stt.frontend.hop_length"], 160);
+        assert_eq!(
+            header.int32_arrays["stt.parakeet.encoder.att_chunk_chunk_choices"],
+            [1, 2, 7, 13]
+        );
+        assert_eq!(
+            header.int32_arrays["stt.parakeet.encoder.att_chunk_right_choices"],
+            [0, 1, 2, 3, 4, 7, 13]
+        );
     }
 
     #[test]
     fn other_tensor_types_are_named() {
         let header = read_bytes(gguf(&[], &[], &[], &[("a", 12, 256), ("b", 12, 256)])).unwrap();
-        assert_eq!(header.unsupported_tensor_types(), ["Q4_K (2)"]);
+        assert_eq!(
+            header.unsupported_tensor_types(TensorTypes::STANDARD),
+            ["Q4_K (2)"]
+        );
+    }
+
+    #[test]
+    fn k_quants_are_known_only_where_the_caller_runs_them() {
+        let header = read_bytes(gguf(
+            &[],
+            &[],
+            &[],
+            &[("a", 12, 256), ("b", 13, 256), ("c", 14, 512), ("d", 8, 64)],
+        ))
+        .unwrap();
+        assert!(header.uses_k_quants());
+        assert_eq!(
+            header.unsupported_tensor_types(TensorTypes::STANDARD),
+            ["Q4_K (1)", "Q5_K (1)", "Q6_K (1)"]
+        );
+        assert!(
+            header
+                .unsupported_tensor_types(TensorTypes::WITH_K_QUANTS)
+                .is_empty()
+        );
+        // A type neither list holds stays refused either way.
+        let other = read_bytes(gguf(&[], &[], &[], &[("a", 6, 256)])).unwrap();
+        assert_eq!(
+            other.unsupported_tensor_types(TensorTypes::WITH_K_QUANTS),
+            ["Q5_0 (1)"]
+        );
+        assert_eq!(TensorTypes::STANDARD.names(), "F32, F16, and Q8_0");
+        assert_eq!(
+            TensorTypes::WITH_K_QUANTS.names(),
+            "F32, F16, Q8_0, Q4_K, Q5_K, and Q6_K"
+        );
+    }
+
+    #[test]
+    fn k_quant_tensors_are_measured_in_their_ggml_block_sizes() {
+        // ggml-common.h: one super-block of 256 values per 144, 176, and 210
+        // bytes, and a partly filled block still takes a whole one.
+        assert_eq!(tensor_bytes(12, 256), Some(144));
+        assert_eq!(tensor_bytes(13, 256), Some(176));
+        assert_eq!(tensor_bytes(14, 256), Some(210));
+        assert_eq!(tensor_bytes(14, 257), Some(420));
+        assert_eq!(tensor_bytes(6, 256), None);
+        // A K-quant file's tensor data counts, so a cut-short file is refused.
+        // (The fixture pads to 32 bytes, so drop a whole block of padding.)
+        let mut cut = gguf(&[], &[], &[], &[("a", 14, 256)]);
+        cut.truncate(cut.len() - 32);
+        assert!(read_bytes(cut).is_err());
     }
 
     #[test]

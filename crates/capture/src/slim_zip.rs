@@ -162,6 +162,7 @@ fn collect(root: &Path, relative: &Path, out: &mut Vec<Entry>) -> Result<()> {
 /// earlier copy.
 fn excluded(name: &str) -> bool {
     HEAVY_MEDIA.contains(&name)
+        || name == crate::recover::PARTIAL_AUDIO
         || name == MEDIA_PENDING
         || name == MEDIA_SENDING
         || name == scrawl_router::delivery::PENDING
@@ -547,7 +548,7 @@ mod tests {
         let text = std::str::from_utf8(&summary.data).unwrap();
         let absolute = bundle.canonicalize().unwrap().display().to_string();
         assert!(!text.contains(&absolute), "{text}");
-        assert!(text.contains("[scrawl 0:02 · Display · .]"), "{text}");
+        assert!(text.contains("[hex-annotate 0:02 · Display · .]"), "{text}");
         // The bundle keeps the summary it wrote.
         assert_eq!(
             fs::read_to_string(bundle.join("summary.md")).unwrap(),

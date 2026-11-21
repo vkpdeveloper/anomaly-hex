@@ -109,10 +109,10 @@ pub enum MeetingsCommand {
         md: bool,
         #[arg(long)]
         json: bool,
-        /// SubRip subtitles, one cue per speaker turn (Labs › Subtitle export).
+        /// SubRip subtitles, one cue per speaker turn.
         #[arg(long, conflicts_with_all = ["md", "json", "vtt"])]
         srt: bool,
-        /// WebVTT subtitles, one cue per speaker turn (Labs › Subtitle export).
+        /// WebVTT subtitles, one cue per speaker turn.
         #[arg(long, conflicts_with_all = ["md", "json"])]
         vtt: bool,
         /// Only entries overlapping this offset or later: mm:ss, h:mm:ss, or seconds.
@@ -159,6 +159,16 @@ pub enum MeetingsCommand {
     },
     /// Copy the last meeting's transcript to the clipboard.
     CopyLast {
+        #[command(flatten)]
+        output: crate::control::cli::Output,
+    },
+    /// Delete a finished meeting: move its exported Markdown and its recording
+    /// folder to the Trash, as the Meetings pane's Delete does. Nothing is
+    /// removed outright, and Hex asks for no confirmation; ask the person
+    /// first.
+    Delete {
+        /// The exact id `hex meetings list --json` prints.
+        id: String,
         #[command(flatten)]
         output: crate::control::cli::Output,
     },
@@ -286,16 +296,21 @@ fn rank_history<'a>(
 }
 
 /// Read only this setting, without loading AppSettings (which migrates and writes).
-fn retention(root: &Path) -> Result<HistoryRetention> {
+fn retention(root: &Path) -> Result<(HistoryRetention, u32)> {
     #[derive(Default, Deserialize)]
     struct Settings {
         #[serde(default)]
         history_retention: HistoryRetention,
+        #[serde(
+            default = "default_typing_wpm",
+            deserialize_with = "lenient_typing_wpm"
+        )]
+        typing_wpm: u32,
     }
     let file = match std::fs::File::open(root.join("settings.json")) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(HistoryRetention::default());
+            return Ok((HistoryRetention::default(), default_typing_wpm()));
         }
         Err(error) => return Err(error).wrap_err("could not read history retention"),
     };
@@ -306,7 +321,26 @@ fn retention(root: &Path) -> Result<HistoryRetention> {
     }
     let settings: Settings = serde_json::from_slice(&bytes)
         .wrap_err("could not read history retention; settings.json is invalid")?;
-    Ok(settings.history_retention)
+    Ok((settings.history_retention, settings.typing_wpm))
+}
+
+fn default_typing_wpm() -> u32 {
+    crate::app_settings::DEFAULT_TYPING_WPM
+}
+
+/// A saved typing speed of any JSON shape: a number is clamped, and
+/// anything else (text, null, a negative number) reads as the default so one
+/// bad field never breaks `hex history`.
+fn lenient_typing_wpm<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_u64()
+        .and_then(|wpm| u32::try_from(wpm).ok())
+        .map(crate::app_settings::clamp_typing_wpm)
+        .unwrap_or(default_typing_wpm()))
 }
 
 #[derive(Serialize)]
@@ -315,6 +349,33 @@ struct StatsOutput {
     retention: HistoryRetention,
     #[serde(flatten)]
     stats: HistoryStats,
+    /// Labs › Dictation stats' daily rollup, filled in by `hex history
+    /// stats` after the totals; the command refuses while the lab is off, so
+    /// successful output always has it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    yearly: Option<YearlyOutput>,
+}
+
+/// The Labs › Dictation stats rollup in `hex history stats --json`.
+#[derive(Serialize)]
+struct YearlyOutput {
+    dictations: u64,
+    words: u64,
+    audio_ms: u64,
+    hours: [u64; 24],
+    days: Vec<crate::history::usage::UsageDay>,
+}
+
+impl From<&crate::history::usage::Usage> for YearlyOutput {
+    fn from(usage: &crate::history::usage::Usage) -> Self {
+        Self {
+            dictations: usage.dictations(),
+            words: usage.words(),
+            audio_ms: usage.audio_ms(),
+            hours: usage.hours(),
+            days: usage.days().to_vec(),
+        }
+    }
 }
 
 /// The retained entries in the range, summed up.
@@ -322,10 +383,12 @@ fn stats_output(
     entries: &[HistoryEntry],
     since: Option<&str>,
     until: Option<&str>,
-    retention: HistoryRetention,
+    settings: (HistoryRetention, u32),
     now: u64,
     day_of: impl Fn(u64) -> i64,
+    hour_of: impl Fn(u64) -> usize,
 ) -> Result<StatsOutput> {
+    let (retention, typing_wpm) = settings;
     let range = TimeRange::parse(since, until, now)?;
     let cutoff = retention.cutoff(now);
     let stats = crate::history::stats::summarize(
@@ -335,11 +398,14 @@ fn stats_output(
             .filter(|entry| range.contains(entry.timestamp_ms)),
         day_of(now),
         day_of,
+        hour_of,
+        typing_wpm,
     );
     Ok(StatsOutput {
         version: 1,
         retention,
         stats,
+        yearly: None,
     })
 }
 
@@ -355,20 +421,34 @@ fn require_history_stats(on: bool) -> Result<()> {
     }
 }
 
+/// Labs › Dictation stats' rollup for `hex history stats --json`. `hex
+/// history stats` refuses while the lab is off, so the field is always there.
+fn yearly_output(history: &Path, now: u64) -> YearlyOutput {
+    let usage = crate::history::usage::Usage::load(
+        &crate::history::usage::path(history),
+        crate::history::stats::local_day(now),
+    );
+    YearlyOutput::from(&usage)
+}
+
 /// `hex history stats`.
 fn history_stats(since: Option<&str>, until: Option<&str>, json: bool) -> Result<()> {
     require_history_stats(crate::labs::history_stats())?;
     let root = crate::app_paths::support_dir()?;
-    let entries = crate::history::read_snapshot(&root.join("history.json"))
-        .wrap_err("could not read history.json")?;
-    let output = stats_output(
+    let history = root.join("history.json");
+    let entries =
+        crate::history::read_snapshot(&history).wrap_err("could not read history.json")?;
+    let now = crate::desktop::events::now_ms();
+    let mut output = stats_output(
         &entries,
         since,
         until,
         retention(&root)?,
-        crate::desktop::events::now_ms(),
+        now,
         crate::history::stats::local_day,
+        crate::history::stats::local_hour,
     )?;
+    output.yearly = Some(yearly_output(&history, now));
     let mut out = io::stdout().lock();
     if json {
         return write_json(&mut out, &output);
@@ -385,6 +465,15 @@ fn stats_text(stats: &HistoryStats) -> String {
     match stats.words_per_minute {
         Some(wpm) => text.push_str(&format!("Words per minute: {wpm}\n")),
         None => text.push_str("Words per minute: unknown (no recorded audio)\n"),
+    }
+    text.push_str(&format!(
+        "Time saved: {} min (typing at {} words per minute)\n",
+        stats.time_saved_ms / 60_000,
+        stats.typing_wpm
+    ));
+    match stats.busiest_hour {
+        Some(hour) => text.push_str(&format!("Busiest hour: {hour:02}:00\n")),
+        None => text.push_str("Busiest hour: unknown\n"),
     }
     text.push_str(&format!(
         "Changed by Output: {} ({}%)\n",
@@ -429,7 +518,7 @@ pub fn history(args: &HistoryArgs) -> Result<()> {
     let output = history_output(
         &entries,
         args,
-        retention(&root)?,
+        retention(&root)?.0,
         crate::desktop::events::now_ms(),
         &crate::dictation::vocabulary::read_saved(&root),
         recordings.as_deref(),
@@ -617,9 +706,6 @@ pub fn meetings(command: &MeetingsCommand) -> Result<()> {
             ..
         } => {
             let subtitles = SubtitleFormat::from_flags(*srt, *vtt);
-            if subtitles.is_some() {
-                require_subtitle_export(crate::labs::subtitle_export())?;
-            }
             let range = OffsetRange::parse(from.as_deref(), to.as_deref())?;
             let meeting = resolve(&library, id)?;
             if let Some(format) = subtitles {
@@ -689,7 +775,8 @@ pub fn meetings(command: &MeetingsCommand) -> Result<()> {
         // `main` sends these to the running Hex.
         MeetingsCommand::Record { .. }
         | MeetingsCommand::Stop { .. }
-        | MeetingsCommand::CopyLast { .. } => Err(eyre!("this command needs the running Hex")),
+        | MeetingsCommand::CopyLast { .. }
+        | MeetingsCommand::Delete { .. } => Err(eyre!("this command needs the running Hex")),
     }
 }
 
@@ -707,18 +794,6 @@ impl SubtitleFormat {
             (false, true) => Some(Self::Vtt),
             (false, false) => None,
         }
-    }
-}
-
-/// Subtitle export is a Labs feature, refused before any meeting is read
-/// while its toggle is off.
-fn require_subtitle_export(on: bool) -> Result<()> {
-    if on {
-        Ok(())
-    } else {
-        Err(eyre!(
-            "Subtitle export is a Labs feature and is off. Turn it on with `hex labs on subtitle-export` or in Settings › Labs."
-        ))
     }
 }
 

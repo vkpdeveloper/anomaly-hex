@@ -364,63 +364,56 @@ pub enum MovieQuality {
     /// Sized for agents: H.264, 1280 px long edge (2560 for a whole display, for crops).
     #[default]
     Compact,
-    /// For people: every pixel, as hardware HEVC (`capture_core::Encoder::Hevc`).
-    Full,
+    /// For people: hardware HEVC (`capture_core::Encoder::Hevc`) at the size, frame rate, and
+    /// quality asked.
+    Full(MovieSize),
 }
 
-#[derive(Clone, Debug)]
-pub struct Start {
-    /// The capture's start on the boot-time nanosecond clock that audio and input timestamps share.
-    pub t0_boot_ns: u64,
-    pub target: Target,
-    pub bundle_dir: Option<PathBuf>,
-    pub audio: AudioIn,
-    pub window_log: bool,
-    pub note: Option<String>,
-    pub movie: MovieQuality,
+/// A [`MovieQuality::Full`] movie's size, frame rate, and quality.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MovieSize {
+    /// At most one pixel a point, so a Retina display records at its size in points.
+    pub one_x: bool,
+    /// The longest side in pixels; `None` keeps the source's (or one pixel a point's).
+    pub long_edge: Option<u32>,
+    pub fps: u32,
+    /// HEVC's constant quality, in hundredths.
+    pub quality: u8,
+    /// Also records other apps' audio (never Hex's) into `system.m4a`.
+    pub system_audio: bool,
 }
 
-impl Default for Start {
+impl Default for MovieSize {
+    /// Every pixel at up to 60 fps, at `capture_core`'s quality for Retina text.
     fn default() -> Self {
         Self {
-            t0_boot_ns: boot_time_ns(),
-            target: Target::ActiveDisplay,
-            bundle_dir: None,
-            audio: AudioIn::External,
-            window_log: true,
-            note: None,
-            movie: MovieQuality::Compact,
+            one_x: false,
+            long_edge: None,
+            fps: 60,
+            quality: 70,
+            system_audio: false,
         }
     }
 }
 
-impl Start {
-    pub fn screen(target: TargetInfo) -> Self {
-        Self {
-            window_log: target.mode == CaptureMode::Display,
-            target: Target::Screen(target),
-            ..Self::default()
-        }
-    }
-
-    pub fn screen_with_mic(target: TargetInfo) -> Self {
-        Self::screen(target).with_audio(AudioIn::Microphone)
-    }
-
-    pub const fn with_audio(mut self, audio: AudioIn) -> Self {
-        self.audio = audio;
-        self
-    }
-
-    pub fn phone(device: Option<String>, name: Option<String>) -> Self {
-        Self {
-            target: Target::Phone { device, name },
-            audio: AudioIn::None,
-            window_log: false,
-            ..Self::default()
+impl MovieSize {
+    /// The long edge a source `points` large records at: one pixel a point with
+    /// [`Self::one_x`], capped at [`Self::long_edge`]. `None` keeps every pixel.
+    pub fn long_edge_for(self, points: (f64, f64)) -> Option<u32> {
+        let longest = points.0.max(points.1);
+        let one_x =
+            (self.one_x && longest.is_finite() && longest >= 1.0).then(|| longest.round() as u32);
+        match (one_x, self.long_edge) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 }
+
+mod start;
+mod token;
+pub use start::Start;
+pub use token::{OutputBounds, PortalToken};
 
 #[derive(Clone, Debug, Default)]
 pub struct RouteContext {
@@ -864,6 +857,9 @@ pub(crate) struct Sampler {
     pub video_output_path: Option<PathBuf>,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub movie_quality: MovieQuality,
+    /// The screen-cast portal's token choice; ignored off Linux.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub portal_token: PortalToken,
     /// Scrawl's own windows to leave out of the recording.
     #[cfg_attr(any(target_os = "windows", target_os = "linux"), allow(dead_code))]
     pub excluded_window_ids: Arc<Mutex<Vec<u32>>>,
@@ -911,6 +907,7 @@ impl ScreenCaptureSession {
             Arc::default(),
             CANDIDATE_BUDGET_BYTES,
             MovieQuality::Compact,
+            PortalToken::None,
         )
     }
 
@@ -921,6 +918,7 @@ impl ScreenCaptureSession {
         own_windows_recorded: Arc<AtomicBool>,
         budget_bytes: usize,
         movie_quality: MovieQuality,
+        portal_token: PortalToken,
     ) -> Self {
         let started_at = Instant::now();
         #[cfg(target_os = "macos")]
@@ -942,6 +940,7 @@ impl ScreenCaptureSession {
                     target: sampler_target,
                     video_output_path,
                     movie_quality,
+                    portal_token,
                     excluded_window_ids,
                     own_windows_recorded,
                     started_at,
@@ -2703,6 +2702,7 @@ impl Engine {
                     Arc::clone(&own.recorded),
                     engine_cfg.candidate_budget_bytes(),
                     req.movie,
+                    req.portal_token,
                 );
                 self.host
                     .metric("sck_start_ms", stage.elapsed().as_secs_f64() * 1_000.0);
@@ -3111,7 +3111,7 @@ impl SealedCapture {
                     self.host.log(&format!("iPhone capture failed: {error:#}"));
                 }
                 finalized.map(|(dir, bundle, summary)| {
-                    let words = bundle.transcript.words.len();
+                    let words = crate::transcribe::word_count(&bundle.transcript);
                     let duration_ms = bundle.duration_ms;
                     let missing_transcript = bundle
                         .transcript
@@ -3163,7 +3163,7 @@ impl SealedCapture {
                     Some(&self.engine_cfg),
                 )
                 .map(|(dir, bundle, summary)| {
-                    let words = bundle.transcript.words.len();
+                    let words = crate::transcribe::word_count(&bundle.transcript);
                     let missing_transcript = bundle
                         .transcript
                         .missing

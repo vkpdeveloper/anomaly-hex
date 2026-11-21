@@ -334,14 +334,14 @@ impl Library {
         // A meeting past its retention is gone even before expiry moves it.
         let retention = crate::app_settings::meeting_retention();
         let now_ms = crate::desktop::events::now_ms();
+        let can_recover = super::recovery::can_recover();
         meetings.retain(|meeting| {
+            let directory = self.root.join(&meeting.id);
             super::retention::readable(
                 &meeting.manifest,
                 meeting.status,
-                self.root
-                    .join(&meeting.id)
-                    .join(super::FINAL_PENDING_FILE)
-                    .exists(),
+                directory.join(super::FINAL_PENDING_FILE).exists()
+                    || (can_recover && super::recovery::awaiting(&directory)),
                 retention,
                 now_ms,
             )
@@ -2098,7 +2098,7 @@ fn local_to_ms(
     u64::try_from(seconds).ok().map(|seconds| seconds * 1_000)
 }
 
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let year_of_era = year - era * 400;

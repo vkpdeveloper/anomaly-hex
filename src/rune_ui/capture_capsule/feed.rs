@@ -123,7 +123,7 @@ impl Follow {
             return inputs;
         }
         let stage = self.stage(snapshot);
-        if stage == Some(Input::Stage(Stage::Done)) {
+        if matches!(stage, Some(Input::Written { .. })) {
             if heard_nothing(snapshot, self.shown.as_ref()) {
                 inputs.push(Input::NothingHeard);
             }
@@ -231,6 +231,20 @@ impl Follow {
                 .take_if(|(_, stage)| *stage == Stage::Recording)?;
             return Some(Input::Gone);
         };
+        // A writer's last progress tick is not its publication: the settled
+        // bundle also tells us whether a routing answer is still pending.
+        let written = if stage == Stage::Done {
+            let last = snapshot
+                .last
+                .as_ref()
+                .filter(|last| last.bundle == *bundle && last.stage == Stage::Done)?;
+            Some(Input::Written {
+                bundle: bundle.clone(),
+                routing: last.route.is_some(),
+            })
+        } else {
+            None
+        };
         if self
             .shown
             .as_ref()
@@ -252,7 +266,7 @@ impl Follow {
             };
             return Some(Input::Failed(what, error));
         }
-        Some(Input::Stage(stage))
+        written.or(Some(Input::Stage(stage)))
     }
 }
 
@@ -264,8 +278,9 @@ fn copy_failed(snapshot: &CaptureSnapshot, shown: Option<&(PathBuf, Stage)>) -> 
 }
 
 /// Whether the shown capture was written with a transcript that has no
-/// words. One that has no transcript at all (the transcriber was missing
-/// or failed) wasn't silence.
+/// words: none timed and none in its text, so only silence reads as "no
+/// speech" for a model that gives no times. One that has no transcript at
+/// all (the transcriber was missing or failed) wasn't silence.
 fn heard_nothing(snapshot: &CaptureSnapshot, shown: Option<&(PathBuf, Stage)>) -> bool {
     snapshot.last.as_ref().is_some_and(|last| {
         shown.is_some_and(|(bundle, _)| *bundle == last.bundle)
@@ -329,7 +344,7 @@ fn capsule_route(answer: &RouteAnswer) -> Option<Route> {
     })
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 /// The capsule, its picker, and the ink, installed together.
 pub(crate) struct CaptureOverlays {
     capsule: CaptureCapsule,
@@ -364,7 +379,7 @@ impl CaptureOverlays {
         }
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     /// Follows `capture.show_overlays_in_recordings` on windows already
     /// made.
     pub(crate) fn follow_recordings(&mut self) {
@@ -398,7 +413,9 @@ pub(crate) fn follow(capsule: CaptureCapsule, ink: InkOverlay) {
                 // The first frame goes ahead of "Copied", so the capsule
                 // lands with it rather than swapping its check a moment on.
                 let mut screenless = false;
-                if inputs.contains(&Input::Stage(Stage::Done))
+                if inputs
+                    .iter()
+                    .any(|input| matches!(input, Input::Written { .. }))
                     && let Some((bundle, _)) = &follow.shown
                 {
                     screenless = !bundle.join("frames/frame-01.png").exists();
@@ -542,7 +559,7 @@ pub(crate) fn act(action: Action) {
             crate::capture_host::toggle_pen();
             return;
         }
-        Action::Paste => vec![command(CaptureCommand::Paste)],
+        Action::Paste(bundle) => vec![command(CaptureCommand::Paste(bundle))],
         Action::Inspect => vec![command(CaptureCommand::Inspect)],
         Action::Allow(need) => {
             crate::capture_host::allow_permission(need);
@@ -662,6 +679,7 @@ mod tests {
                 stage,
                 words: Some(12),
                 gaps: Some(0),
+                audio_stopped_at_ms: None,
                 missing_transcript: None,
                 error: None,
                 copy_error: None,
@@ -669,6 +687,30 @@ mod tests {
             }),
             phone: None,
         }
+    }
+
+    fn written(name: &str, routing: bool) -> Input {
+        Input::Written {
+            bundle: bundle(name),
+            routing,
+        }
+    }
+
+    #[test]
+    fn paste_follows_the_displayed_bundle_not_a_later_completion() {
+        use super::super::{flow::Flow, surface::Id};
+        let mut follow = Follow::default();
+        let mut flow = Flow::new();
+        for snapshot in [
+            recording("shown"),
+            settled("shown", Stage::Done),
+            settled("other", Stage::Done),
+        ] {
+            for input in follow.next(&snapshot) {
+                flow.input(input, 1.0);
+            }
+        }
+        assert_eq!(flow.click(Id::Paste, 1.1), [Action::Paste(bundle("shown"))]);
     }
 
     #[test]
@@ -686,7 +728,7 @@ mod tests {
         );
         assert_eq!(
             follow.next(&settled("a", Stage::Done)),
-            [Input::Stage(Stage::Done)]
+            [written("a", false)]
         );
         assert_eq!(follow.next(&settled("a", Stage::Done)), []);
     }
@@ -754,13 +796,13 @@ mod tests {
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&silent(None)),
-            [Input::NothingHeard, Input::Stage(Stage::Done)]
+            [Input::NothingHeard, written("a", false)]
         );
         let mut follow = Follow::default();
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&silent(Some("Transcriber unavailable."))),
-            [Input::Stage(Stage::Done)],
+            [written("a", false)],
             "no transcript at all isn't silence"
         );
     }
@@ -773,13 +815,13 @@ mod tests {
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&uncopied),
-            [Input::CopyFailed, Input::Stage(Stage::Done)]
+            [Input::CopyFailed, written("a", false)]
         );
         let mut follow = Follow::default();
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&settled("a", Stage::Done)),
-            [Input::Stage(Stage::Done)]
+            [written("a", false)]
         );
     }
 
@@ -904,7 +946,7 @@ mod tests {
         assert_eq!(follow.next(&c_failed), []);
         assert_eq!(
             follow.next(&settled("b", Stage::Done)),
-            [Input::Stage(Stage::Done)]
+            [written("b", false)]
         );
     }
 
@@ -948,7 +990,7 @@ mod tests {
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&routed("a", RouteAnswer::Looking, None)),
-            [Input::Stage(Stage::Done)]
+            [written("a", true)]
         );
         let rule = || RouteAnswer::Rule {
             to: dest("SEER", "rule"),

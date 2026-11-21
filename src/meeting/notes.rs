@@ -61,12 +61,14 @@ with a timestamp and a speaker label: You is the person who recorded the meeting
 one or more other participants. A long meeting is excerpted, and […] marks skipped parts. Write \
 one short, specific title for the whole meeting and a summary of at most two short sentences \
 on the main topics and outcomes. Use only what the transcript says; never invent names, dates, \
-or numbers.";
+or numbers. You MUST write the title and summary in the language spoken in the transcript, even \
+though these instructions are in English; never translate them.";
 
 const TITLE_INSTRUCTIONS: &str = "You name meetings from the first part of their transcript. \
 Each line starts with a timestamp and a speaker label: You is the person who recorded the \
 meeting, and Them is one or more other participants. Write one short, specific title naming \
-the main topic. Use only what the transcript says.";
+the main topic. Use only what the transcript says. You MUST write the title in the language \
+spoken in the transcript, even though these instructions are in English; never translate it.";
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MeetingNotes {
@@ -285,8 +287,8 @@ fn calendar_preamble(calendar: Option<&super::MeetingCalendar>) -> String {
     preamble
 }
 
-/// [`summarize_entries`] with the vocabulary's `terms` (Labs › Vocabulary
-/// in meeting notes; empty leaves them out) and the calendar event as
+/// [`summarize_entries`] with the vocabulary's `terms` (empty leaves them
+/// out) and the calendar event as
 /// context. Both count against the excerpt budget.
 pub(super) fn summarize_with_calendar(
     entries: &[TranscriptEntry],
@@ -736,7 +738,7 @@ pub(super) fn retitle_markdown_file(
 }
 
 /// Applies the notes to the exported file in place; the caller renames it
-/// to the new title when Labs › Descriptive meeting file names is on.
+/// to the new title when Descriptive meeting file names is on.
 fn update_markdown_file(
     path: &Path,
     written: &mut Option<String>,
@@ -749,10 +751,10 @@ fn update_markdown_file(
     })
 }
 
-/// Applies the notes to the exported file and, with Labs › Descriptive
-/// meeting file names on, renames it to the new title. A missing file is
-/// left to the manifest alone. A separate notes file is written beside it
-/// while Labs › Separate notes file is on.
+/// Applies the notes to the exported file and, with Descriptive meeting file
+/// names on, renames it to the new title. A missing file is left to the
+/// manifest alone. A separate notes file is written beside it while
+/// Separate notes file is on (both in Meetings › Settings › Export).
 fn apply_notes_to_export(
     manifest: &mut MeetingManifest,
     previous_title: &str,
@@ -894,11 +896,7 @@ fn summarize_claimed(id: &str, _claim: InProgress) -> Result<MeetingManifest> {
         super::chapters::refine_meeting(&directory, &entries, &never);
     }
     // Read at each generation, so Regenerate summary uses the current list.
-    let terms = if crate::labs::meeting_notes_vocabulary() {
-        crate::dictation::vocabulary::terms()
-    } else {
-        Vec::new()
-    };
+    let terms = crate::dictation::vocabulary::terms();
     let started = Instant::now();
     let result = summarize_with_calendar(
         &entries,
@@ -931,8 +929,8 @@ fn summarize_claimed(id: &str, _claim: InProgress) -> Result<MeetingManifest> {
                 &mut manifest,
                 &previous_title,
                 &title,
-                crate::labs::meeting_descriptive_filenames(),
-                crate::labs::meeting_notes_file(),
+                crate::app_settings::meeting_descriptive_filenames(),
+                crate::app_settings::meeting_notes_file(),
             ) {
                 tracing::warn!(%error, meeting = id, "could not add notes to meeting Markdown");
                 manifest.notes_error = Some(format!("Notes not added to Markdown: {error}"));
@@ -1171,6 +1169,24 @@ mod tests {
             "They reviewed the launch plan. Docs move to Friday."
         );
         assert_eq!(summary.excerpt_chars, summary.transcript_chars);
+    }
+
+    #[test]
+    fn prompts_keep_the_transcripts_language() {
+        assert!(NOTES_INSTRUCTIONS.contains(
+            "You MUST write the title and summary in the language spoken in the transcript"
+        ));
+        assert!(
+            TITLE_INSTRUCTIONS
+                .contains("You MUST write the title in the language spoken in the transcript")
+        );
+        for instructions in [NOTES_INSTRUCTIONS, TITLE_INSTRUCTIONS] {
+            assert!(
+                instructions.contains("even though these instructions are in English"),
+                "{instructions}"
+            );
+            assert!(instructions.contains("never translate"), "{instructions}");
+        }
     }
 
     #[test]

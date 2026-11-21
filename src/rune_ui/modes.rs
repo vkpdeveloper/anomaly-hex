@@ -12,8 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rune::{
-    Align, Drag, El, Phase, ScrollSpec, Side, TextEdit, Tx, Waker, col, edit_access, el, row,
-    spacer, text,
+    Align, Drag, El, Phase, ScrollSpec, Side, TextEdit, Tx, Waker, col, edit_access, el, row, text,
 };
 use rune_kit::{ControlSize, IconButton, IconButtonVariant, Switch, TextArea, TextInput};
 
@@ -23,7 +22,7 @@ use super::controls::{
 };
 use super::lists::{LIST_COLUMN_PL, list_row, remove_button, source_list};
 use super::models::{self, Target};
-use super::{Menu, Ui, speech_model};
+use super::{Menu, Ui};
 use crate::app_settings::{AppSettings, DictationMode};
 use crate::application_catalog::InstalledApplication;
 use crate::desktop::file_dialog::{Choice, Dialog, Filter, Pending, Target as DialogTarget};
@@ -33,6 +32,7 @@ use crate::dictation::text_replacements::TextReplacement;
 use crate::personal_commands::{HostState, StatusSnapshot, StatusTransformation};
 use transformations::transformations;
 
+mod neutral_voice;
 mod transformations;
 
 const LIST_WIDTH: f32 = 240.0;
@@ -145,6 +145,15 @@ struct TransformationDrag {
 
 pub(super) type ChosenApplication = Result<Option<InstalledApplication>, String>;
 
+/// Where the application picker adds what it picks: the selected mode, or
+/// Labs › YOLO mode's Only in list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PickerTarget {
+    #[default]
+    Mode,
+    YoloMode,
+}
+
 enum Applications {
     NotLoaded,
     Loading(Receiver<Vec<InstalledApplication>>),
@@ -156,6 +165,7 @@ pub(super) struct ModesPane {
     editor: Editor,
     pub(super) delete_armed: Option<String>,
     pub(super) application_picker_open: bool,
+    pub(super) picker_target: PickerTarget,
     application_search: TextEdit,
     application_highlight: Highlight,
     pub(super) application_error: Option<String>,
@@ -191,6 +201,7 @@ impl ModesPane {
             editor: Editor::of(&settings.dictation_processing.default_mode),
             delete_armed: None,
             application_picker_open: false,
+            picker_target: PickerTarget::Mode,
             application_search: TextEdit::default(),
             application_highlight: Highlight::default(),
             application_error: None,
@@ -495,7 +506,41 @@ fn remove_replacement(ui: &mut Ui, index: usize) {
     }
 }
 
+/// The applications the picker's target already has.
+fn picked(ui: &Ui) -> Vec<String> {
+    match ui.modes.picker_target {
+        PickerTarget::Mode => mode(&ui.settings, ui.modes.selected)
+            .map(|mode| mode.applications.clone())
+            .unwrap_or_default(),
+        PickerTarget::YoloMode => ui.settings.labs.yolo_mode_apps.clone(),
+    }
+}
+
+/// Opens or closes the application picker for `target`; opening it for
+/// another target moves it there.
+pub(super) fn toggle_picker(ui: &mut Ui, target: PickerTarget) {
+    let modes = &mut ui.modes;
+    modes.application_picker_open =
+        !(modes.application_picker_open && modes.picker_target == target);
+    modes.picker_target = target;
+    modes.application_error = None;
+    modes.ensure_applications();
+    modes.application_search = TextEdit::default();
+    modes.application_search.focused = modes.application_picker_open;
+}
+
 fn add_application(ui: &mut Ui, name: String) {
+    if ui.modes.picker_target == PickerTarget::YoloMode {
+        if !ui.settings.labs.yolo_mode_apps.contains(&name) {
+            ui.update(|settings| {
+                let apps = &mut settings.labs.yolo_mode_apps;
+                apps.push(name);
+                apps.sort_by_key(|name| name.to_lowercase());
+            });
+        }
+        close_picker(ui);
+        return;
+    }
     let selection = ui.modes.selected;
     let conflict = ui
         .settings
@@ -520,20 +565,24 @@ fn add_application(ui: &mut Ui, name: String) {
             mode.applications.sort_by_key(|name| name.to_lowercase());
         })
     {
-        ui.modes.application_search = TextEdit::default();
-        ui.modes.application_highlight = Highlight::default();
-        ui.modes.application_search.focused = true;
         ui.modes.application_error = None;
+        close_picker(ui);
     }
+}
+
+/// Closes the application picker, clearing its search.
+pub(super) fn close_picker(ui: &mut Ui) {
+    let modes = &mut ui.modes;
+    modes.application_picker_open = false;
+    modes.application_search = TextEdit::default();
+    modes.application_highlight = Highlight::default();
 }
 
 /// Up and Down move the application search's highlight.
 fn move_application_highlight(ui: &mut Ui, event: &rune::KeyEvent) -> bool {
-    let Some(current) = mode(&ui.settings, ui.modes.selected) else {
-        return false;
-    };
+    let selected = picked(ui);
     let query = ui.modes.application_query();
-    let count = ui.modes.application_choices(&current.applications).len();
+    let count = ui.modes.application_choices(&selected).len();
     ui.modes
         .application_highlight
         .key(&event.key, &query, count)
@@ -821,17 +870,17 @@ fn basics(
     layer: &mut Vec<El>,
 ) -> El {
     if selection == Selection::Default {
-        let mut rows = vec![setting_row(
+        return card(
             p,
-            "global",
-            tr("Global"),
-            Some(tr("Used unless a more specific mode matches.")),
-            el().key("none"),
-        )];
-        if let Some(speech) = speech_row(ui, p, selection, current, layer) {
-            rows.push(speech);
-        }
-        return card(p, "basics-card", rows);
+            "basics-card",
+            vec![setting_row(
+                p,
+                "global",
+                tr("Global"),
+                Some(tr("Used unless a more specific mode matches.")),
+                el().key("none"),
+            )],
+        );
     }
     let name = TextInput::new(&ui.modes.editor.name)
         .placeholder(tr("Mode name"))
@@ -847,44 +896,20 @@ fn basics(
         .max_w(FIELD_WIDTH);
     for (index, name) in current.applications.iter().enumerate() {
         let remove = name.clone();
-        let icon = ui.modes.named_icon(name);
-        chips = chips.child(
-            row()
-                .key(format!("application{index}"))
-                .h(24.0)
-                .pl(if icon.is_some() { 4.0 } else { 8.0 })
-                .gap(if icon.is_some() { 4.0 } else { 2.0 })
-                .center_y()
-                .radius(p.k.radius.sm)
-                .fill(p.k.c.layer_02)
-                .children(icon.map(|icon| application_icon("icon", &icon, 16.0)))
-                .child(
-                    text(name.clone())
-                        .key("name")
-                        .font(p.k.ty.small_medium)
-                        .color(p.text()),
-                )
-                .child(remove_button(p, ControlSize::Small, move |ui: &mut Ui| {
-                    let remove = remove.clone();
-                    update_mode(ui, |mode| {
-                        mode.applications
-                            .retain(|application| *application != remove)
-                    });
-                })),
-        );
+        chips = chips.child(application_chip(ui, p, index, name, move |ui: &mut Ui| {
+            let remove = remove.clone();
+            update_mode(ui, |mode| {
+                mode.applications
+                    .retain(|application| *application != remove)
+            });
+        }));
     }
     chips = chips.child(
         IconButton::new(PLUS)
             .variant(IconButtonVariant::Neutral)
             .control_size(ControlSize::Small)
             .label(tr("Add application"))
-            .on_press(|ui: &mut Ui| {
-                ui.modes.application_picker_open = !ui.modes.application_picker_open;
-                ui.modes.application_error = None;
-                ui.modes.ensure_applications();
-                ui.modes.application_search = TextEdit::default();
-                ui.modes.application_search.focused = ui.modes.application_picker_open;
-            })
+            .on_press(|ui: &mut Ui| toggle_picker(ui, PickerTarget::Mode))
             .build(p.k)
             .key("open-application-picker"),
     );
@@ -902,61 +927,61 @@ fn basics(
             chips,
         ),
     ];
-    if let Some(speech) = speech_row(ui, p, selection, current, layer) {
-        rows.push(speech);
-    }
-    if let Some(error) = &ui.modes.application_error {
+    let picking = ui.modes.application_picker_open && ui.modes.picker_target == PickerTarget::Mode;
+    if let Some(error) = ui.modes.application_error.as_ref().filter(|_| !picking) {
         rows.push(note("application-error", error, p.danger()));
     }
-    if ui.modes.application_picker_open {
-        rows.push(application_picker(ui, p, current));
+    if picking {
+        application_picker(
+            ui,
+            p,
+            &current.applications,
+            "open-application-picker",
+            layer,
+        );
     }
     card(p, "basics-card", rows)
 }
 
-/// The selected mode's speech model and language, while Labs › Switch model
-/// with app is on; None leaves the Modes pane exactly as it was.
-fn speech_row(
+/// One chosen application: its icon once the catalog lists it, its name,
+/// and a remove button.
+pub(super) fn application_chip(
     ui: &Ui,
     p: Paint,
-    selection: Selection,
-    current: &DictationMode,
-    layer: &mut Vec<El>,
-) -> Option<El> {
-    if !speech_model::enabled(ui) {
-        return None;
-    }
-    let suffix = match selection {
-        Selection::Default => "global".to_string(),
-        Selection::Custom(index) => index.to_string(),
-    };
-    let key = format!("mode-speech-{suffix}");
-    let model_key = format!("mode-speech-model-{suffix}");
-    let language_key = format!("mode-speech-language-{suffix}");
-    Some(speech_model::setting(
-        ui,
-        p,
-        speech_model::SpeechRow {
-            key: &key,
-            model_key: &model_key,
-            language_key: &language_key,
-            title: tr("Speech model"),
-            description: None,
-            choice: current.speech.clone(),
-            model_menu: Menu::ModeSpeechModel(selection),
-            language_menu: Menu::ModeSpeechLanguage(selection),
-        },
-        // A new choice starts on the model's last-used language, or the
-        // saved one when that model has no recent choice.
-        |_, fallback| fallback.to_owned(),
-        move |ui, choice| {
-            update_mode(ui, |mode| mode.speech = choice);
-        },
-        layer,
-    ))
+    index: usize,
+    name: &str,
+    remove: impl Fn(&mut Ui) + 'static,
+) -> El {
+    let icon = ui.modes.named_icon(name);
+    row()
+        .key(format!("application{index}"))
+        .h(24.0)
+        .pl(if icon.is_some() { 4.0 } else { 8.0 })
+        .gap(if icon.is_some() { 4.0 } else { 2.0 })
+        .center_y()
+        .radius(p.k.radius.sm)
+        .fill(p.k.c.layer_02)
+        .children(icon.map(|icon| application_icon("icon", &icon, 16.0)))
+        .child(
+            text(name.to_owned())
+                .key("name")
+                .font(p.k.ty.small_medium)
+                .color(p.text()),
+        )
+        .child(remove_button(p, ControlSize::Small, remove))
 }
 
-fn application_picker(ui: &Ui, p: Paint, current: &DictationMode) -> El {
+/// The catalog search, results, and Choose a file…, floating under the
+/// element keyed `anchor` (the + that opened it), adding to the picker's
+/// target; `selected` is what the target already has. Picking an app, a
+/// click outside, or Escape closes it.
+pub(super) fn application_picker(
+    ui: &Ui,
+    p: Paint,
+    selected: &[String],
+    anchor: &'static str,
+    layer: &mut Vec<El>,
+) {
     let c = &p.k.c;
     let search = TextInput::new(&ui.modes.application_search)
         .placeholder(tr("Search applications"))
@@ -968,12 +993,9 @@ fn application_picker(ui: &Ui, p: Paint, current: &DictationMode) -> El {
         })
         .on_submit(|ui: &mut Ui, _: &mut Tx| {
             let picked = {
-                let Some(current) = mode(&ui.settings, ui.modes.selected) else {
-                    return;
-                };
-                let selected = &current.applications;
+                let selected = picked(ui);
                 let query = ui.modes.application_query();
-                let choices = ui.modes.application_choices(selected);
+                let choices = ui.modes.application_choices(&selected);
                 ui.modes
                     .application_highlight
                     .index(&query, choices.len())
@@ -985,7 +1007,7 @@ fn application_picker(ui: &Ui, p: Paint, current: &DictationMode) -> El {
         })
         .build(p.k)
         .key("application-search");
-    let choices = ui.modes.application_choices(&current.applications);
+    let choices = ui.modes.application_choices(selected);
     let query = ui.modes.application_query();
     let highlighted = ui.modes.application_highlight.index(&query, choices.len());
     let status = match &ui.modes.applications {
@@ -1052,16 +1074,28 @@ fn application_picker(ui: &Ui, p: Paint, current: &DictationMode) -> El {
                 ),
         );
     }
-    col()
+    let mut picker = col()
         .key("application-picker")
-        .ml(METRICS.row_px)
-        .mr(METRICS.row_px)
-        .mb(8.0)
+        .role("dialog")
+        .label(tr("Add application"))
+        .focus_return(anchor)
+        .modal(true, close_picker)
+        .w(PICKER_WIDTH)
+        .shrink()
+        .min_h(0.0)
         .padding(8.0)
         .gap(6.0)
         .radius(p.k.radius.md)
         .fill(c.layer_01)
         .child(search)
+        .children(ui.modes.application_error.as_ref().map(|error| {
+            text(error.clone())
+                .key("application-error")
+                .font(DESCRIPTION)
+                .color(p.danger())
+                .px(8.0)
+                .wrap()
+        }))
         .children(status.map(|status| {
             text(status)
                 .key("status")
@@ -1070,25 +1104,35 @@ fn application_picker(ui: &Ui, p: Paint, current: &DictationMode) -> El {
                 .px(8.0)
                 .py(6.0)
         }))
-        .child(results)
         .child(
-            row()
-                .key("picker-actions")
-                .justify_between()
-                .child(choose_file_button(p))
-                .child(spacer())
-                .child(button(
-                    p,
-                    "close-application-picker",
-                    tr("Done"),
-                    ButtonKind::Secondary,
-                    |ui: &mut Ui, _| {
-                        ui.modes.application_picker_open = false;
-                        ui.modes.application_search = TextEdit::default();
-                    },
-                )),
+            col()
+                .key("viewport")
+                .shrink()
+                .min_h(0.0)
+                .max_h(PICKER_RESULTS_HEIGHT)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(results),
         )
+        .child(row().key("picker-actions").child(choose_file_button(p)))
+        .anchored_fit(anchor, Side::Bottom, Align::Start, 4.0);
+    for shadow in &p.k.elevation.floating {
+        picker = picker.box_shadow(*shadow);
+    }
+    layer.push(
+        el().key("application-picker-scrim")
+            .role("none")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .on_press(close_picker),
+    );
+    layer.push(picker);
 }
+
+const PICKER_WIDTH: f32 = 340.0;
+const PICKER_RESULTS_HEIGHT: f32 = 320.0;
 
 /// "Choose a file…" opens the native file dialog.
 fn choose_file_button(p: Paint) -> El {
@@ -1201,7 +1245,11 @@ fn processing(
             None,
             tr("OpenCode transformation"),
         );
-        return section(p, "processing", tr("Processing"), vec![row]);
+        let mut rows = vec![row];
+        if let Some(neutral) = neutral_voice::row(ui, p) {
+            rows.push(neutral);
+        }
+        return section(p, "processing", tr("Processing"), rows);
     }
     let enabled = current.post_processing.enabled;
     let can_toggle = enabled || ui.models.available();
@@ -1227,6 +1275,11 @@ fn processing(
         reason,
         toggle,
     )];
+    // Labs › Neutral voice replaces the rewrite for this mode, so the row sits
+    // beside the rewrite toggle rather than inside it.
+    if let Some(neutral) = neutral_voice::row(ui, p) {
+        rows.push(neutral);
+    }
     if enabled {
         rows.extend(models::rows(ui, p, Target::Mode(selection), layer));
         rows.push(setting_row(
@@ -1318,6 +1371,12 @@ pub(super) fn fixture(ui: &mut Ui) {
             description: None,
         },
     ];
+    fixture_catalog(ui);
+    ui.modes.select_in(&ui.settings, Selection::Custom(0));
+}
+
+/// The fixture's installed applications and their stand-in icons.
+pub(super) fn fixture_catalog(ui: &mut Ui) {
     let app = |name: &str, path: &str| InstalledApplication {
         name: name.into(),
         bundle_id: None,
@@ -1354,7 +1413,6 @@ pub(super) fn fixture(ui: &mut Ui) {
         )
     });
     ui.modes.icons.get_mut().extend(icons);
-    ui.modes.select_in(&ui.settings, Selection::Custom(0));
 }
 
 const FIXTURE_ICON: u32 = 48;

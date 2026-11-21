@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use super::watch::{FIRST_FRAME, FirstFrame, HUD_BACKOFF, HUD_BACKOFF_MAX};
 use super::*;
 use crate::rune_hud::dot_scope::Tuning;
 
@@ -41,6 +42,55 @@ fn dot_scope_window_fits_the_largest_plate() {
     assert!(largest("dot-height") / 2.0 + 19.0 <= WINDOW.1 / 2.0);
 }
 
+/// A pose at `reveal`, the rest settled.
+fn revealed(reveal: f32) -> dot_scope::Pose {
+    dot_scope::Pose {
+        width: 112.0,
+        height: 26.0,
+        opacity: 1.0,
+        scale: 1.0,
+        softness: 0.0,
+        cool: 0.0,
+        fail: 0.0,
+        glow: 0.0,
+        grid: 1.0,
+        live: 0.0,
+        reveal,
+        level: 0.0,
+        clock: 0.0,
+        done: 0.0,
+        shift: 0.0,
+    }
+}
+
+/// Labs' ears grow from the housing's height to the menu bar's as they open,
+/// so folded back (a window shown for the frame before it grows, or ordered
+/// out after it folded) they are the notch itself, with no black lip under
+/// the camera, and open they end on the bar's bottom edge.
+#[test]
+fn the_ears_grow_from_the_housing_to_the_menu_bar() {
+    let ears = Island {
+        notch: [185.0, 32.0],
+        bar: 34.0,
+        width: 253.0,
+        top: -64.0,
+        ears: true,
+    };
+    let shape = |reveal| island_shape(ears, &revealed(reveal));
+    assert_eq!(shape(0.0)[1], 32.0, "folded, it is the housing");
+    assert_eq!(shape(0.0)[3], NOTCH_RADIUS, "with the notch's corners");
+    assert_eq!(shape(1.0)[1], 34.0, "open, it reaches the menu bar's edge");
+    assert_eq!(shape(1.0)[3], EARS_RADIUS);
+    assert_eq!(shape(1.4)[1], 34.0, "a bounce past full stops there");
+    assert!(
+        (shape(0.5)[1] - 33.0).abs() < 1e-6,
+        "and halfway is halfway"
+    );
+    // Without a menu bar to open to, it keeps the housing's height.
+    let unmeasured = Island { bar: 0.0, ..ears };
+    assert_eq!(island_shape(unmeasured, &revealed(1.0))[1], 32.0);
+}
+
 /// The macOS HUD's window, which the captures use on every OS so they line
 /// up with the Metal reference frames.
 const CAPTURE_DOT_WINDOW: (f32, f32) = (320.0, 128.0);
@@ -76,7 +126,8 @@ fn schedule(model: &mut IndicatorModel, start: Instant) -> Vec<DotFrame> {
         .collect()
 }
 
-/// A 1512 × 982 point 14-inch MacBook Pro: a 32 pt notch 185 pt wide.
+/// A 1512 × 982 point 14-inch MacBook Pro: a 32 pt housing under a 34 pt
+/// menu bar, 185 pt wide.
 fn macbook() -> crate::rune_hud::hud_placement::Screen {
     crate::rune_hud::hud_placement::Screen {
         frame: crate::rune_hud::hud_placement::Rect {
@@ -89,7 +140,7 @@ fn macbook() -> crate::rune_hud::hud_placement::Screen {
             x: 0.0,
             y: 0.0,
             width: 1512.0,
-            height: 950.0,
+            height: 948.0,
         },
         safe_top: 32.0,
         aux_left: 663.5,
@@ -253,7 +304,7 @@ fn rune_hud_frames() {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let target = Target::whole(size, scale, dark);
+    let target = Target::whole(size, scale);
     let mut dump = Vec::new();
     dump.extend(size.0.to_le_bytes());
     dump.extend(size.1.to_le_bytes());
@@ -375,10 +426,10 @@ fn a_frame_less_start_hides_once() {
     let mut first_frame = FirstFrame::default();
     first_frame.start(start, 7);
     let early = first_frame.poll(start + Duration::from_millis(100), 7, None, None);
-    assert!(!early.hide);
+    assert!(early.hide.is_none());
     assert_eq!(early.reason, None);
     let resolved = first_frame.poll(start + FIRST_FRAME, 7, None, Some("dx12 on Intel"));
-    assert!(resolved.hide, "the attempt presented nothing");
+    assert!(resolved.hide.is_some(), "the attempt presented nothing");
     assert!(
         resolved
             .reason
@@ -388,7 +439,7 @@ fn a_frame_less_start_hides_once() {
         resolved.reason
     );
     let after = first_frame.poll(start + FIRST_FRAME + Duration::from_secs(1), 7, None, None);
-    assert!(!after.hide);
+    assert!(after.hide.is_none());
 }
 
 #[test]
@@ -396,20 +447,25 @@ fn a_new_start_does_not_hide_on_the_previous_reason() {
     let start = Instant::now();
     let mut first_frame = FirstFrame::default();
     first_frame.start(start, 0);
-    assert!(first_frame.poll(start + FIRST_FRAME, 0, None, None).hide);
+    assert!(
+        first_frame
+            .poll(start + FIRST_FRAME, 0, None, None)
+            .hide
+            .is_some()
+    );
     // The last known reason stays in Settings, but it can't hide the next
     // start before that start has had its own first-frame window.
     let next = start + FIRST_FRAME + Duration::from_millis(1);
     first_frame.start(next, 0);
     let tick = first_frame.poll(next + Duration::from_millis(250), 0, None, None);
-    assert!(!tick.hide);
+    assert!(tick.hide.is_none());
     assert!(
         tick.reason.is_some(),
         "the last attempt's reason still shows"
     );
     let just_before =
         first_frame.poll(next + FIRST_FRAME - Duration::from_millis(1), 0, None, None);
-    assert!(!just_before.hide);
+    assert!(just_before.hide.is_none());
 }
 
 #[test]
@@ -422,12 +478,12 @@ fn a_second_start_while_pending_restarts_the_attempt() {
     // 1.5 s after the first start is only 600 ms into the second.
     let early = first_frame.poll(start + FIRST_FRAME, 5, None, None);
     assert!(
-        !early.hide,
+        early.hide.is_none(),
         "the second start gets its own first-frame window"
     );
     // The second attempt's baseline is its own: one frame since then presents.
     let resolved = first_frame.poll(second + FIRST_FRAME, 6, None, None);
-    assert!(!resolved.hide);
+    assert!(resolved.hide.is_none());
     assert_eq!(resolved.reason, None);
 }
 
@@ -445,13 +501,13 @@ fn an_overlay_failure_never_hides_on_its_own() {
         FIRST_FRAME - Duration::from_millis(1),
     ] {
         let check = first_frame.poll(start + at, 0, Some("device lost"), None);
-        assert!(!check.hide);
+        assert!(check.hide.is_none());
         assert_eq!(check.reason.as_deref(), Some("device lost"));
     }
     // Even after the attempt resolves, a failure still set doesn't hide on its
     // own: the frame that presented is what matters.
     let presented = first_frame.poll(start + FIRST_FRAME, 1, Some("device lost"), None);
-    assert!(!presented.hide);
+    assert!(presented.hide.is_none());
     assert_eq!(presented.reason.as_deref(), Some("device lost"));
 }
 
@@ -460,9 +516,14 @@ fn an_attempt_hides_only_once() {
     let start = Instant::now();
     let mut first_frame = FirstFrame::default();
     first_frame.start(start, 0);
-    assert!(first_frame.poll(start + FIRST_FRAME, 0, None, None).hide);
     assert!(
-        !first_frame
+        first_frame
+            .poll(start + FIRST_FRAME, 0, None, None)
+            .hide
+            .is_some()
+    );
+    assert!(
+        first_frame
             .poll(
                 start + FIRST_FRAME + Duration::from_millis(250),
                 0,
@@ -470,16 +531,18 @@ fn an_attempt_hides_only_once() {
                 None
             )
             .hide
+            .is_none()
     );
     assert!(
-        !first_frame
+        first_frame
             .poll(
                 start + FIRST_FRAME + Duration::from_millis(500),
                 0,
                 Some("device lost"),
                 None
             )
-            .hide,
+            .hide
+            .is_none(),
         "a later failure doesn't hide the attempt again"
     );
 }
@@ -490,15 +553,425 @@ fn the_next_start_hides_again_after_a_hide() {
     let mut first_frame = FirstFrame::default();
     first_frame.start(start, 3);
     assert!(
-        first_frame.poll(start + FIRST_FRAME, 3, None, None).hide,
+        first_frame
+            .poll(start + FIRST_FRAME, 3, None, None)
+            .hide
+            .is_some(),
         "the first attempt presented nothing"
     );
-    // The recovery is per start: the next one gets its own hide if it is
-    // frame-less too.
-    let next = start + FIRST_FRAME + Duration::from_secs(1);
-    first_frame.start(next, 4);
+    // A start during the backoff opens no attempt, so there is no second hide
+    // to make: the blocked show builds nothing, and the HUD is shown nothing.
+    let during = start + FIRST_FRAME + Duration::from_secs(1);
+    assert!(!first_frame.start(during, 4), "the HUD is backing off");
     assert!(
-        first_frame.poll(next + FIRST_FRAME, 4, None, None).hide,
+        first_frame
+            .poll(during + FIRST_FRAME, 4, None, None)
+            .hide
+            .is_none(),
+        "a refused start has no attempt to hide"
+    );
+
+    // After the cooldown the recovery is per start: that one gets its own hide
+    // if it is frame-less too.
+    let next = start + FIRST_FRAME + HUD_BACKOFF;
+    assert!(first_frame.start(next, 4), "the cooldown ended");
+    assert!(
+        first_frame
+            .poll(next + FIRST_FRAME, 4, None, None)
+            .hide
+            .is_some(),
         "the next attempt presented nothing either"
     );
+}
+
+/// A recovery hide is queued for the runtime thread to apply on the overlay's
+/// own thread, so a dictation that starts in between must keep the HUD its own
+/// start asked for (#1793).
+#[test]
+fn a_stale_attempts_hide_leaves_a_newer_start_alone() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(start, 4);
+    let hide = first_frame
+        .poll(start + FIRST_FRAME, 4, None, None)
+        .hide
+        .expect("the attempt presented nothing");
+    assert!(first_frame.should_apply_hide(hide, 4));
+
+    // A start during the backoff opens no attempt, so it does not take the HUD
+    // over: the stale hide still applies to the attempt that decided it. That
+    // is harmless, since the refused start shows nothing (#2175).
+    let during = start + FIRST_FRAME + Duration::from_millis(120);
+    assert!(!first_frame.start(during, 4), "the HUD is backing off");
+    assert!(
+        first_frame.should_apply_hide(hide, 4),
+        "no later attempt owns the HUD"
+    );
+
+    // A stale hide can still land after the cooldown, once a later dictation
+    // has opened its own attempt: that start re-asserts the HUD, so the stale
+    // hide must not run.
+    let next = start + FIRST_FRAME + HUD_BACKOFF;
+    assert!(first_frame.start(next, 4), "the cooldown ended");
+    assert!(
+        !first_frame.should_apply_hide(hide, 4),
+        "a later start owns the HUD now"
+    );
+
+    // That start's own frame-less attempt still hides, and only it.
+    let next_hide = first_frame
+        .poll(next + FIRST_FRAME, 4, None, None)
+        .hide
+        .expect("the new attempt presented nothing either");
+    assert_ne!(next_hide.attempt, hide.attempt, "each attempt has its tag");
+    assert!(first_frame.should_apply_hide(next_hide, 4));
+}
+
+/// The hide is applied a turn after it is decided, and a HUD that presented its
+/// first frame in between is up: hiding it would take away the HUD the user is
+/// watching, and report a failure that did not happen (#1793).
+#[test]
+fn a_hide_is_dropped_when_a_frame_presented_after_the_poll() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(start, 0);
+    let hide = first_frame
+        .poll(start + FIRST_FRAME, 0, None, None)
+        .hide
+        .expect("the attempt presented nothing");
+
+    // The first frame lands between the poll and the queued hide.
+    assert!(
+        !first_frame.should_apply_hide(hide, 1),
+        "one frame since the poll means the HUD is drawing"
+    );
+    // The same poll's hide still applies when nothing presented.
+    assert!(first_frame.should_apply_hide(hide, 0));
+}
+
+/// The poll runs every 250 ms, so a slow first frame can present just after its
+/// attempt resolved frame-less. The queued recovery hide must not run, and the
+/// backoff stays: the show was still too slow to trust, but the HUD it put up
+/// belongs to this recording (#2175).
+#[test]
+fn a_late_first_frame_keeps_its_backoff_and_its_hud() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(start, 0);
+    let failed = first_frame.poll(start + FIRST_FRAME, 0, None, None);
+    let hide = failed.hide.expect("the attempt presented nothing");
+    assert_eq!(failed.backoff, Some(HUD_BACKOFF));
+
+    // The first frame presents before the hide, queued for Rune's thread, lands.
+    assert!(
+        !first_frame.should_apply_hide(hide, 1),
+        "the HUD is drawing, only late"
+    );
+    assert!(first_frame.backing_off(start + FIRST_FRAME + Duration::from_secs(1)));
+    assert!(first_frame.failed(), "the show was still too slow to trust");
+    // A dictation during the backoff opens no attempt, so it shows nothing.
+    assert!(!first_frame.start(start + FIRST_FRAME + Duration::from_secs(2), 1));
+}
+
+/// A blocked show only stops Hex from creating one; it never takes down a HUD a
+/// late frame put up. A start cleared `shown` first, so its blocked show still
+/// runs the cheap hide (#2175).
+#[test]
+fn a_blocked_show_keeps_a_hud_that_is_up() {
+    assert!(!blocked_show_hides(true), "a late frame keeps its HUD");
+    assert!(
+        blocked_show_hides(false),
+        "a blocked start hides what nothing shows"
+    );
+}
+
+/// A HUD that presented nothing is not rebuilt for at least a minute: the next
+/// show would make another window, swapchain and device on the thread that
+/// pumps Windows' messages (#2175).
+#[test]
+fn a_failed_show_backs_off_for_a_minute() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    assert!(first_frame.start(start, 0));
+    let failed = first_frame.poll(start + FIRST_FRAME, 0, None, None);
+    assert_eq!(failed.backoff, Some(HUD_BACKOFF));
+    assert!(first_frame.backing_off(start + FIRST_FRAME));
+    assert!(first_frame.backing_off(start + FIRST_FRAME + HUD_BACKOFF - Duration::from_millis(1)));
+    assert!(!first_frame.backing_off(start + FIRST_FRAME + HUD_BACKOFF));
+    assert!(first_frame.failed(), "its recording gets no further show");
+    assert_eq!(first_frame.failed_attempts(), 1);
+}
+
+/// A start during the cooldown shows nothing; the first start after it shows
+/// again.
+#[test]
+fn show_is_skipped_while_backing_off_and_allowed_after() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(start, 0);
+    let failed_at = start + FIRST_FRAME;
+    first_frame.poll(failed_at, 0, None, None);
+    assert!(!first_frame.start(failed_at + Duration::from_secs(30), 0));
+    assert!(!first_frame.start(failed_at + HUD_BACKOFF - Duration::from_millis(1), 0));
+    assert!(
+        first_frame.start(failed_at + HUD_BACKOFF, 0),
+        "the cooldown ended"
+    );
+    assert!(!first_frame.backing_off(failed_at + HUD_BACKOFF));
+}
+
+/// Each further failed attempt doubles the wait, up to half an hour.
+#[test]
+fn consecutive_failures_double_up_to_thirty_minutes() {
+    let mut at = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    let mut cooldowns = Vec::new();
+    for _ in 0..7 {
+        assert!(
+            first_frame.start(at, 0),
+            "the cooldown ended before this start"
+        );
+        let failed_at = at + FIRST_FRAME;
+        let cooldown = first_frame
+            .poll(failed_at, 0, None, None)
+            .backoff
+            .expect("a frame-less attempt backs off");
+        cooldowns.push(cooldown);
+        at = failed_at + cooldown;
+    }
+    assert_eq!(
+        cooldowns,
+        [
+            HUD_BACKOFF,
+            Duration::from_secs(2 * 60),
+            Duration::from_secs(4 * 60),
+            Duration::from_secs(8 * 60),
+            Duration::from_secs(16 * 60),
+            HUD_BACKOFF_MAX,
+            HUD_BACKOFF_MAX,
+        ]
+    );
+}
+
+/// A show that presents proves the HUD works: the backoff ends, and the next
+/// failure starts from the first cooldown again.
+#[test]
+fn a_success_resets_the_backoff() {
+    let mut at = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(at, 0);
+    assert_eq!(
+        first_frame.poll(at + FIRST_FRAME, 0, None, None).backoff,
+        Some(HUD_BACKOFF)
+    );
+    at += FIRST_FRAME + HUD_BACKOFF;
+    assert!(first_frame.start(at, 5));
+    let presented = first_frame.poll(at + FIRST_FRAME, 6, None, None);
+    assert_eq!(presented.backoff, None);
+    assert!(!first_frame.backing_off(at + FIRST_FRAME));
+    assert!(!first_frame.failed());
+    assert_eq!(first_frame.failed_attempts(), 0);
+    at += FIRST_FRAME;
+    first_frame.start(at, 6);
+    assert_eq!(
+        first_frame.poll(at + FIRST_FRAME, 6, None, None).backoff,
+        Some(HUD_BACKOFF),
+        "the failures start over"
+    );
+}
+
+/// A recording whose own attempt presented nothing asks for the HUD no more;
+/// only a later dictation's start can, and only after the cooldown.
+#[test]
+fn a_failed_attempt_gets_no_second_show_in_its_capture() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(start, 0);
+    assert!(!first_frame.failed());
+    first_frame.poll(start + FIRST_FRAME, 0, None, None);
+    assert!(first_frame.failed());
+    assert!(!first_frame.start(start + FIRST_FRAME + Duration::from_secs(1), 0));
+    assert!(first_frame.failed());
+    assert!(first_frame.start(start + FIRST_FRAME + HUD_BACKOFF, 0));
+    assert!(!first_frame.failed());
+}
+
+/// Settings keeps the last failure's reason while the HUD backs off.
+#[test]
+fn a_backing_off_hud_still_reports_its_last_failure() {
+    let start = Instant::now();
+    let mut first_frame = FirstFrame::default();
+    first_frame.start(start, 0);
+    first_frame.poll(start + FIRST_FRAME, 0, None, Some("dx12 on NVIDIA"));
+    let during = first_frame.poll(
+        start + FIRST_FRAME + Duration::from_secs(1),
+        0,
+        None,
+        Some("dx12 on NVIDIA"),
+    );
+    assert_eq!(during.backoff, None, "only the resolving poll backs off");
+    assert!(
+        during
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("dx12 on NVIDIA")),
+        "{:?}",
+        during.reason
+    );
+    assert!(first_frame.backing_off(start + FIRST_FRAME + Duration::from_secs(1)));
+}
+
+/// `reshow_due` is the recording's own recovery: a HUD Rune declined or Hex hid
+/// is asked for once, after its frames stop, and never again in that recording
+/// (#1793).
+#[test]
+fn a_recording_asks_again_only_when_its_frames_stop() {
+    let stale = RESHOW_AFTER + Duration::from_millis(1);
+    let fresh = Duration::from_millis(16);
+    // Frames are coming: nothing to do.
+    assert!(!reshow_due(Some(fresh), false));
+    // Frames stopped: ask, once.
+    assert!(reshow_due(Some(stale), false));
+    assert!(!reshow_due(Some(stale), true));
+    // A start sets the clock, so a frame the previous dictation left can't make
+    // it look late.
+    assert!(!reshow_due(None, false));
+    // A recovery hide re-arms the ask and restarts the clock: the meter right
+    // after it is not late, and the next stale one asks once more (#1793).
+    assert!(!reshow_due(Some(Duration::ZERO), false));
+    assert!(reshow_due(Some(stale), false));
+}
+
+/// A HUD as `install` builds it, without its overlay: the state `handle`
+/// touches, and no GPU or Rune. `shown` is what `Hud::show` records once Rune
+/// took the show; a HUD with no overlay can't ask it.
+fn hud(shown: bool) -> Hud {
+    Hud {
+        model: IndicatorModel::new(dot_scope::lab(), Instant::now()),
+        drawn: None,
+        layout: Layout::default(),
+        position: IndicatorPosition::Top,
+        this: None,
+        shown: Arc::new(AtomicBool::new(shown)),
+        reduce: false,
+        animating: Arc::new(AtomicBool::new(false)),
+        #[cfg(target_os = "macos")]
+        placed: None,
+        #[cfg(not(target_os = "macos"))]
+        edge_placed: None,
+        #[cfg(not(target_os = "macos"))]
+        followed: None,
+        #[cfg(not(target_os = "macos"))]
+        gpu: Arc::default(),
+        #[cfg(target_os = "windows")]
+        watch: Arc::default(),
+        #[cfg(any(target_os = "windows", test))]
+        last_drawn: None,
+        #[cfg(any(target_os = "windows", test))]
+        armed: false,
+        #[cfg(any(target_os = "windows", test))]
+        polled_at: None,
+        #[cfg(target_os = "windows")]
+        stepped_at: None,
+        #[cfg(target_os = "windows")]
+        reshown: false,
+    }
+}
+
+/// An armed timer draws the next level itself, so a meter only updates the
+/// model; a timer that isn't armed draws nothing, so the meter's update draws
+/// one frame. Loudness moves either way.
+#[test]
+fn an_armed_timer_draws_for_meters_and_a_stopped_one_lets_a_meter_draw() {
+    let mut hud = hud(true);
+    hud.armed = true;
+    let draws = windows_pacing::meter_update(
+        &mut hud,
+        HudEvent::Meter {
+            average: 0.5,
+            peak: 0.8,
+        },
+    );
+    assert!(!draws, "the armed timer's frame shows the level");
+    assert!((hud.model.loudness() - dot_scope::loudness(0.5)).abs() < f32::EPSILON);
+
+    hud.armed = false;
+    let draws = windows_pacing::meter_update(
+        &mut hud,
+        HudEvent::Meter {
+            average: 0.1,
+            peak: 0.2,
+        },
+    );
+    assert!(draws, "nothing else draws the level, so this meter does");
+    assert!((hud.model.loudness() - dot_scope::loudness(0.1)).abs() < f32::EPSILON);
+}
+
+/// The timer arms from a start's own time, before any frame it draws, so the
+/// first frame after the show asks for the next one. It stops arming once no
+/// frame has drawn for `RESHOW_AFTER`: a show that fails draws nothing, and an
+/// always-asking timer would turn Rune's loop at 60 Hz with Hex idle. A hidden
+/// HUD arms nothing either.
+#[test]
+fn the_timer_arms_from_a_start_and_stops_when_frames_stop() {
+    let mut hud = hud(true);
+    hud.animating.store(true, Ordering::Release);
+    // `handle(Started)` is where a start's arming reference comes from.
+    hud.handle(HudEvent::Started);
+    assert!(
+        hud.last_drawn.is_some_and(|at| at.elapsed() < RESHOW_AFTER),
+        "the start is the first reference"
+    );
+    // `Hud::show` records the show once Rune takes it; this HUD has no overlay.
+    hud.shown.store(true, Ordering::Release);
+    windows_pacing::poll(&mut hud, 0.0, &mut rune::Tx::default());
+    assert!(hud.armed, "the start's frame asks for the next");
+
+    // Frames stop: the reference ages past `RESHOW_AFTER`.
+    hud.last_drawn = Some(Instant::now() - RESHOW_AFTER - Duration::from_millis(1));
+    windows_pacing::poll(&mut hud, 0.0, &mut rune::Tx::default());
+    assert!(!hud.armed, "a stale reference asks for nothing");
+
+    // Hidden, even a fresh reference arms nothing.
+    hud.last_drawn = Some(Instant::now());
+    hud.shown.store(false, Ordering::Release);
+    windows_pacing::poll(&mut hud, 0.0, &mut rune::Tx::default());
+    assert!(!hud.armed);
+}
+
+/// Every start asks Rune for the HUD again, macOS included: `handle` clears
+/// `shown` before `show` asks, so a start isn't gated to the OSes whose own
+/// recovery needed it. Re-adding that gate would strand a HUD Rune hid itself.
+#[test]
+fn a_start_clears_shown_on_every_os() {
+    let mut hud = hud(true);
+    hud.handle(HudEvent::Started);
+    assert!(!hud.shown.load(Ordering::Acquire));
+}
+
+/// Rune runs a poll before the frame's render, so a stall longer than
+/// `RESHOW_AFTER` leaves the next poll looking at a stale `last_drawn` even
+/// though the frame it is part of draws: that frame is the one the previous
+/// poll drew. It must arm the next, or a HUD with no meters to restart it
+/// (Transcribing, Completed, Failed) freezes on screen and never fades out.
+#[test]
+fn a_frame_drawn_since_the_last_poll_keeps_the_timer_armed() {
+    let mut hud = hud(true);
+    hud.animating.store(true, Ordering::Release);
+    let polled = Instant::now() - RESHOW_AFTER - RESHOW_AFTER;
+    hud.polled_at = Some(polled);
+    // Older than RESHOW_AFTER, but the frame drew after that poll.
+    hud.last_drawn = Some(polled + Duration::from_millis(1));
+    assert!(
+        hud.last_drawn
+            .is_some_and(|at| at.elapsed() >= RESHOW_AFTER),
+        "the reference is stale on its own"
+    );
+    windows_pacing::poll(&mut hud, 0.0, &mut rune::Tx::default());
+    assert!(hud.armed, "a frame since the last poll keeps the timer");
+
+    // Nothing drew since the last poll and the reference is stale: stop.
+    hud.last_drawn = Some(Instant::now() - RESHOW_AFTER - Duration::from_millis(1));
+    windows_pacing::poll(&mut hud, 0.0, &mut rune::Tx::default());
+    assert!(!hud.armed, "no frame since the last poll, and a stale one");
 }

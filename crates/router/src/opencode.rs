@@ -154,7 +154,7 @@ pub const HEAVY_MEDIA: [&str; 5] = [
 pub const MEDIA_PENDING: &str = ".media-pending";
 /// Present in a bundle on this Mac while its heavy media is being copied to the agent host.
 pub const MEDIA_SENDING: &str = ".media-sending";
-/// A capture's light zip copy (Labs › Copy captures as a zip) sits inside the
+/// A capture's light zip copy (Labs › Copy a capture as one file) sits inside the
 /// bundle beside its other files: `<bundle folder name>.slim.zip`.
 pub const SLIM_ZIP_SUFFIX: &str = ".slim.zip";
 /// The name that copy is written under, before its rename.
@@ -1632,7 +1632,7 @@ mod host_transport {
 
     /// The real host's summary header names the capture folder on this machine.
     fn summary_with_windows_path(_bundle: &ScrawlBundle, directory: &Path) -> String {
-        format!("[scrawl · captured · {}]", directory.display())
+        format!("[hex-annotate · captured · {}]", directory.display())
     }
 
     /// A host transport whose answer and directory mapping a test sets.

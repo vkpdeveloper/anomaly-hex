@@ -554,17 +554,19 @@ fn run_window(
     shutdown: &'static AtomicBool,
 ) {
     let app = host.clone();
-    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let failed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::rune_ui::run_app(app, requests, first, shutdown)
     })) {
-        let reason = panic_reason(panic.as_ref());
-        tracing::error!(%reason, "the Hex window failed; Hex keeps running without it");
-        // `hex window show` and `hex status` say so instead of reporting
-        // a window that can no longer open (#979).
-        host.window_failed(reason);
-        while !shutdown.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        Ok(Ok(())) => return,
+        Ok(Err(error)) => error,
+        Err(panic) => panic_reason(panic.as_ref()),
+    };
+    tracing::error!(%failed, "the Hex window failed; Hex keeps running without it");
+    // `hex window show` and `hex status` say so instead of reporting
+    // a window that can no longer open (#979).
+    host.window_failed(failed);
+    while !shutdown.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -872,8 +874,12 @@ impl LinuxDesktopHost {
     fn refresh(&mut self) {
         self.switch_with_keyboard();
         // Restart to update asks systemd to restart Hex after the updater's
-        // final check; only a failure needs showing.
+        // final check; only a failure needs showing, and a restart that never
+        // happened must not reopen the window on the next launch.
         if let Some(Err(error)) = self.updater.take_restart() {
+            if let Some(marker) = reopen_marker() {
+                let _ = std::fs::remove_file(marker);
+            }
             self.error = Some(format!("Could not restart Hex: {error:#}"));
         }
         // Settings may set up the transformations workspace at any time.
@@ -1457,14 +1463,16 @@ impl LinuxDesktopHost {
             | DesktopAction::RestartIntoUpdate
             | DesktopAction::ConfirmUpdateSwitch
             | DesktopAction::WindowFocused => {
+                if let Err(error) = self.updater.act(&action) {
+                    self.error = Some(format!("Could not restart Hex: {error:#}"));
+                    return Err(error);
+                }
+                // Only an accepted restart relaunches with the window open;
+                // a refused one leaves the next launch as it was.
                 if matches!(action, DesktopAction::RestartIntoUpdate)
                     && let Some(marker) = reopen_marker()
                 {
                     let _ = std::fs::write(marker, b"");
-                }
-                if let Err(error) = self.updater.act(&action) {
-                    self.error = Some(format!("Could not restart Hex: {error:#}"));
-                    return Err(error);
                 }
             }
             DesktopAction::SetDictationShortcut(shortcut) => {

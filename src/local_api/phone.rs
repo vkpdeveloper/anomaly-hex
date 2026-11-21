@@ -468,7 +468,7 @@ fn serve(listener: &TcpListener, shared: &Arc<Shared>) {
                 match connections.try_send(stream) {
                     Ok(()) => {}
                     Err(TrySendError::Full(mut stream)) => {
-                        let _ = write_response(&mut stream, HttpResponse::code(429, "busy"), None);
+                        let _ = write_response(&mut stream, HttpResponse::code(429, "busy"));
                     }
                     Err(TrySendError::Disconnected(_)) => break,
                 }
@@ -512,7 +512,7 @@ fn work(pending: &Mutex<Receiver<TcpStream>>, shared: &Shared) {
             Err(RequestReadError::Io(_)) => None,
         };
         if let Some(response) = response {
-            if let Err(error) = write_response(&mut stream, response, None) {
+            if let Err(error) = write_response(&mut stream, response) {
                 tracing::debug!(%error, "phone disconnected before its reply");
             }
             linger(&mut stream);

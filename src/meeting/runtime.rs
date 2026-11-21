@@ -75,7 +75,7 @@ impl Meetings {
                 for event in events {
                     capsules.event(&event);
                     #[cfg(target_os = "linux")]
-                    if matches!(event, ControllerEvent::Offer(_)) {
+                    if matches!(event, ControllerEvent::Offer(..)) {
                         let window = window.clone();
                         capsules.when_offer_unshown(move |reason| offer_unshown(&window, reason));
                     }
@@ -149,7 +149,7 @@ fn offer_unshown(window: &rune::AppHandle<Ui>, reason: String) {
     );
     if !crate::labs::gnome_meeting_capsules() {
         message.push_str(
-            " On GNOME, Labs › Floating meeting capsules on GNOME can show it over your call.",
+            " On GNOME, Labs › Call recording controls on GNOME can show it over your call.",
         );
     }
     window.update(move |ui, tx| {
@@ -163,7 +163,7 @@ fn offer_unshown(window: &rune::AppHandle<Ui>, reason: String) {
 fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
     let mut state = STATE.lock().unwrap_or_else(|error| error.into_inner());
     match event {
-        ControllerEvent::Starting => *state = MeetingMenuState::Starting,
+        ControllerEvent::Starting(_) => *state = MeetingMenuState::Starting,
         ControllerEvent::RecordingStarted { id, title, .. } => {
             *state = MeetingMenuState::Recording {
                 started: Instant::now(),
@@ -187,6 +187,7 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
                 shown.clone_from(chapters);
             }
         }
+        ControllerEvent::Stopping => {}
         ControllerEvent::Transcribing => *state = MeetingMenuState::Transcribing,
         ControllerEvent::Finished(manifest) => {
             tracing::info!(id = %manifest.id, "meeting transcript ready");
@@ -214,10 +215,12 @@ fn follow(event: &ControllerEvent, window: &rune::AppHandle<Ui>) {
         ControllerEvent::CallEnded { app, .. } => {
             tracing::info!(%app, "the call ended; the recording continues until Stop");
         }
-        ControllerEvent::Offer(_)
+        ControllerEvent::Offer(..)
+        | ControllerEvent::OfferWithdrawn(_)
         | ControllerEvent::Reminder { .. }
         | ControllerEvent::ReminderWithdrawn { .. }
-        | ControllerEvent::NotesStarted
+        | ControllerEvent::CallEndedWithdrawn
+        | ControllerEvent::NotesProgress(_)
         | ControllerEvent::NotesFinished(_) => {}
     }
 }

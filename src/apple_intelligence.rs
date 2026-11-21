@@ -34,12 +34,25 @@ unsafe extern "C" {
         timeout_ms: u64,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    fn hex_apple_intelligence_text(
+        instructions: *const c_char,
+        prompt: *const c_char,
+        temperature: f64,
+        timeout_ms: u64,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
     fn hex_apple_intelligence_free_string(string: *mut c_char);
 }
 
 const AVAILABILITY_TTL: Duration = Duration::from_secs(10);
 const CONTEXT_WINDOW_MARKER: &str = "context-window:";
 const REFUSAL_MARKER: &str = "refused:";
+
+/// A plain-text answer, as `hex_apple_intelligence_text` encodes it.
+#[derive(Deserialize)]
+struct GeneratedText {
+    text: String,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Availability {
@@ -97,7 +110,8 @@ pub fn availability() -> Availability {
     availability
 }
 
-/// The model's context window in tokens, or zero when unavailable.
+/// The model's context window in tokens, or zero when unavailable or
+/// unknown to this build's SDK.
 pub fn context_tokens() -> usize {
     // SAFETY: A synchronous property read without arguments.
     usize::try_from(unsafe { hex_apple_intelligence_context_size() }).unwrap_or(0)
@@ -148,6 +162,31 @@ pub fn generate_chapter_lines(
         }
     })
     .map(|generated: GeneratedChapterLines| generated.lines)
+}
+
+/// One plain-text answer: no guided structure, so the caller judges the text
+/// itself. `temperature` varies the wording per call (the cleanup stays at
+/// 0.2; Labs › Neutral voice asks for 0.7). Blocks the calling thread for at
+/// most `timeout`; the bridge runs at utility priority.
+pub fn generate_text(
+    instructions: &str,
+    prompt: &str,
+    temperature: f64,
+    timeout: Duration,
+) -> Result<String, GenerationError> {
+    call(instructions, prompt, |instructions, prompt, error| {
+        // SAFETY: Both strings outlive the call and the bridge writes only `error`.
+        unsafe {
+            hex_apple_intelligence_text(
+                instructions,
+                prompt,
+                temperature,
+                timeout_ms(timeout),
+                error,
+            )
+        }
+    })
+    .map(|generated: GeneratedText| generated.text)
 }
 
 fn timeout_ms(timeout: Duration) -> u64 {
@@ -256,5 +295,12 @@ mod tests {
             classify_error("refused: guardrail context".into()),
             GenerationError::Refused
         );
+    }
+
+    /// `generate_text` reads the one field the Swift bridge encodes.
+    #[test]
+    fn a_plain_text_answer_reads_its_text() {
+        let answer: GeneratedText = serde_json::from_str(r#"{"text":"Ship it."}"#).unwrap();
+        assert_eq!(answer.text, "Ship it.");
     }
 }

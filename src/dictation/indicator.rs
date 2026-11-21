@@ -203,7 +203,7 @@ fn fill_island(tuning: Tuning, island: Option<Island>) -> Tuning {
     };
     let pitch = tuning.spacing;
     let edge = field_edge(&tuning);
-    let columns = ((island.plate_width() - 2.0 * edge) / pitch).floor() + 1.0;
+    let columns = tuning.columns_in(island.plate_width(), edge);
     let width = (columns - 1.0) * pitch + 2.0 * edge;
     Tuning {
         columns,
@@ -263,6 +263,20 @@ impl IndicatorModel {
         self.active
     }
 
+    /// Whether the HUD is recording a capture: the one phase whose only events
+    /// are meters, so the only one a recovery re-ask may act on (#1793).
+    #[cfg(any(target_os = "windows", test))]
+    pub fn recording(&self) -> bool {
+        self.phase == Phase::Recording
+    }
+
+    /// The meter's loudness, dBFS: tests check that a meter still updates it
+    /// when the update draws no frame of its own.
+    #[cfg(test)]
+    pub fn loudness(&self) -> f32 {
+        self.loudness
+    }
+
     /// What the HUD says to assistive technology: Recording, Transcribing,
     /// or Failed, in English (callers translate it); `None` while nothing
     /// shows or the HUD fades out.
@@ -279,6 +293,29 @@ impl IndicatorModel {
     #[cfg(target_os = "macos")]
     pub fn tuning(&self) -> Tuning {
         self.tuning
+    }
+
+    /// Spreads the field over `room` pt from its `hold` end, as the island
+    /// spreads it across a notch, but at once and keeping every dot that
+    /// stays ([`Scope::span`]): for a field whose room follows a moving edge.
+    pub fn span(&mut self, room: f32, hold: dot_scope::Hold) {
+        self.scope.span(room, hold);
+    }
+
+    /// The frame as it stands, without advancing.
+    pub fn frame(&self) -> DotFrame {
+        DotFrame {
+            pose: self.scope.pose(),
+            tuning: self.scope.tuning(),
+            columns: self.scope.columns(),
+            rows: self.scope.rows(),
+            dots: self
+                .scope
+                .dots()
+                .iter()
+                .map(|value| value.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16))
+                .collect(),
+        }
     }
 
     /// Spreads Dot scope's field across the notch island it now sits in.
@@ -440,18 +477,7 @@ impl IndicatorModel {
             },
         );
         self.active = visible || !self.scope.settled();
-        DotFrame {
-            pose: self.scope.pose(),
-            tuning: self.scope.tuning(),
-            columns: self.scope.columns(),
-            rows: self.scope.rows(),
-            dots: self
-                .scope
-                .dots()
-                .iter()
-                .map(|value| value.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16))
-                .collect(),
-        }
+        self.frame()
     }
 }
 
@@ -502,6 +528,7 @@ mod tests {
         assert_eq!(fill_island(tuning, None), tuning);
         let island = Island {
             notch: [185.0, 32.0],
+            bar: 0.0,
             width: 241.0,
             top: -64.0,
             ears: false,
@@ -560,6 +587,46 @@ mod tests {
         model.handle(DictationIndicatorEvent::Started, start, false);
         model.handle(DictationIndicatorEvent::Discarded, start, false);
         assert_eq!(model.status(), None);
+    }
+
+    /// Only the recording phase reports nothing but meters, so it is the only
+    /// phase a recovery re-ask may act on: `active` stays true through the
+    /// transcribing, done and failed looks, which draw their own frames (#1793).
+    #[test]
+    fn only_the_recording_phase_is_recording() {
+        let start = Instant::now();
+        let mut model = IndicatorModel::new(Tuning::default(), start);
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        assert!(model.recording());
+        model.handle(
+            DictationIndicatorEvent::Submitted { job_id: 1 },
+            start,
+            false,
+        );
+        assert!(!model.recording(), "transcribing draws its own frames");
+        model.handle(
+            DictationIndicatorEvent::JobFailed {
+                job_id: 1,
+                message: None,
+            },
+            start,
+            false,
+        );
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        assert!(model.recording());
+        model.handle(
+            DictationIndicatorEvent::Failed { message: None },
+            start,
+            false,
+        );
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        model.handle(DictationIndicatorEvent::Cancelled, start, false);
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Reset, start, false);
+        assert!(!model.recording());
     }
 
     fn at(start: Instant, seconds: f32) -> Instant {
@@ -682,6 +749,7 @@ mod tests {
         };
         let ears = Island {
             notch: [185.0, 32.0],
+            bar: 34.0,
             width: 253.0,
             top: -64.0,
             ears: true,

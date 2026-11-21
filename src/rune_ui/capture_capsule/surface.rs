@@ -15,7 +15,7 @@ use rune::{Spring, TextStyle};
 
 use super::flow::{Done, Lead, Mode, Pen, Pres};
 use super::notch;
-use super::tuning::{self, CapsuleFlow, TopLine};
+use super::tuning::{self, CapsuleFlow};
 use crate::desktop::i18n::tr;
 use crate::rune_hud::spring::REDUCED_FADE;
 
@@ -37,11 +37,16 @@ const PROCESSING_TRAIL: f32 = 8.5;
 /// The check's ink spans 12…20, as the dot's does; its label starts where
 /// the timer does.
 pub(crate) const DONE_TEXT_X: f32 = LEAD_TEXT_X;
-/// The capture's first frame in the check's place: a 28 × 20 card 8 pt in
-/// from the capsule's curve, its label 8 pt after it.
-pub(crate) const THUMB_X: f32 = 8.0;
+/// The capture's first frame in the check's place: a 28 × 20 card nested
+/// in the capsule's left corners, its label 8 pt after it. Centred in the
+/// row it clears the top and bottom walls by the shell's radius less its
+/// own (10 pt), so it sits as far from the left wall and its corners turn
+/// about the shell's centres. The list's 16 pt margin is for words, not
+/// for this.
 pub(crate) const THUMB_W: f32 = 28.0;
 pub(crate) const THUMB_H: f32 = 20.0;
+pub(crate) const THUMB_RADIUS: f32 = SHELL_RADIUS - ISLAND_INSET - (CHIP_H - THUMB_H) * 0.5;
+pub(crate) const THUMB_X: f32 = SHELL_RADIUS - THUMB_RADIUS - ISLAND_INSET;
 
 /// Where the finished capsule's label starts after its lead.
 pub(crate) fn done_text_x(lead: Lead) -> f32 {
@@ -52,11 +57,20 @@ pub(crate) fn done_text_x(lead: Lead) -> f32 {
 }
 const CHIP_GAP: f32 = 2.0;
 const GROUP_GAP: f32 = 6.0;
+/// The finished line's buttons (Paste, Search, Inspect, ✕) draw 2 pt
+/// inside their chips: 28 pt boxes 6 pt apart and 6 pt in from the walls.
+pub(crate) const BUTTON_INSET: f32 = 2.0;
+/// From the finished line's words to Paste's fill.
+const PASTE_LEAD: f32 = 16.0;
 /// How far ✕ tucks into the action before it.
 const CLOSE_HUG: f32 = 6.0;
 pub(crate) const CHIP_PX: f32 = 12.0;
 /// After the lead's text, equal to the dot's 12 pt inset.
 const LEAD_TRAIL: f32 = 12.0;
+/// The microphone's level after the timer: three 2 pt bars 2 pt apart, 6 pt
+/// after the digits.
+pub(crate) const LEVEL_GAP: f32 = 6.0;
+pub(crate) const LEVEL_W: f32 = 10.0;
 /// A mode chip: its icon, the gap after it, and the padding either side.
 pub(crate) const SEG_ICON: f32 = 14.0;
 pub(crate) const SEG_ICON_GAP: f32 = 5.0;
@@ -146,16 +160,9 @@ pub(crate) fn chord<S: AsRef<str>>(keys: &[S]) -> String {
     out
 }
 
-/// The finished capsule's label: [`TopLine::Quiet`] only inks it fainter.
+/// The finished capsule's label. Both appearances share its metrics.
 pub(crate) fn done_style() -> TextStyle {
     medium()
-}
-
-/// [`TopLine::Icons`] says nothing for a plain copy: the check is enough.
-pub(crate) fn bare(done: &Done) -> bool {
-    tuning::get().top_line == TopLine::Icons
-        && (done.text.is_empty() || done.text == super::flow::copied())
-        && done.why.is_none()
 }
 
 /// The capsule unfolds from this fraction of its height, anchored on its
@@ -223,6 +230,7 @@ pub(crate) enum Id {
     Paste,
     /// The Send to… chip.
     Ask,
+    Search,
     Inspect,
     /// The open capsule's field.
     Field,
@@ -262,6 +270,7 @@ impl Id {
             Id::Undo => "undo",
             Id::Paste => "paste",
             Id::Ask => "ask",
+            Id::Search => "search",
             Id::Inspect => "inspect",
             Id::Field => "field",
             Id::Row(_) => "row",
@@ -291,6 +300,11 @@ impl Id {
             // The field's well starts the label's trail after it: 12 pt,
             // as the lead's inset is.
             (Id::Done | Id::Why, Id::Field) => 0.0,
+            // Paste's fill starts 16 pt after the words, as far as the
+            // lead sits from the wall and ✕ from the other: the words'
+            // trail, this, and the fill's 2 pt inset in its chip.
+            (Id::Done, Id::Paste) => PASTE_LEAD - LEAD_TRAIL - BUTTON_INSET,
+            (Id::Why, Id::Paste) => PASTE_LEAD - LEAD_TRAIL * 0.5 - BUTTON_INSET,
             // The label's trail and the action's padding already part
             // them.
             (Id::Done | Id::Why, _) => GROUP_GAP,
@@ -298,7 +312,7 @@ impl Id {
             // action's right padding; drawn later, it takes the overlap's
             // presses. Icons beside ✕ keep one even step.
             (Id::Undo | Id::Ask | Id::Next | Id::Pick(_), Id::Close) => -CLOSE_HUG,
-            (Id::Paste | Id::Inspect, Id::Close) => CHIP_GAP,
+            (Id::Paste | Id::Inspect | Id::Search, Id::Close) => CHIP_GAP,
             _ if self.group() == next.group() => CHIP_GAP,
             _ => GROUP_GAP,
         }
@@ -324,7 +338,7 @@ impl Id {
             Id::Inspect => 14,
             Id::Next => 15,
             Id::Pick(row) => 16 + row.min(1) as u8,
-            Id::Ask => 18,
+            Id::Ask | Id::Search => 18,
             Id::Close => 20,
             Id::Row(_) | Id::CardHints => 21,
         }
@@ -355,8 +369,15 @@ fn chip_width(label: f32) -> f32 {
     label + 2.0 * CHIP_PX
 }
 
+#[cfg(test)]
+thread_local! { pub(super) static FIXTURE_SHORTCUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
 /// The capture shortcut's keycaps, as Settings draws them.
 pub(crate) fn shortcut_keycaps() -> Vec<String> {
+    #[cfg(test)]
+    if FIXTURE_SHORTCUT.get() {
+        return ["⌥", "⇧", "S"].map(str::to_owned).into();
+    }
     crate::app_settings::capture_hotkey_keycaps()
 }
 
@@ -423,7 +444,7 @@ fn done_items(done: &Done, raw: &mut Vec<(Id, String, f32, bool)>) {
 
 fn done_row(done: &Done, cap: f32, raw: &mut Vec<(Id, String, f32, bool)>) {
     let text_x = done_text_x(done.lead);
-    if bare(done) || done.text.is_empty() {
+    if done.text.is_empty() {
         // The lead alone, as wide as the dot's.
         raw.push((Id::Done, String::new(), text_x, false));
     } else {
@@ -488,20 +509,32 @@ fn done_row(done: &Done, cap: f32, raw: &mut Vec<(Id, String, f32, bool)>) {
             false,
         ));
     } else {
-        if done.hand_off {
-            raw.push((Id::Paste, String::new(), CHIP_H, false));
+        if done.paste {
+            let label = tr("Paste");
+            raw.push((
+                Id::Paste,
+                label.into(),
+                keyed_width(&[], label, medium()).max(44.0),
+                false,
+            ));
+        }
+        if done.inspect && !done.inspect_preview() {
             raw.push((Id::Inspect, String::new(), CHIP_H, false));
         }
         // Where to send it is a click away, beside Paste, never opened for you.
         // Over the suggestions it's Search, with the capture shortcut that
         // opens it.
         if let Some(ask) = done.ask.as_ref().filter(|_| !listed || done.ask_keys) {
-            let width = if done.ask_keys {
-                keycaps_chip_width(ask, medium())
+            if listed && done.ask_keys {
+                raw.push((Id::Search, ask.clone(), CHIP_H, false));
             } else {
-                keyed_width(&[], ask, medium())
-            };
-            raw.push((Id::Ask, ask.clone(), width, false));
+                let width = if done.ask_keys {
+                    keycaps_chip_width(ask, medium())
+                } else {
+                    keyed_width(&[], ask, medium())
+                };
+                raw.push((Id::Ask, ask.clone(), width, false));
+            }
         }
     }
     raw.push((Id::Close, String::new(), CHIP_H, false));
@@ -517,7 +550,7 @@ fn done_row(done: &Done, cap: f32, raw: &mut Vec<(Id, String, f32, bool)>) {
 /// notch instead of the panel.
 #[cfg(test)]
 pub(crate) fn layout(pres: &Pres, clock: &str) -> ([f32; 4], Vec<Item>) {
-    layout_at(pres, clock, Anchor::Top, notch::Geometry::default())
+    layout_at(pres, clock, false, Anchor::Top, notch::Geometry::default())
 }
 
 /// The guesses `pres` lists as rows in a card, not as chips.
@@ -529,13 +562,15 @@ fn card_picks(pres: &Pres) -> &[(String, String)] {
 }
 
 /// [`layout`] resting at `anchor`, with a card's rows under the top line.
+/// A `metered` recording shows its microphone's level after the timer.
 pub(crate) fn layout_at(
     pres: &Pres,
     clock: &str,
+    metered: bool,
     anchor: Anchor,
     notch: notch::Geometry,
 ) -> ([f32; 4], Vec<Item>) {
-    let (mut shell, mut items) = line(pres, clock);
+    let (mut shell, mut items) = line(pres, clock, metered);
     let picks = card_picks(pres);
     let (dx, dy) = match anchor {
         Anchor::Top => (0.0, 0.0),
@@ -594,7 +629,7 @@ pub(crate) fn layout_at(
 }
 
 /// The capsule's one line: [`layout`] before any anchor or card.
-fn line(pres: &Pres, clock: &str) -> ([f32; 4], Vec<Item>) {
+fn line(pres: &Pres, clock: &str, metered: bool) -> ([f32; 4], Vec<Item>) {
     let mut raw: Vec<(Id, String, f32, bool)> = Vec::with_capacity(8);
     let mut held_row = false;
     let modes = |raw: &mut Vec<(Id, String, f32, bool)>, active: Mode, phone: bool| {
@@ -627,7 +662,8 @@ fn line(pres: &Pres, clock: &str) -> ([f32; 4], Vec<Item>) {
             discarding,
             pen,
         } => {
-            let lead = LEAD_TEXT_X + clock_width(clock) + LEAD_TRAIL;
+            let level = if metered { LEVEL_GAP + LEVEL_W } else { 0.0 };
+            let lead = LEAD_TEXT_X + clock_width(clock) + level + LEAD_TRAIL;
             raw.push((Id::Lead, String::new(), lead, false));
             // The chips' row lines up with the picker's, so the pen waits
             // for them to fold.
@@ -769,6 +805,8 @@ impl Shown {
 pub(crate) struct Surface {
     pub(crate) pres: Pres,
     pub(crate) clock: String,
+    /// A recording shows its microphone's level after the timer.
+    pub(crate) metered: bool,
     pub(crate) reduced: bool,
     /// The capsule's resting rect, whether it shows, and the springs for
     /// its next change.
@@ -811,6 +849,7 @@ impl Surface {
         Self {
             pres: Pres::Hidden,
             clock: "0:00".into(),
+            metered: false,
             reduced: false,
             shell: pose(shell, Anchor::Top, notch),
             shell_on: false,
@@ -836,7 +875,7 @@ impl Surface {
     )]
     pub(crate) fn settled(mut self, pres: Pres) -> Self {
         self.anchor = anchor_for(&pres, self.anchor);
-        let (rest, items) = layout_at(&pres, &self.clock, self.anchor, self.notch);
+        let (rest, items) = layout_at(&pres, &self.clock, self.metered, self.anchor, self.notch);
         self.shell_on = !matches!(pres, Pres::Hidden);
         self.shell = if self.shell_on {
             rest
@@ -863,7 +902,7 @@ impl Surface {
         if self.anchor != Anchor::Notch {
             return true;
         }
-        let (rest, items) = layout_at(&self.pres, &self.clock, self.anchor, notch);
+        let (rest, items) = layout_at(&self.pres, &self.clock, self.metered, self.anchor, notch);
         if let Some((_, due, due_items)) = self.entry.as_mut() {
             *due = rest;
             *due_items = items;
@@ -928,6 +967,21 @@ impl Surface {
         resize
     }
 
+    /// Whether a recording shows its microphone's level. True when the
+    /// capsule re-lays out for it.
+    pub(crate) fn set_metered(&mut self, metered: bool, now: f64) -> bool {
+        if self.metered == metered {
+            return false;
+        }
+        self.metered = metered;
+        let recording = matches!(self.pres, Pres::Recording { .. });
+        if recording {
+            let same = self.pres.clone();
+            self.transition(same, now);
+        }
+        recording
+    }
+
     /// Shows `next`. Retargets keep every element's position and velocity
     /// (Rune's springs).
     pub(crate) fn set(&mut self, next: Pres, now: f64) {
@@ -976,7 +1030,7 @@ impl Surface {
             return;
         }
 
-        let (rest, items) = layout_at(&next, &self.clock, self.anchor, self.notch);
+        let (rest, items) = layout_at(&next, &self.clock, self.metered, self.anchor, self.notch);
         if !self.shell_on || moved || matches!(prev, Pres::Hidden) {
             // Entry: this commit puts the capsule at its origin pose,
             // invisibly and instantly; the next frame springs it to rest.
@@ -1224,6 +1278,17 @@ mod tests {
         });
     }
 
+    /// A recording that shows its microphone's level makes room for it
+    /// after the timer, and only then.
+    #[test]
+    fn a_metered_recording_makes_room_for_its_level() {
+        let (plain, _) = line(&recording(false), "0:07", false);
+        let (metered, _) = line(&recording(false), "0:07", true);
+        assert!((metered[2] - plain[2] - (LEVEL_GAP + LEVEL_W)).abs() < 1e-3);
+        let (processing, _) = line(&Pres::Processing, "0:07", false);
+        assert_eq!(line(&Pres::Processing, "0:07", true).0, processing);
+    }
+
     /// The default geometry is the pretend notch: the resting capsule is
     /// exactly where it was before any notch was measured.
     #[test]
@@ -1231,6 +1296,7 @@ mod tests {
         let (shell, _) = layout_at(
             &Pres::Processing,
             "0:00",
+            false,
             Anchor::Notch,
             notch::Geometry::default(),
         );
@@ -1261,7 +1327,7 @@ mod tests {
             (663.0, 873.0),
             "the tucked shell is the notch itself"
         );
-        let (shell, items) = layout_at(&Pres::Processing, "0:00", Anchor::Notch, geometry);
+        let (shell, items) = layout_at(&Pres::Processing, "0:00", false, Anchor::Notch, geometry);
         assert_eq!(shell[2], 210.0 + 2.0 * 12.0);
         assert_eq!(shell[0], geometry.left - 12.0);
         assert_eq!(shell[0] + shell[2], geometry.right + 12.0);
@@ -1282,7 +1348,7 @@ mod tests {
             left: 200.0,
             right: 420.0,
         };
-        let (shell, items) = layout_at(&Pres::Processing, "0:00", Anchor::Notch, geometry);
+        let (shell, items) = layout_at(&Pres::Processing, "0:00", false, Anchor::Notch, geometry);
         assert_eq!(shell[0], geometry.centre() - geometry.min_width() * 0.5);
         let item = items.first().expect("the processing label").rect;
         assert_eq!(item[0] + item[2] * 0.5, 310.0);
@@ -1322,12 +1388,12 @@ mod tests {
     fn a_wide_recording_row_stays_inside_the_notch_shell() {
         // A 210 pt notch, 12 pt right of its 1512 pt display's middle.
         let notch::Measured { geometry, .. } = notch::fitted(663.0, 873.0, 1.0);
-        let (row, _) = line(&recording(true), "0:00");
+        let (row, _) = line(&recording(true), "0:00", false);
         assert!(
             row[2] > geometry.min_width(),
             "the chips row is wider than the notch's minimum"
         );
-        let (shell, items) = layout_at(&recording(true), "0:00", Anchor::Notch, geometry);
+        let (shell, items) = layout_at(&recording(true), "0:00", false, Anchor::Notch, geometry);
         assert_eq!(shell[2], row[2], "the shell keeps the row's width");
         assert_eq!(shell[0], row[0] + (geometry.centre() - CX));
         for item in &items {
@@ -1346,7 +1412,7 @@ mod tests {
     fn a_measured_notch_never_tucks_under_reduce_motion() {
         tuning::with_flow(CapsuleFlow::Notch, || {
             let notch::Measured { geometry, .. } = notch::fitted(663.0, 873.0, 1.0);
-            let (rest, _) = layout_at(&recording(false), "0:00", Anchor::Notch, geometry);
+            let (rest, _) = layout_at(&recording(false), "0:00", false, Anchor::Notch, geometry);
             let mut entering = Surface::new();
             entering.reduced = true;
             entering.set(recording(false), 0.0);
@@ -1395,7 +1461,7 @@ mod tests {
                 let mut s = Surface::new();
                 s.reduced = true;
                 s.set(recording(false), 0.0);
-                let (rest, _) = layout_at(&s.pres, &s.clock, s.anchor, s.notch);
+                let (rest, _) = layout_at(&s.pres, &s.clock, s.metered, s.anchor, s.notch);
                 assert_eq!(s.shell, rest, "{flow:?} enters at rest");
                 let now = run(&mut s, 0.0, 1.0);
                 assert!(s.shell_on);
@@ -1543,18 +1609,19 @@ mod tests {
     }
 
     #[test]
-    fn a_written_copy_offers_paste_and_inspect_as_icons() {
+    fn a_written_copy_has_room_for_the_paste_label_beside_inspect() {
         let copied = Pres::Done(Done {
-            hand_off: true,
+            paste: true,
+            inspect: true,
             ..Done::plain(Lead::Check, "")
         });
         let (_, items) = layout(&copied, "0:00");
         let ids: Vec<Id> = items.iter().map(|i| i.id).collect();
         assert_eq!(ids, [Id::Done, Id::Paste, Id::Inspect, Id::Close]);
-        for id in [Id::Paste, Id::Inspect] {
-            let icon = items.iter().find(|i| i.id == id).unwrap();
-            assert_eq!(icon.rect[2], CHIP_H, "{id:?} is an icon");
-        }
+        let paste = &items[1];
+        assert_eq!(paste.ident, tr("Paste"));
+        assert_eq!(paste.rect[2], chip_width(measure(&paste.ident, medium())));
+        assert!(paste.rect[0] + paste.rect[2] < items[2].rect[0]);
     }
 
     #[test]

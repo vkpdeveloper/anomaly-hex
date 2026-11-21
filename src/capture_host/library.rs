@@ -54,6 +54,7 @@ pub fn show(capture: &str) -> Result<ControlReply, ControlError> {
             transcript: bundle.transcript.text.clone(),
             note: bundle.note.clone(),
             missing_transcript: bundle.transcript.missing.as_ref().map(|m| m.reason.clone()),
+            audio_stopped_at_ms: bundle.audio_stopped_at_ms,
             marks: bundle.marks.len(),
             keyframes: bundle.keyframes.len(),
             video: file(&bundle.video),
@@ -90,18 +91,18 @@ fn captures_dir() -> PathBuf {
 }
 
 /// A bundle name, path, or `latest`, inside the captures folder or not.
-fn resolve(capture: &str) -> Result<PathBuf, ControlError> {
+pub(super) fn resolve(capture: &str) -> Result<PathBuf, ControlError> {
     resolve_bundle_dir_in(Some(&captures_dir()), Path::new(capture))
         .map_err(|error| ControlError::new("not-found", format!("{error:#}")))
 }
 
-fn load(dir: &Path) -> Option<ScrawlBundle> {
+pub(super) fn load(dir: &Path) -> Option<ScrawlBundle> {
     scrawl_capture::bundle::load_bundle_in(None, dir)
         .ok()
         .map(|(_, bundle)| bundle)
 }
 
-fn unreadable(dir: &Path) -> ControlError {
+pub(super) fn unreadable(dir: &Path) -> ControlError {
     ControlError::new(
         "not-found",
         format!("{} has no readable scrawl.json yet", dir.display()),
@@ -129,7 +130,7 @@ fn summary(dir: &Path, bundle: &ScrawlBundle) -> ScrawlCaptureSummary {
         duration_ms: bundle.duration_ms,
         mode: mode.into(),
         app: bundle.target.app.clone(),
-        words: bundle.transcript.words.len(),
+        words: scrawl_capture::transcribe::word_count(&bundle.transcript),
         sent_to: bundle
             .destination
             .as_ref()
@@ -190,6 +191,40 @@ mod tests {
                 .unwrap_err()
                 .code,
             "not-found"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A model that gives no word times (GigaAM v3) said every word in the
+    /// text, so the list counts them and the capture never reads as silence.
+    #[test]
+    fn a_capture_without_word_times_counts_the_words_it_says() {
+        let root = std::env::temp_dir().join(format!(
+            "hex-capture-untimed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let frame = r#"{"x":0,"y":0,"width":1,"height":1,"scale":2}"#;
+        let write = |name: &str, text: &str| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest = format!(
+                r#"{{"version":1,"id":"a","createdAtMs":1792933491953,"durationMs":4000,
+                "target":{{"mode":"display","displayId":1,"frame":{frame}}},
+                "transcript":{{"source":"hex","text":"{text}","segments":[],"words":[]}},
+                "strokes":[],"marks":[],"events":[],"keyframes":[],"contactSheet":"sheet.jpg"}}"#
+            );
+            std::fs::write(dir.join("scrawl.json"), manifest).unwrap();
+            let bundle = load(&dir).expect("the manifest reads");
+            summary(&dir, &bundle).words
+        };
+        assert_eq!(write("1792933491953.scrawl", " make it blue "), 3);
+        assert_eq!(
+            write("1792933491954.scrawl", "  "),
+            0,
+            "silence counts none"
         );
         let _ = std::fs::remove_dir_all(root);
     }

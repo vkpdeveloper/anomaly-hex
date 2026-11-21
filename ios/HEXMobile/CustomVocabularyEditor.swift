@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// The custom vocabulary list shown under its experiment toggle.
+/// The custom vocabulary list shown under its switch in Settings › Dictation, and on
+/// Settings › Keyboard › Vocabulary: one list, which dictation spells (with its switch on) and
+/// the full keyboard never autocorrects away, completes and swipes.
 struct CustomVocabularyEditor: View {
     private let settings = CustomVocabularySettings()
+    var footer = String(localized: "Fixes spelling, not words Hex mishears")
 
     @State private var terms: [String] = []
     @State private var draft = ""
@@ -82,11 +85,7 @@ struct CustomVocabularyEditor: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text(
-                "Hex fixes the spelling of listed words when it hears them. "
-                    + "It can't teach the speech engine new sounds, so a word heard "
-                    + "as something different stays as it is."
-            )
+            Text(footer)
             .font(.system(size: 12))
             .foregroundStyle(HexTheme.textMuted)
             .fixedSize(horizontal: false, vertical: true)
@@ -102,19 +101,19 @@ struct CustomVocabularyEditor: View {
         guard !candidate.isEmpty else { return }
 
         guard candidate.count <= CustomVocabularySettings.maxTermLength else {
-            notice = "Too long"
+            notice = String(localized: "Too long")
             return
         }
         let key = VocabularySpelling.normalizedKey(candidate)
         guard key.count >= 2 else {
-            notice = "Needs at least two letters or digits"
+            notice = String(localized: "Needs at least two letters or digits")
             return
         }
         let isDuplicate = terms.contains {
             VocabularySpelling.normalizedKey($0) == key
         }
         guard !isDuplicate else {
-            notice = "Already in the list"
+            notice = String(localized: "Already in the list")
             return
         }
 
@@ -129,5 +128,49 @@ struct CustomVocabularyEditor: View {
         terms.removeAll { $0 == term }
         settings.terms = terms
         notice = nil
+    }
+}
+
+/// Settings › Keyboard › Vocabulary: how many words the list holds, opening its page.
+struct KeyboardVocabularyRow: View {
+    @State private var count = CustomVocabularySettings().terms.count
+    @State private var showsPage = false
+
+    var body: some View {
+        Button {
+            showsPage = true
+        } label: {
+            HStack(spacing: 12) {
+                SettingsRowLabel(
+                    title: String(localized: "Vocabulary"),
+                    detail: count == 0
+                        ? String(localized: "Words autocorrect keeps and suggests")
+                        : String(localized: "\(count) words autocorrect keeps and suggests")
+                )
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(HexTheme.textMuted)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 50)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .navigationDestination(isPresented: $showsPage) {
+            SettingsPageScaffold(title: "Vocabulary") {
+                SettingsCard {
+                    CustomVocabularyEditor(
+                        footer: String(localized: "Hold a word you typed in the keyboard's suggestions to add it. Dictation spells these too while Custom vocabulary is on.")
+                    )
+                    .padding(16)
+                }
+            }
+        }
+        .onAppear { count = CustomVocabularySettings().terms.count }
+        .onChange(of: showsPage) { _, shown in
+            if !shown { count = CustomVocabularySettings().terms.count }
+        }
     }
 }

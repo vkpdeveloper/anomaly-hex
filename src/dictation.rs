@@ -1,11 +1,19 @@
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod apple_cleanup;
 #[cfg(target_os = "macos")]
 pub(crate) mod audio;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod browser_page;
+pub(crate) mod caret_prompt;
+pub(crate) mod caret_text;
 #[cfg(target_os = "macos")]
 pub(crate) mod config;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 pub(crate) mod context;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod correction_terms;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod correction_watch;
 #[cfg(target_os = "macos")]
 pub(crate) mod diagnostics;
 pub(crate) mod filler_words;
@@ -13,17 +21,25 @@ pub(crate) mod indicator;
 pub(crate) mod live_text;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) mod modes;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod neutral_voice;
+mod numbers;
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+pub(crate) mod paste_target;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 pub(crate) mod processor;
+mod release_tail;
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) mod screen_vocabulary;
 pub(crate) mod service;
 pub(crate) mod spoken_formatting;
 pub(crate) mod spoken_symbols;
+pub(crate) mod stop_phrase;
 pub(crate) mod text_replacements;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod vocabulary;
 pub(crate) mod voice_prompt;
+pub(crate) mod yolo_mode;
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -33,6 +49,10 @@ use rubato::{Fft, FixedSync, Indexing, Resampler, WindowFunction};
 
 use crate::audio::CaptureInstant;
 use crate::transcription::engine::{LiveStream, Partial, TranscriptionEngine};
+
+pub use release_tail::ReleaseTail;
+#[cfg(not(target_os = "macos"))]
+pub use release_tail::ReleaseWait;
 
 #[cfg(target_os = "macos")]
 use crate::audio::recording_environment::{
@@ -133,12 +153,29 @@ pub const BOTH_SIDES_WINDOW: Duration = Duration::from_millis(80);
 const MINIMUM_PARAKEET_DURATION: Duration = Duration::from_millis(1500);
 const INITIAL_RECORDING_CAPACITY: Duration = Duration::from_secs(10);
 pub(crate) const PARAKEET_SAMPLE_RATE: u32 = 16_000;
-/// A capture whose loudest 30 ms window stays below this level is treated as
-/// empty rather than transcribed, because models hallucinate closing phrases
-/// such as "thank you" on silence. Deliberately conservative: whispered speech
-/// sits well above it, so only a quiet room's noise floor is discarded.
+/// A capture whose loudest 30 ms window reaches this level is transcribed, or
+/// handed to the speech detector, because models hallucinate closing phrases
+/// such as "thank you" on silence. Below it the clip's own noise floor decides
+/// ([`SILENCE_RELATIVE_MARGIN_DB`]): a built-in microphone can record real
+/// speech at -51 to -60 dBFS while its room noise sits 13-25 dB lower, which a
+/// fixed cutoff would throw away.
 const SILENCE_THRESHOLD_DBFS: f32 = -50.0;
+/// How far a window must rise above the clip's own noise floor to count as
+/// speech there. The speech detector still decides afterwards; this only
+/// keeps quiet speech away from a premature discard.
+const SILENCE_RELATIVE_MARGIN_DB: f32 = 12.0;
+/// No window quieter than this counts as speech over the floor, however quiet
+/// the floor is. It keeps a barely moving microphone and its dither from
+/// passing as sustained speech.
+const SILENCE_RELATIVE_FLOOR_DBFS: f32 = -66.0;
+/// How much of the clip must carry energy above that relative threshold in
+/// one contiguous run: at least 180 ms, six 30 ms windows. That rounds the
+/// speech detector's own 160 ms shortest-speech rule up to whole windows.
+const SILENCE_SUSTAINED: Duration = Duration::from_millis(180);
 const SILENCE_WINDOW_SAMPLES: usize = 480;
+/// The quietest level a window reports; digital silence and a constant offset
+/// sit here rather than at negative infinity.
+const SILENCE_LEVEL_FLOOR_DBFS: f32 = -120.0;
 /// Live audio is handed to a capture's stream in blocks of at least this many
 /// 16 kHz samples (160 ms), well under the model's chunk, to keep per-feed
 /// overhead low.
@@ -147,88 +184,6 @@ const STREAM_FEED_SAMPLES: usize = 2_560;
 pub enum Finish {
     Discard,
     Transcribe(DictationClip),
-}
-
-/// Where a shortcut finish's tail stands, from the audio recorded so far.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReleaseTail {
-    /// More audio is needed. `growing` once speech has carried past
-    /// [`POST_RELEASE_TAIL`], so the wait is bounded by
-    /// [`MAX_RELEASE_TAIL`] rather than the base tail.
-    Waiting { growing: bool },
-    /// Finish keeping this much audio after the release.
-    Through(Duration),
-}
-
-impl ReleaseTail {
-    /// The longest tail a wait in this state may still end with.
-    pub fn bound(self) -> Duration {
-        match self {
-            Self::Waiting { growing: true } => MAX_RELEASE_TAIL,
-            Self::Waiting { growing: false } => POST_RELEASE_TAIL,
-            Self::Through(tail) => tail,
-        }
-    }
-}
-
-/// A shortcut release waiting for its tail, for capture loops that poll
-/// between microphone chunks (Linux and Windows; the macOS audio owner
-/// drains its tail directly).
-#[cfg(not(target_os = "macos"))]
-pub struct ReleaseWait {
-    ended_at: CaptureInstant,
-    started: std::time::Instant,
-    tone: Duration,
-    waits: bool,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl ReleaseWait {
-    /// How long past a tail itself the loop waits for its audio.
-    const GRACE: Duration = Duration::from_millis(100);
-
-    /// A release at `ended_at`. Only one that will transcribe waits; its
-    /// stop tone (sounding from now) is never taken for speech.
-    pub fn new(capture: &DictationCapture, ended_at: CaptureInstant) -> Self {
-        let waits = capture.would_transcribe(ended_at);
-        Self {
-            ended_at,
-            started: std::time::Instant::now(),
-            tone: if waits {
-                crate::feedback::stop_tone_length()
-            } else {
-                Duration::ZERO
-            },
-            waits,
-        }
-    }
-
-    pub fn ended_at(&self) -> CaptureInstant {
-        self.ended_at
-    }
-
-    pub fn waits(&self) -> bool {
-        self.waits
-    }
-
-    /// Finishes with the audio already captured, as after a lost microphone.
-    pub fn stop_waiting(&mut self) {
-        self.waits = false;
-    }
-
-    /// The tail to finish with once it is decided, or once the wait for it
-    /// is over (the base tail plus the grace, or the longest tail plus the
-    /// grace while speech grows it); `None` while it is still coming.
-    pub fn tail(&self, capture: &DictationCapture, now: std::time::Instant) -> Option<Duration> {
-        if !self.waits {
-            return Some(POST_RELEASE_TAIL);
-        }
-        match capture.release_tail(self.ended_at, self.tone) {
-            ReleaseTail::Through(tail) => Some(tail),
-            waiting if now >= self.started + waiting.bound() + Self::GRACE => Some(waiting.bound()),
-            ReleaseTail::Waiting { .. } => None,
-        }
-    }
 }
 
 /// Speech flags of a recording's 16 kHz audio, one per 20 ms frame, against
@@ -438,6 +393,7 @@ impl DictationClip {
 
     /// The loudest 30 ms window's DC-removed RMS level in dBFS, over the
     /// captured audio through the release.
+    #[cfg(test)]
     fn loudest_window_dbfs(&self) -> f32 {
         loudest_window_dbfs(self.released())
     }
@@ -469,23 +425,30 @@ impl DictationClip {
         !released.is_empty() && released.iter().all(|&sample| sample == 0.0)
     }
 
-    /// Whether the capture holds no speech worth transcribing: its level
-    /// stays below the silence threshold or, once the speech detector is
-    /// installed, the detector finds no speech in it (a key click, the start
-    /// tone, a noisy room, or a microphone turned down too far). Such a
-    /// capture is discarded quietly, with no tone or note; the log has the
-    /// measured level and peak against the thresholds.
+    /// Whether the capture holds no speech worth transcribing: its loudest
+    /// window stays below the fixed threshold with no sustained run over the
+    /// clip's own noise floor, or, once the speech detector is installed, the
+    /// detector finds no speech in it (a key click, the start tone, a noisy
+    /// room, or a microphone turned down too far). A quiet clip that only
+    /// passed the relative path also needs the detector to confirm speech;
+    /// without one, it is discarded as before. Such a capture is discarded
+    /// quietly, with no tone or note; the log has the measured level, noise
+    /// floor, relative threshold, and run length.
     pub fn is_near_silent(&self) -> bool {
-        let level_dbfs = self.loudest_window_dbfs();
-        let silent = level_dbfs < SILENCE_THRESHOLD_DBFS;
-        if silent {
+        let gate = LevelGate::measure(self.released());
+        let level_dbfs = gate.loudest_dbfs;
+        if !gate.passes() {
             let evidence = self.silence_evidence();
             let source = self.source.as_deref();
             let ms =
                 |duration: Option<Duration>| duration.map(|duration| duration.as_millis() as u64);
+            let (noise_floor_dbfs, relative_threshold_dbfs) = gate.logged_levels();
             tracing::info!(
                 level_dbfs,
                 threshold_dbfs = SILENCE_THRESHOLD_DBFS,
+                noise_floor_dbfs,
+                relative_threshold_dbfs,
+                sustained_ms = gate.sustained_ms(),
                 audio_ms = self.duration_ms(),
                 pre_press_ms = self.press_samples as u64 * 1_000 / u64::from(PARAKEET_SAMPLE_RATE),
                 pre_press_dbfs = evidence.pre_press_dbfs,
@@ -530,6 +493,19 @@ impl DictationClip {
                 );
                 false
             }
+            None if !gate.reaches_fixed_threshold() => {
+                let (noise_floor_dbfs, relative_threshold_dbfs) = gate.logged_levels();
+                tracing::info!(
+                    level_dbfs,
+                    threshold_dbfs = SILENCE_THRESHOLD_DBFS,
+                    noise_floor_dbfs,
+                    relative_threshold_dbfs,
+                    sustained_ms = gate.sustained_ms(),
+                    audio_ms = self.duration_ms(),
+                    "discarded quiet dictation: no speech detector to confirm it"
+                );
+                true
+            }
             None => false,
         }
     }
@@ -544,23 +520,153 @@ impl DictationClip {
     pub fn into_transcription_samples(self) -> Vec<f32> {
         self.samples
     }
+
+    /// A cancel keeps neither warm pre-roll nor a live stream that may have
+    /// heard beyond the physical key event. Never hand it to normal output.
+    #[cfg(all(target_os = "macos", hex_capture))]
+    fn into_cancel_samples(mut self) -> Vec<f32> {
+        self.samples
+            .truncate(self.samples.len().saturating_sub(self.tail_samples));
+        self.samples
+            .drain(..self.press_samples.min(self.samples.len()));
+        self.samples
+    }
+}
+
+/// The level gate over one release: the fixed cutoff is met outright, or the
+/// clip carries a contiguous run of sustained energy above its own noise
+/// floor to be worth the speech detector's attention.
+#[derive(Clone, Copy, Debug)]
+struct LevelGate {
+    /// The loudest 30 ms window's DC-removed RMS level.
+    loudest_dbfs: f32,
+    /// The clip's own noise floor: its 10th-percentile window level, ignoring
+    /// windows at the level floor. `None` when every window sits there.
+    noise_floor_dbfs: Option<f32>,
+    /// The level a window must reach to count as speech over that floor.
+    relative_threshold_dbfs: Option<f32>,
+    /// The longest run of windows at `relative_threshold_dbfs`. One quiet
+    /// window between loud ones is bridged but doesn't count toward its
+    /// length; two in a row end the run.
+    sustained_run_windows: usize,
+}
+
+/// One 30 ms window in milliseconds at 16 kHz.
+fn silence_window_ms() -> u64 {
+    SILENCE_WINDOW_SAMPLES as u64 * 1_000 / u64::from(PARAKEET_SAMPLE_RATE)
+}
+
+impl LevelGate {
+    /// How many 30 ms windows [`SILENCE_SUSTAINED`] spans: six, 180 ms.
+    fn sustained_windows_needed() -> usize {
+        (SILENCE_SUSTAINED.as_millis() as u64).div_ceil(silence_window_ms()) as usize
+    }
+
+    fn measure(samples: &[f32]) -> Self {
+        let levels: Vec<f32> = window_levels_dbfs(samples).collect();
+        let loudest_dbfs = levels
+            .iter()
+            .copied()
+            .fold(SILENCE_LEVEL_FLOOR_DBFS, f32::max);
+        let noise_floor_dbfs = noise_floor_dbfs(&levels);
+        let relative_threshold_dbfs = noise_floor_dbfs
+            .map(|floor| (floor + SILENCE_RELATIVE_MARGIN_DB).max(SILENCE_RELATIVE_FLOOR_DBFS));
+        let sustained_run_windows =
+            relative_threshold_dbfs.map_or(0, |threshold| longest_run_windows(&levels, threshold));
+        Self {
+            loudest_dbfs,
+            noise_floor_dbfs,
+            relative_threshold_dbfs,
+            sustained_run_windows,
+        }
+    }
+
+    /// Whether the clip meets the fixed cutoff, so it needs no detector to be
+    /// transcribed.
+    fn reaches_fixed_threshold(&self) -> bool {
+        self.loudest_dbfs >= SILENCE_THRESHOLD_DBFS
+    }
+
+    fn passes(&self) -> bool {
+        self.reaches_fixed_threshold()
+            || self.sustained_run_windows >= Self::sustained_windows_needed()
+    }
+
+    /// The longest run's above-threshold span in milliseconds.
+    fn sustained_ms(&self) -> u64 {
+        self.sustained_run_windows as u64 * silence_window_ms()
+    }
+
+    /// The floor and relative threshold as plain numbers for logs. With no
+    /// noise floor (only digital silence or a constant offset), both report
+    /// the level floor.
+    fn logged_levels(&self) -> (f32, f32) {
+        (
+            self.noise_floor_dbfs.unwrap_or(SILENCE_LEVEL_FLOOR_DBFS),
+            self.relative_threshold_dbfs
+                .unwrap_or(SILENCE_LEVEL_FLOOR_DBFS),
+        )
+    }
+}
+
+/// The most above-threshold windows in one contiguous run. A single quiet
+/// window between loud ones is bridged but not counted; two in a row end the
+/// run, and leading quiet windows don't consume the bridge.
+fn longest_run_windows(levels: &[f32], threshold: f32) -> usize {
+    let (mut run, mut longest, mut bridged) = (0, 0, false);
+    for &level in levels {
+        if level >= threshold {
+            run += 1;
+            longest = longest.max(run);
+            bridged = false;
+        } else if run == 0 {
+            // A leading quiet window doesn't consume the next gap's bridge.
+            bridged = false;
+        } else if bridged {
+            // Two quiet windows in a row end the run.
+            run = 0;
+            bridged = false;
+        } else {
+            bridged = true;
+        }
+    }
+    longest
+}
+
+/// The 10th-percentile 30 ms window level, the clip's own noise floor.
+/// Windows at the level floor (digital silence or a constant offset, such as a
+/// device warming up) don't define a floor, so audio with no other windows has
+/// none.
+fn noise_floor_dbfs(levels: &[f32]) -> Option<f32> {
+    let mut audible: Vec<f32> = levels
+        .iter()
+        .copied()
+        .filter(|&level| level > SILENCE_LEVEL_FLOOR_DBFS)
+        .collect();
+    if audible.is_empty() {
+        return None;
+    }
+    audible.sort_by(f32::total_cmp);
+    Some(audible[(audible.len() - 1) / 10])
+}
+
+/// The DC-removed RMS level of each 30 ms window of 16 kHz `samples`; a short
+/// final window is measured on the samples it has.
+fn window_levels_dbfs(samples: &[f32]) -> impl Iterator<Item = f32> + '_ {
+    samples.chunks(SILENCE_WINDOW_SAMPLES).map(|window| {
+        let count = window.len() as f64;
+        let mean = window.iter().map(|&sample| f64::from(sample)).sum::<f64>() / count;
+        let variance = window
+            .iter()
+            .map(|&sample| (f64::from(sample) - mean).powi(2))
+            .sum::<f64>()
+            / count;
+        ((20.0 * variance.sqrt().max(1e-6).log10()) as f32).max(SILENCE_LEVEL_FLOOR_DBFS)
+    })
 }
 
 fn loudest_window_dbfs(samples: &[f32]) -> f32 {
-    let loudest = samples
-        .chunks(SILENCE_WINDOW_SAMPLES)
-        .map(|window| {
-            let count = window.len() as f64;
-            let mean = window.iter().map(|&sample| f64::from(sample)).sum::<f64>() / count;
-            let variance = window
-                .iter()
-                .map(|&sample| (f64::from(sample) - mean).powi(2))
-                .sum::<f64>()
-                / count;
-            variance.sqrt()
-        })
-        .fold(0.0, f64::max);
-    (20.0 * loudest.max(1e-6).log10()) as f32
+    window_levels_dbfs(samples).fold(SILENCE_LEVEL_FLOOR_DBFS, f32::max)
 }
 
 pub(crate) fn pad_for_parakeet(samples: &mut Vec<f32>) {
@@ -686,6 +792,10 @@ struct Recording {
     input_buffer: Vec<f32>,
     resampler: Option<Fft<f32>>,
     stream: Option<LiveStream>,
+    /// Clip samples a live stream may hear once a finish begins. The clip is
+    /// authoritative; audio fed before the finish can still sit past its end,
+    /// which the engine's overfeed tolerance covers.
+    feed_limit: Option<usize>,
     /// This capture already logged why it has no live stream, so the retry
     /// on every audio chunk never repeats it.
     stream_refusal_logged: bool,
@@ -766,6 +876,7 @@ impl Recording {
             input_buffer: Vec::with_capacity(Self::CHUNK_SIZE),
             resampler,
             stream: None,
+            feed_limit: None,
             stream_refusal_logged: false,
             show_live_text: false,
             voice: VoiceTrack::default(),
@@ -823,6 +934,22 @@ impl Recording {
         self.voice.extend(fresh);
     }
 
+    /// Clip samples of Hex's own sounds at the capture's head: the pre-roll
+    /// (a retracted double-tap first tone, an earlier dictation's stop tone)
+    /// through the press, then the start tone and the margin after it (the
+    /// grace before a provisional tone sounds, plus a little latency). A
+    /// stream that hears them has not lost any speech.
+    fn head_ignored(&self) -> usize {
+        let tone = crate::feedback::start_tone_length();
+        let after_press = if tone.is_zero() {
+            Duration::ZERO
+        } else {
+            tone + STOP_TONE_MARGIN
+        };
+        samples_for(self.pre_press, PARAKEET_SAMPLE_RATE)
+            + samples_for(after_press, PARAKEET_SAMPLE_RATE)
+    }
+
     /// The 20 ms clip frame `at` falls in.
     fn frame_at(&self, at: CaptureInstant) -> usize {
         let from_start = self.pre_press + at.duration_since(self.started_at);
@@ -838,14 +965,18 @@ impl Recording {
     }
 
     /// Hands the stream every complete block of audio it has not seen, in
-    /// final-clip coordinates (after the resampler delay).
+    /// final-clip coordinates (after the resampler delay), and never past the
+    /// clip a finish will keep: the limit is in those same coordinates.
     fn feed_stream(&mut self) {
         let delay = self.resampler.as_ref().map_or(0, Fft::output_delay);
         let Some(stream) = &mut self.stream else {
             return;
         };
         let recorded = &self.samples[delay.min(self.samples.len())..];
-        let fresh = &recorded[stream.fed().min(recorded.len())..];
+        let available = self
+            .feed_limit
+            .map_or(recorded.len(), |limit| limit.min(recorded.len()));
+        let fresh = &recorded[stream.fed().min(available)..available];
         if fresh.len() >= STREAM_FEED_SAMPLES {
             stream.feed(fresh);
         }
@@ -1179,8 +1310,10 @@ impl DictationCapture {
     }
 
     /// The active recording's text so far when its live stream published a
-    /// change since the last call: only with live text on, and only for
-    /// display. The finished clip's transcript replaces it.
+    /// change since the last call: only while something asks the engine for
+    /// partials (Labs › Live text, Live typing, a `/dictations` client, the
+    /// first run's practice, or Stop phrase), and only for display or Stop
+    /// phrase's matching. The finished clip's transcript replaces it.
     pub fn take_partial(&mut self) -> Option<Partial> {
         self.recording.as_mut()?.stream.as_mut()?.take_partial()
     }
@@ -1189,9 +1322,10 @@ impl DictationCapture {
     /// (or the first run's practice) wants it, and logs at debug how far it
     /// has got: word counts against the audio fed, never the words (the
     /// engine logs each stream's count of changes). Every OS's capture loop
-    /// calls it after ingesting audio; it does nothing without live text. The
-    /// change is also returned, so a host can send it to Live typing's input
-    /// method or a `/dictations` client without showing the plate.
+    /// calls it after ingesting audio; it takes nothing without a live stream.
+    /// The change is also returned, so a host can send it to Live typing's
+    /// input method, a `/dictations` client, or Stop phrase's matching, without
+    /// showing the plate.
     pub fn report_live_text(&mut self) -> Option<Partial> {
         let partial = self.take_partial()?;
         let recording = self.recording.as_mut()?;
@@ -1224,7 +1358,7 @@ impl DictationCapture {
         if recording.stream.is_some() {
             return;
         }
-        recording.stream = engine.begin();
+        recording.stream = engine.begin_ignoring_head(recording.head_ignored());
         // The capture retries the stream on each audio chunk; say once, and
         // only when it would have shown live words, why there is none.
         if recording.stream.is_none()
@@ -1256,6 +1390,20 @@ impl DictationCapture {
             recording.intentional
                 || ended_at.duration_since(recording.started_at) >= MINIMUM_HOLD_DURATION
         })
+    }
+
+    /// Caps the live stream at the audio this finish keeps: everything through
+    /// `ended_at + tail`, in final-clip coordinates. A grown tail, and audio
+    /// captured while the tail decides, arrive from the finished clip instead,
+    /// so the stream is never fed past the clip from here on. What it heard
+    /// before the finish can still sit past the clip's end, which the engine's
+    /// overfeed tolerance covers.
+    pub fn limit_stream_to(&mut self, ended_at: CaptureInstant, tail: Duration) {
+        let Some(recording) = &mut self.recording else {
+            return;
+        };
+        let through = recording.pre_press + ended_at.duration_since(recording.started_at) + tail;
+        recording.feed_limit = Some(samples_for(through, PARAKEET_SAMPLE_RATE));
     }
 
     /// The tail a shortcut finish at `ended_at` keeps, judged on the audio
@@ -1367,6 +1515,26 @@ mod tests {
         })
     }
 
+    /// Deterministic, DC-free noise at `dbfs` RMS: alternating signs keep the
+    /// mean at zero, and every 30 ms window measures the same level.
+    fn noise(dbfs: f32, samples: usize) -> Vec<f32> {
+        let amplitude = 10.0_f32.powf(dbfs / 20.0);
+        (0..samples)
+            .map(|index| {
+                if index % 2 == 0 {
+                    amplitude
+                } else {
+                    -amplitude
+                }
+            })
+            .collect()
+    }
+
+    /// A sine whose 30 ms RMS level is `dbfs`.
+    fn speech_at(dbfs: f32, samples: usize) -> impl Iterator<Item = f32> {
+        tone(2.0_f32.sqrt() * 10.0_f32.powf(dbfs / 20.0), samples)
+    }
+
     #[test]
     fn streaming_resampler_matches_whole_buffer_conversion() {
         for rate in [16_000, 44_100, 48_000] {
@@ -1439,8 +1607,182 @@ mod tests {
     }
 
     #[test]
+    fn relative_level_gate_keeps_quiet_speech_above_the_noise_floor() {
+        // A built-in microphone records real speech around -54 dBFS while
+        // the room noise floor sits 18 dB lower. The fixed cutoff alone would
+        // discard it before the speech detector sees it.
+        let mut samples = noise(-72.0, 16_000);
+        samples.extend(speech_at(-54.0, 16_000));
+        let clip = DictationClip::for_test(samples);
+        let gate = LevelGate::measure(clip.released());
+
+        assert!(gate.passes(), "the relative path keeps it");
+        assert!(gate.sustained_ms() >= SILENCE_SUSTAINED.as_millis() as u64);
+        assert!(clip.loudest_window_dbfs() < SILENCE_THRESHOLD_DBFS);
+        assert!((clip.loudest_window_dbfs() - -54.0).abs() < 1.0);
+        {
+            let _detector = crate::transcription::speech_detector::override_for_test(None);
+            assert!(
+                clip.is_near_silent(),
+                "a quiet clip without a detector is discarded"
+            );
+        }
+        let _detector = crate::transcription::speech_detector::override_for_test(Some(true));
+        assert!(!clip.is_near_silent(), "the detector confirms the speech");
+    }
+
+    #[test]
+    fn relative_level_gate_discards_clicks_and_constant_floors() {
+        // One 30 ms window at -54 dBFS over the same floor is not sustained.
+        let mut click = noise(-72.0, 16_320);
+        click.extend(speech_at(-54.0, SILENCE_WINDOW_SAMPLES));
+        assert!(DictationClip::for_test(click).is_near_silent());
+
+        // A constant -60 dBFS floor alone never moves a window above its own
+        // floor, so it stays discarded too.
+        assert!(DictationClip::for_test(noise(-60.0, 32_000)).is_near_silent());
+    }
+
+    #[test]
+    fn relative_level_gate_ignores_scattered_clicks() {
+        // Six 10 ms clicks at -52 dBFS, far apart in 3 s of room noise, never
+        // form one sustained run.
+        let mut samples = noise(-72.0, 3 * 16_000);
+        for window in [10, 25, 40, 55, 70, 85] {
+            let start = window * SILENCE_WINDOW_SAMPLES;
+            let click: Vec<f32> = speech_at(-52.0, 160).collect();
+            samples[start..start + click.len()].copy_from_slice(&click);
+        }
+        let gate = LevelGate::measure(&samples);
+        assert!(gate.sustained_run_windows < LevelGate::sustained_windows_needed());
+        assert!(!gate.passes());
+        assert!(DictationClip::for_test(samples).is_near_silent());
+    }
+
+    #[test]
+    fn relative_level_gate_ignores_a_zero_lead_before_room_noise() {
+        // A device that warms up with 400 ms of exact zeros must not set a
+        // -120 dBFS floor that makes all the room noise look like speech.
+        let mut samples = vec![0.0; 6_400];
+        samples.extend(noise(-62.0, 32_000));
+        let clip = DictationClip::for_test(samples);
+        let gate = LevelGate::measure(clip.released());
+
+        assert!(!gate.passes(), "the noise must not count against itself");
+        assert!(gate.noise_floor_dbfs.is_some_and(|floor| floor > -70.0));
+        {
+            let _detector = crate::transcription::speech_detector::override_for_test(None);
+            assert!(clip.is_near_silent());
+        }
+        let _detector = crate::transcription::speech_detector::override_for_test(Some(true));
+        assert!(clip.is_near_silent(), "the level gate discards it first");
+    }
+
+    #[test]
+    fn relative_level_gate_clamps_its_threshold_at_minus_66_dbfs() {
+        // Speech at -70 dBFS over a -82 dBFS floor is 12 dB above it, but the
+        // clamp keeps the threshold at -66, so it never counts.
+        let mut too_quiet = noise(-82.0, 16_000);
+        too_quiet.extend(speech_at(-70.0, 16_000));
+        assert!(!LevelGate::measure(&too_quiet).passes());
+
+        // The same floor with speech at -62 dBFS clears the clamp.
+        let mut audible = noise(-82.0, 16_000);
+        audible.extend(speech_at(-62.0, 16_000));
+        assert!(LevelGate::measure(&audible).passes());
+    }
+
+    #[test]
+    fn relative_level_gate_requires_six_contiguous_windows() {
+        let needed = LevelGate::sustained_windows_needed();
+        assert_eq!(needed, 6);
+        // Window-aligned segments: five windows are 150 ms, six are 180 ms.
+        for (windows, passes) in [(needed - 1, false), (needed, true)] {
+            let mut samples = noise(-72.0, 40 * SILENCE_WINDOW_SAMPLES);
+            samples.extend(speech_at(-54.0, windows * SILENCE_WINDOW_SAMPLES));
+            assert_eq!(
+                LevelGate::measure(&samples).passes(),
+                passes,
+                "{windows} windows"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_level_gate_bridges_one_quiet_window_per_gap() {
+        let window = SILENCE_WINDOW_SAMPLES;
+        for lead in [40, 41] {
+            // Three speech windows, one quiet window, three more: one bridge
+            // keeps the run at six, with an odd or even lead-in.
+            let mut bridged = noise(-72.0, lead * window);
+            bridged.extend(speech_at(-54.0, 3 * window));
+            bridged.extend(noise(-72.0, window));
+            bridged.extend(speech_at(-54.0, 3 * window));
+            assert!(LevelGate::measure(&bridged).passes(), "{lead} lead windows");
+
+            // Two quiet windows in a row end the run, leaving only three.
+            let mut broken = noise(-72.0, lead * window);
+            broken.extend(speech_at(-54.0, 3 * window));
+            broken.extend(noise(-72.0, 2 * window));
+            broken.extend(speech_at(-54.0, 3 * window));
+            assert!(!LevelGate::measure(&broken).passes(), "{lead} lead windows");
+
+            // Two separate single quiet windows are bridged independently:
+            // 3 + 2 + 3 loud windows.
+            let mut bridged_twice = noise(-72.0, lead * window);
+            bridged_twice.extend(speech_at(-54.0, 3 * window));
+            bridged_twice.extend(noise(-72.0, window));
+            bridged_twice.extend(speech_at(-54.0, 2 * window));
+            bridged_twice.extend(noise(-72.0, window));
+            bridged_twice.extend(speech_at(-54.0, 3 * window));
+            assert!(
+                LevelGate::measure(&bridged_twice).passes(),
+                "{lead} lead windows"
+            );
+        }
+    }
+
+    #[test]
+    fn longest_run_bridges_one_quiet_window_per_gap() {
+        let threshold = -60.0;
+        let loud = -40.0;
+        let quiet = -80.0;
+
+        // Leading quiet windows, odd or even, don't consume the bridge.
+        assert_eq!(
+            longest_run_windows(&[quiet, quiet, quiet, loud, loud], threshold),
+            2
+        );
+        assert_eq!(
+            longest_run_windows(&[quiet, quiet, quiet, loud, quiet, loud], threshold),
+            2
+        );
+        assert_eq!(
+            longest_run_windows(&[quiet, quiet, quiet, quiet, loud, quiet, loud], threshold),
+            2
+        );
+
+        // Each gap gets its own bridge.
+        assert_eq!(
+            longest_run_windows(
+                &[loud, loud, quiet, loud, quiet, loud, loud, loud],
+                threshold
+            ),
+            6
+        );
+
+        // Two quiet windows in a row end the run.
+        assert_eq!(
+            longest_run_windows(&[loud, loud, quiet, quiet, loud, loud, loud], threshold),
+            3
+        );
+    }
+
+    #[test]
     fn speech_detector_discards_loud_captures_without_speech() {
         let clip = |samples: Vec<f32>| DictationClip::for_test(samples);
+        // A loud clip needs no detector to be transcribed.
+        assert!(!clip(tone(0.1, 16_000).collect()).is_near_silent());
         {
             let _detector = crate::transcription::speech_detector::override_for_test(Some(false));
             assert!(clip(tone(0.1, 16_000).collect()).is_near_silent());
@@ -1708,6 +2050,61 @@ mod tests {
         assert_eq!(clip.samples.last(), Some(&12.0));
         assert!(!clip.samples.contains(&13.0));
         assert_eq!(clip.tail_samples, 3_200);
+        // Press to release: no pre-roll, no tail.
+    }
+
+    #[test]
+    fn a_long_release_tail_never_feeds_the_stream_past_the_clip() {
+        // A release whose last word runs into the tail makes the audio owner
+        // wait for the stop tone plus speech after it before it keeps the base
+        // tail (the default Classic stop sound is 428 ms). Everything captured
+        // meanwhile is audio the clip trims, so the stream must not hear it:
+        // the engine refuses a stream fed well past the clip and transcribes
+        // the whole clip instead.
+        let (engine, commands) = TranscriptionEngine::for_test();
+        let origin = capture_time();
+        let mut capture = DictationCapture::new(16_000);
+        capture.ingest(&vec![0.0; 16_000], origin);
+        capture.start_at(origin);
+        let released = origin + Duration::from_secs(1);
+        let mut through = origin;
+        while through < released {
+            through = through + Duration::from_millis(20);
+            capture.ingest(&tone(0.3, 320).collect::<Vec<_>>(), through);
+        }
+        assert!(capture.become_intentional(origin + MINIMUM_HOLD_DURATION));
+        capture.begin_stream(&engine);
+        // The finish begins here, as the audio owner's does.
+        capture.limit_stream_to(released, POST_RELEASE_TAIL);
+        let stop_tone = Duration::from_millis(428);
+        while through < released + stop_tone {
+            through = through + Duration::from_millis(20);
+            capture.ingest(&tone(0.3, 320).collect::<Vec<_>>(), through);
+        }
+        let mut tail = None;
+        while through < released + MAX_RELEASE_TAIL {
+            if let ReleaseTail::Through(kept) = capture.release_tail(released, stop_tone) {
+                tail = Some(kept);
+                break;
+            }
+            through = through + Duration::from_millis(20);
+            capture.ingest(&vec![0.0; 320], through);
+        }
+        // Speech ran into the tail, and the tail still settled on its base
+        // once the tone was over.
+        assert_eq!(tail, Some(POST_RELEASE_TAIL));
+        let Finish::Transcribe(clip) = capture.finish_with_tail(released, POST_RELEASE_TAIL) else {
+            panic!("expected transcription")
+        };
+        assert_eq!(clip.duration_ms(), 1_650);
+        let (fed, begun, _) = stream_traffic(&commands);
+        assert_eq!(begun, 1);
+        assert!(
+            fed.len() <= clip.samples.len(),
+            "the stream heard {} samples but the clip keeps {}",
+            fed.len(),
+            clip.samples.len()
+        );
     }
 
     /// Records `sound(ms)` (milliseconds from the release, which is 1 s after

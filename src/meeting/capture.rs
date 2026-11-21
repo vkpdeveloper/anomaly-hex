@@ -20,8 +20,11 @@ use super::warning::{SilenceAction, SilencePolicy, SilenceRecovery, TrackWarning
 use super::{AudioPacket, MeetingSource, SAMPLE_RATE};
 use crate::dictation::StreamingResampler;
 
-const RETRY_INITIAL: Duration = Duration::from_millis(500);
-const RETRY_MAX: Duration = Duration::from_secs(5);
+pub(super) const RETRY_INITIAL: Duration = Duration::from_millis(500);
+pub(super) const RETRY_MAX: Duration = Duration::from_secs(5);
+/// A source that ran this long before failing started; one that dies sooner
+/// keeps backing off instead of reopening at the initial delay.
+const STARTED_AFTER: Duration = Duration::from_secs(1);
 pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Core Audio delivers silence continuously; this long without a buffer
 /// means the device or tap stopped.
@@ -59,7 +62,7 @@ impl PacketSink {
 
 /// The newest buffer's loudness per source (f32 bits, 0 to 1) and when it
 /// arrived (milliseconds since [`level_epoch`]), for the recording pill's
-/// voice bars. One meeting records at a time.
+/// level histories. One meeting records at a time.
 static LEVELS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 static LEVEL_AT_MS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 /// A reading older than this is silence: the source stopped delivering.
@@ -77,33 +80,39 @@ fn level_slot(source: MeetingSource) -> usize {
     }
 }
 
-/// Maps a buffer's RMS from -50 to -10 dBFS onto 0 to 1.
-fn loudness(samples: &[f32]) -> f32 {
-    let power = samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
-    let db = 10.0 * power.max(1e-10).log10();
-    ((db + 50.0) / 40.0).clamp(0.0, 1.0)
-}
-
 fn record_level(source: MeetingSource, samples: &[f32]) {
     let slot = level_slot(source);
-    LEVELS[slot].store(loudness(samples).to_bits(), Ordering::Relaxed);
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    LEVELS[slot].store(rms.to_bits(), Ordering::Relaxed);
     let now = level_epoch().elapsed().as_millis() as u64;
     LEVEL_AT_MS[slot].store(now.max(1), Ordering::Relaxed);
 }
 
-/// How loud the recording meeting is right now, 0 to 1: the louder of the
-/// microphone and the system audio, each read from its newest buffer and
-/// silent once that is over 300 ms old.
-pub fn voice_level() -> f32 {
+/// Latest microphone and system RMS, in that order, in the same units Dot scope takes.
+pub fn track_levels() -> [f32; 2] {
     let now = level_epoch().elapsed().as_millis() as u64;
-    let stale = LEVEL_STALE.as_millis() as u64;
-    (0..2)
-        .filter(|&slot| {
-            let at = LEVEL_AT_MS[slot].load(Ordering::Relaxed);
-            at != 0 && now.saturating_sub(at) <= stale
-        })
-        .map(|slot| f32::from_bits(LEVELS[slot].load(Ordering::Relaxed)))
-        .fold(0.0, f32::max)
+    std::array::from_fn(|slot| {
+        fresh_level(
+            now,
+            LEVEL_AT_MS[slot].load(Ordering::Relaxed),
+            f32::from_bits(LEVELS[slot].load(Ordering::Relaxed)),
+        )
+    })
+}
+
+fn fresh_level(now: u64, at: u64, level: f32) -> f32 {
+    if at != 0 && now.saturating_sub(at) <= LEVEL_STALE.as_millis() as u64 {
+        level
+    } else {
+        0.0
+    }
+}
+
+#[test]
+fn a_missing_or_stale_track_reads_as_silence() {
+    assert_eq!(fresh_level(500, 0, 0.8), 0.0);
+    assert_eq!(fresh_level(500, 199, 0.8), 0.0);
+    assert_eq!(fresh_level(500, 200, 0.8), 0.8);
 }
 
 /// An open source that the supervisor polls until it fails.
@@ -199,8 +208,8 @@ fn supervise(
                     resumed = interrupted,
                     "meeting capture source started"
                 );
-                delay = RETRY_INITIAL;
                 last_open_error = None;
+                let started = Instant::now();
                 let failure = loop {
                     if stop.load(Ordering::Relaxed) {
                         break None;
@@ -214,6 +223,7 @@ fn supervise(
                     return;
                 };
                 interrupted = true;
+                delay = retry_delay(delay, started.elapsed());
                 tracing::warn!(
                     ?source,
                     %error,
@@ -237,6 +247,50 @@ fn supervise(
         }
         delay = delay.saturating_mul(2).min(RETRY_MAX);
     }
+}
+
+/// The wait before reopening a source that ran for `ran` before it failed:
+/// the initial delay once it genuinely started, else the delay it already
+/// reached, so a source that dies right after every open keeps backing off
+/// instead of spawning and logging twice a second forever.
+pub(super) fn retry_delay(delay: Duration, ran: Duration) -> Duration {
+    if ran >= STARTED_AFTER {
+        RETRY_INITIAL
+    } else {
+        delay
+    }
+}
+
+/// 16 kHz samples each output's audio is held back before mixing, so two
+/// outputs playing at once line up instead of following each other. Linux and
+/// Windows mix their outputs; macOS hears one tap and compiles this only for
+/// the mixer's test.
+#[cfg(any(not(target_os = "macos"), test))]
+pub(super) const MIX_HOLD: usize = SAMPLE_RATE as usize / 20;
+
+/// Mixes each output's pending audio up to the latest output's position less
+/// `hold`, leaving the rest for the next call. An output that delivered
+/// nothing (nothing plays on it) adds nothing. Linux and Windows mix their
+/// outputs; macOS hears one tap and compiles this only for the mixer's test.
+#[cfg(any(not(target_os = "macos"), test))]
+pub(super) fn mix(pending: &mut [&mut Vec<f32>], hold: usize) -> Vec<f32> {
+    let length = pending
+        .iter()
+        .map(|samples| samples.len())
+        .max()
+        .unwrap_or(0)
+        .saturating_sub(hold);
+    let mut mixed = vec![0.0f32; length];
+    for samples in pending.iter_mut() {
+        let take = samples.len().min(length);
+        for (out, sample) in mixed.iter_mut().zip(samples.drain(..take)) {
+            *out += sample;
+        }
+    }
+    for sample in &mut mixed {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+    mixed
 }
 
 /// Converts any device rate to the 16 kHz meeting tracks so a reopened
@@ -801,6 +855,25 @@ mod tests {
     }
 
     #[test]
+    fn a_source_that_dies_right_after_each_open_keeps_backing_off() {
+        let instantly = Duration::from_millis(20);
+        // A source that really started reopens at the initial delay.
+        assert_eq!(retry_delay(RETRY_MAX, STARTED_AFTER), RETRY_INITIAL);
+        // One that failed instantly keeps the delay it already reached.
+        assert_eq!(retry_delay(RETRY_MAX, instantly), RETRY_MAX);
+        // So each instant failure waits longer, instead of spawning forever
+        // twice a second.
+        let mut delay = RETRY_INITIAL;
+        let mut waits = Vec::new();
+        for _ in 0..4 {
+            delay = retry_delay(delay, instantly);
+            waits.push(delay);
+            delay = delay.saturating_mul(2).min(RETRY_MAX);
+        }
+        assert_eq!(waits, [500, 1000, 2000, 4000].map(Duration::from_millis));
+    }
+
+    #[test]
     fn a_process_that_stops_recording_between_reopens_is_a_release() {
         let now = Instant::now();
         // The shared set from the old stream still names a process the new
@@ -851,5 +924,33 @@ mod tests {
         // A manual recording, or an app macOS reports no inputs for.
         assert!(!call_app_reports_input(None, &reported));
         assert!(!call_app_reports_input(Some("BuiltIn"), &[]));
+    }
+
+    #[test]
+    fn audio_on_any_output_reaches_the_system_track() {
+        // Only the headset plays (#1221): its audio is kept, less the hold.
+        let mut speakers = Vec::new();
+        let mut headset = vec![0.25; 10];
+        let mixed = mix(&mut [&mut speakers, &mut headset], 4);
+        assert_eq!(mixed, vec![0.25; 6]);
+        assert_eq!(headset.len(), 4);
+
+        // Both play: their audio adds up sample by sample, clamped.
+        let mut speakers = vec![0.5; 8];
+        let mut headset = vec![0.75; 6];
+        let mixed = mix(&mut [&mut speakers, &mut headset], 2);
+        assert_eq!(mixed, vec![1.0; 6]);
+        assert_eq!((speakers.len(), headset.len()), (2, 0));
+
+        // Nothing plays: nothing is sent.
+        let mut idle = Vec::new();
+        assert!(mix(&mut [&mut idle], 2).is_empty());
+
+        // The shared hold is 50 ms at 16 kHz, so a 1,000-sample buffer is
+        // mixed only up to 200.
+        assert_eq!(MIX_HOLD, 800);
+        let mut left = vec![0.5; 1_000];
+        let mut right = Vec::new();
+        assert_eq!(mix(&mut [&mut left, &mut right], MIX_HOLD), vec![0.5; 200]);
     }
 }

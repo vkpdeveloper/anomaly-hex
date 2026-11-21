@@ -62,7 +62,7 @@ struct Groups<'a> {
     others: Vec<&'a Entry>,
 }
 
-/// Sorts `entries` into their groups. `first` (Labs › Model in use first)
+/// Sorts `entries` into their groups. The model in use (`first`)
 /// leads its group, and an imported one puts your model files first.
 fn groups(entries: &[Entry], first: Option<TranscriptionModelId>) -> Groups<'_> {
     let speaking = lead(
@@ -269,6 +269,7 @@ fn model_row(ui: &Ui, p: Paint, entry: &Entry, language: &str) -> El {
         def.id,
         TranscriptionModelId::ParakeetV3
             | TranscriptionModelId::Orukeet
+            | TranscriptionModelId::FluidSpeechPro
             | TranscriptionModelId::ParakeetUltra
     ) && language != AUTO_LANGUAGE
     {
@@ -278,7 +279,7 @@ fn model_row(ui: &Ui, p: Paint, entry: &Entry, language: &str) -> El {
             p.faint(),
         ));
     }
-    // Labs › Benchmark details: raw error rates with their provenance.
+    // Labs › Model test details: raw error rates with their provenance.
     if picker::benchmark_details_on(ui)
         && let Some(record) = transcription_models::benchmark(def)
     {

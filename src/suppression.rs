@@ -13,8 +13,10 @@ use color_eyre::eyre::{Result, eyre};
 use crate::app_settings::HotkeyBinding;
 use crate::app_settings::{HOTKEY_MODIFIERS_MASK, RuntimeHotkey, RuntimeHotkeys};
 use crate::audio::CaptureInstant;
+use crate::continuation::InputActivity;
 use crate::dictation::{BOTH_SIDES_WINDOW, DOUBLE_TAP_WINDOW, MINIMUM_HOLD_DURATION};
 
+pub(crate) mod dictation_key;
 mod hotkey;
 pub(crate) mod physical_keys;
 pub(crate) mod secure_input;
@@ -46,7 +48,6 @@ const MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
 const EVENT_MOUSE_MOVED: u32 = 5;
 #[cfg(hex_capture)]
 const EVENT_SCROLL_WHEEL: u32 = 22;
-#[cfg(hex_capture)]
 const KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
 #[cfg(hex_capture)]
 const SCROLL_WHEEL_DELTA_AXIS_1: u32 = 11;
@@ -59,6 +60,9 @@ const EVENT_SOURCE_USER_DATA: u32 = 42;
 
 // Assistive keyboards inject downstream of HID; observe them alongside hardware input.
 const ANNOTATED_SESSION_EVENT_TAP: u32 = 2;
+// macOS's own symbolic hot keys are matched in the window server before the
+// app and before an annotated-session tap; only a session tap still sees them.
+const SESSION_EVENT_TAP: u32 = 1;
 // Another app's global shortcut (Carbon hotkeys such as a window manager's
 // Option-1) consumes its key before the session, so only HID sees that press.
 const HID_EVENT_TAP: u32 = 0;
@@ -300,18 +304,7 @@ impl Drop for PendingInputAcknowledgement<'_> {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct InputActivity(Arc<AtomicU64>);
-
 impl InputActivity {
-    pub fn revision(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
-    }
-
-    pub fn invalidate(&self) {
-        self.0.fetch_add(1, Ordering::AcqRel);
-    }
-
     fn observe(&self, input: InputEvent, suppressed: bool) {
         if !suppressed
             && matches!(
@@ -504,6 +497,10 @@ struct EventTapContext {
     key_tap: AtomicPtr<c_void>,
     observation_tap: AtomicPtr<c_void>,
     physical_tap: AtomicPtr<c_void>,
+    /// Labs › Microphone key alone's tap, present only while its lab is on.
+    dictation_key_tap: AtomicPtr<c_void>,
+    /// The microphone key's presses the session tap took, with their releases.
+    microphone_key: Mutex<crate::app_settings::MicrophoneKey>,
     shortcut_suppression: Mutex<ShortcutSuppression>,
 }
 
@@ -904,6 +901,41 @@ fn list_tap(event_type: u32, event: EventRef) -> ListSwallow {
         } else {
             ListSwallow::No
         };
+    }
+    if *taken & bit != 0 {
+        return ListSwallow::Only;
+    }
+    if crate::paste::browse::active() && !crate::app_settings::shortcuts_suspended() {
+        use crate::paste::browse::{self, Nav};
+        let flags = unsafe { CGEventGetFlags(event) };
+        let bindings = crate::app_settings::runtime_hotkeys();
+        let trigger = bindings
+            .paste_last
+            .is_some_and(|key| key.matches_key_press(code, flags));
+        let other_shortcut = !trigger
+            && bindings
+                .all()
+                .iter()
+                .flatten()
+                .any(|key| key.matches_key_press(code, flags));
+        let nav = match code {
+            53 => Some(Nav::Cancel),
+            _ if other_shortcut => None,
+            125 | 48 => Some(Nav::Next),
+            126 => Some(Nav::Previous),
+            36 | 76 => Some(Nav::Commit),
+            _ if trigger && browse::open() => Some(Nav::Next),
+            _ => None,
+        };
+        if let Some(nav) = nav
+            && browse::nav(nav)
+        {
+            *taken |= bit;
+            return ListSwallow::Only;
+        }
+        if !trigger {
+            browse::nav(Nav::Cancel);
+        }
     }
     let suggesting = suggesting();
     if !list_takes_keys(

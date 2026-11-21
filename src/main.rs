@@ -8,6 +8,10 @@ const VERSION: &str = env!("HEX_BUILD_VERSION");
 
 #[cfg(target_os = "macos")]
 mod accessibility;
+/// The Annotate pane's Agents section: the hex-annotate skill in coding
+/// agents' folders and hex on PATH (`capture.agents`).
+#[cfg(hex_capture)]
+mod agent_install;
 mod app_paths;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod app_settings;
@@ -21,11 +25,14 @@ mod audio;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod calendar;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
+mod calendar_menu;
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod caps_lock_dictation;
 #[cfg(hex_capture)]
 mod capture_host;
 #[cfg(hex_capture)]
 mod capture_zip;
+mod continuation;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod control;
 mod desktop;
@@ -81,7 +88,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 #[cfg(target_os = "macos")]
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 #[cfg(target_os = "macos")]
 use color_eyre::eyre::eyre;
@@ -296,6 +303,12 @@ enum MeetingCommand {
 
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
+    // ggml turns on its Metal tensor-API kernels by itself on M5/M6/A19/A20
+    // GPUs, and they give wrong results there: every model transcribed to
+    // empty or garbled text (#1965). The simdgroup kernels earlier Macs use
+    // are correct, so keep the tensor path off for every model.
+    // SAFETY: Before any other thread exists to read the environment.
+    unsafe { std::env::set_var("GGML_METAL_TENSOR_DISABLE", "1") };
     color_eyre::install()?;
     let cli = Cli::parse_from(mcp_alias_arguments(std::env::args_os().collect()));
     let executable_name = std::env::current_exe()
@@ -321,7 +334,9 @@ fn main() -> Result<()> {
     // lock, GUI, or permission setup of their own, so an agent may run them
     // over SSH while the app is running.
     let cli = match cli.command {
-        Some(Command::Control(command)) => control::cli::finish(control::cli::run(command)),
+        Some(Command::Control(command)) => {
+            control::cli::finish(control::cli::run(command, Cli::command))
+        }
         command => Cli { command },
     };
     #[cfg(debug_assertions)]
@@ -698,6 +713,26 @@ mod tests {
     }
 
     #[test]
+    fn the_cli_prints_completion_scripts() {
+        use clap::CommandFactory;
+        use clap_complete::Shell;
+
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "hex", &mut script);
+            let script = String::from_utf8(script).expect("a completion script is UTF-8");
+            assert!(
+                script.contains("dictation"),
+                "{shell:?} script has no dictation"
+            );
+            assert!(
+                script.contains("listen"),
+                "{shell:?} script has no macOS-only listen command"
+            );
+        }
+    }
+
+    #[test]
     fn control_commands_parse_beside_the_read_commands() {
         use crate::control::cli::CommandsCommand;
         use crate::control::transcript_cli;
@@ -891,7 +926,7 @@ fn main() -> Result<()> {
     // portal or rtkit.
     // SAFETY: Before any other thread exists to read the environment.
     unsafe { std::env::set_var("DISABLE_RTKIT", "1") };
-    linux::input_route::mark_streams();
+    linux::input::route::mark_streams();
     linux::run(&SHUTDOWN)
 }
 

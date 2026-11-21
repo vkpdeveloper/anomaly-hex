@@ -103,6 +103,17 @@ The standalone Hex application may still publish owner-only discovery for its
 own existing local API. Embedded `create()` uses the child handshake; desktop
 `connect()` remains a separate discovery-based path.
 
+`hex transcribe <file>` is the other client, and uses both paths: it talks to
+the running app through its discovery file, and with no Hex running spawns
+its own executable as `hex service --embedded` exactly as above, checking that
+the ready line's `pid` is its child and its `url` is `http://127.0.0.1:<port>`.
+It sends the file's decoded audio as 16 kHz mono WAV pieces of at most 30 s to
+`POST /transcriptions`, prepares a missing model through
+`POST /models/{id}/prepare` only after a terminal prompt, and closes the
+child's stdin (killing it after three seconds) on every exit. A discovery file
+for a live Hex with the wrong `apiVersion` or token is an error, not a reason
+to spawn a second service.
+
 ## Wire Protocol (API 2)
 
 ```text
@@ -251,6 +262,7 @@ export type ModelId =
   | "parakeet_v2"
   | "parakeet_v3"
   | "orukeet"
+  | "fluid_speech_pro"
   | "whisper_large_v3_turbo"
   | "qwen3_asr06_b"
   | "qwencleo_asr_1_7b"
@@ -263,6 +275,7 @@ export type ModelId =
   | "nemotron_3_5_asr"
   | "gigaam_v3"
   | "nb_whisper_medium"
+  | "kb_whisper_medium"
   | "granite_speech_5"
   | "apple_speech"
   // An imported or found model, listed while it is ready.

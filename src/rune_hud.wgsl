@@ -10,6 +10,7 @@
 // pixel within it. A linear (sRGB-format) target gets the colours decoded.
 
 override linear_target: bool = false;
+override dots_only: bool = false;
 
 struct Varyings {
     @builtin(position) position: vec4f,
@@ -100,7 +101,9 @@ struct DotUniforms {
     // indicator's ears (y 1): the notch's half width, the mode, the voice's
     // 0–1 level, and seconds into the stage.
     field: vec4f,
-    // The notch indicator's done and failed, 0 to 1.
+    // The notch indicator's done and failed, 0 to 1, then how far right of
+    // the plate's middle the dots' middle sits, pt: a field held by one end
+    // keeps its dots where they are while the plate widens between columns.
     ears: vec4f,
 }
 
@@ -163,11 +166,11 @@ fn exclamation(p: vec2f) -> f32 {
 }
 
 // Labs' notch indicator, in the Dynamic Island's compact style: the notch
-// widened sideways at its own height, one glyph either side of the camera.
-// Recording: an orange mic (the colour macOS and iOS use for a microphone
-// in use) and capsule level bars that move with the voice. Working: the
-// macOS 12-spoke spinner and the bars at rest with light running through
-// them. Done: a green checkmark pops in. Failed: a red
+// widened sideways and grown from the housing's height to the menu bar's, one
+// glyph either side of the camera. Recording: an orange mic (the colour macOS
+// and iOS use for a microphone in use) and capsule level bars that move with
+// the voice. Working: the macOS 12-spoke spinner and the bars at rest with
+// light running through them. Done: a green checkmark pops in. Failed: a red
 // exclamationmark.circle.fill. Glyphs scale and unblur in as the ears open.
 fn ears(window_point: vec2f, island_shape: f32) -> vec4f {
     let notch_half = u.field.x;
@@ -273,15 +276,15 @@ fn dot_scope_fragment(in: Varyings) -> @location(0) vec4f {
         }
     }
 
-    // A soft drop shadow 3 pt below, as the prototype's 16 pt canvas blur.
-    let shadow_distance = rounded_box(point - vec2f(0.0, 3.0), half_size, radius);
-    composite(&result, u.shadow.rgb, u.shadow.a * (0.5 - 0.5 * tanh(shadow_distance / 6.5)));
-
     let shape = coverage(distance, aa) * island_shape;
-    composite(&result, u.plate.rgb, u.plate.a * shape);
-    composite(&result, u.rim.rgb, u.rim.a * coverage(abs(distance) - 0.3, aa));
+    if (!dots_only) {
+        let shadow_distance = rounded_box(point - vec2f(0.0, 3.0), half_size, radius);
+        composite(&result, u.shadow.rgb, u.shadow.a * (0.5 - 0.5 * tanh(shadow_distance / 6.5)));
+        composite(&result, u.plate.rgb, u.plate.a * shape);
+        composite(&result, u.rim.rgb, u.rim.a * coverage(abs(distance) - 0.3, aa));
+    }
 
-    if (u.glow > 0.01) {
+    if (!dots_only && u.glow > 0.01) {
         let reach = 34.0 + 20.0 * u.glow;
         let t = clamp(length(point) / reach, 0.0, 1.0);
         let strength = select(0.19, 0.3, dark) * 0.55 * min(1.0, u.glow);
@@ -293,7 +296,8 @@ fn dot_scope_fragment(in: Varyings) -> @location(0) vec4f {
     let rows = i32(u.rows + 0.5);
     let pitch = u.pitch;
     let center_offset = vec2f(f32(columns) - 1.0, f32(rows) - 1.0) * 0.5;
-    let i0 = i32(round(point.x / pitch + center_offset.x));
+    let shift = vec2f(u.ears.z, 0.0);
+    let i0 = i32(round((point.x - shift.x) / pitch + center_offset.x));
     let j0 = i32(round(point.y / pitch + center_offset.y));
     let unlit = select(0.085, 0.07, dark);
     let full = select(1.0, 0.96, dark);
@@ -306,7 +310,7 @@ fn dot_scope_fragment(in: Varyings) -> @location(0) vec4f {
             if (i < 0 || j < 0 || i >= columns || j >= rows) {
                 continue;
             }
-            let center = (vec2f(f32(i), f32(j)) - center_offset) * pitch;
+            let center = (vec2f(f32(i), f32(j)) - center_offset) * pitch + shift;
             let cap = -rounded_box(center, half_size, radius);
             let mask = sstep(1.4, 4.6, cap);
             if (mask <= 0.0) {
@@ -316,14 +320,16 @@ fn dot_scope_fragment(in: Varyings) -> @location(0) vec4f {
             let power = max(value.x, 1e-5);
             let fresh = value.y;
             let row = abs(center.y) / half_size.y;
-            let floor_alpha = unlit * (1.0 - 0.7 * sstep(0.35, 0.95, row)) * presence * u.grid;
+            var floor_alpha = unlit * (1.0 - 0.7 * sstep(0.35, 0.95, row)) * presence * u.grid;
+            // A quiet centreline, not a plate-shaped bed of inactive dots.
+            if (dots_only) { floor_alpha = select(0.0, 0.26, j == rows / 2); }
             let alpha = floor_alpha + (full - floor_alpha) * pow(power, curve * mix(1.4, 1.0, fresh));
             let dot_radius = (0.25 + 0.17 * pow(power, 0.6))
                 * mix(1.0, mix(0.82, 1.0, fresh), sstep(0.03, 0.2, power)) * pitch;
             let core = clamp(power * power * 1.1, 0.0, 0.9) * mix(0.3, 1.0, fresh);
             let color = mix(u.base.rgb, u.core.rgb, core);
             let from_center = length(point - center);
-            if (power > 0.05) {
+            if (!dots_only && power > 0.05) {
                 composite(
                     &result,
                     color,

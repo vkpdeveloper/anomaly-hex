@@ -13,15 +13,13 @@ mod hud;
 
 use std::time::Duration;
 
-use rune::{Cursor, El, Icon, Tx, col, el, row, text};
+use rune::{Cursor, El, Tx, col, el, row, text};
 use rune_kit::{ControlSize, IconButton, IconButtonVariant};
 
 use self::hud::Hud;
 pub(crate) use self::hud::Preview;
 use super::Ui;
-use super::controls::{
-    ButtonKind, DESCRIPTION, Paint, button, modal_scrim_transition, modal_transition,
-};
+use super::controls::{ButtonKind, Paint, button, modal_scrim_transition, modal_transition};
 use super::lists::{list_row, source_list};
 use super::platform::Os;
 use crate::app_settings::IndicatorPosition;
@@ -35,12 +33,6 @@ const PADDING: f32 = 18.0;
 const SCREEN_HEIGHT: f32 = 84.0;
 const MENU_BAR: f32 = 24.0;
 const FRAME: Duration = Duration::from_micros(16_667);
-
-static PLAY: Icon = Icon {
-    name: "hex-play",
-    view: 20.0,
-    body: r#"<path d="M6.5 5.1v9.8c0 .5.5.8.9.5l7.6-4.9c.4-.2.4-.8 0-1L7.4 4.6c-.4-.3-.9 0-.9.5Z" fill="currentColor"/>"#,
-};
 
 #[derive(Default)]
 pub(super) struct SoundSets {
@@ -224,21 +216,7 @@ pub(super) fn modal(ui: &Ui, p: Paint) -> Option<[El; 2]> {
                 move |ui: &mut Ui| choose(ui, set),
             )
         }));
-    let mut footer = row().key("footer").gap(12.0).center_y();
-    footer = footer.child(
-        // Nothing plays with Sound volume off; the HUD still shows.
-        text(if ui.settings.sound_effects {
-            ""
-        } else {
-            tr("Sound volume is off")
-        })
-        .key("muted")
-        .font(DESCRIPTION)
-        .color(p.muted())
-        .grow(1.0)
-        .shrink(),
-    );
-    footer = footer.child(
+    let footer = row().key("footer").justify_end().child(
         button(
             p,
             "close-sound-sets",
@@ -299,7 +277,7 @@ fn play_button(p: Paint, set: SoundSet, sounding: bool) -> El {
     let (icon, label) = if sounding {
         (&rune_theme_opencode::icons::STOP, tr("Stop"))
     } else {
-        (&PLAY, tr("Play"))
+        (&super::controls::PLAY, tr("Play"))
     };
     IconButton::new(icon)
         .variant(IconButtonVariant::Ghost)

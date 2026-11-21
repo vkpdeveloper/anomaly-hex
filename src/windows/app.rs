@@ -165,6 +165,11 @@ impl AppInstance {
                 AllowSetForegroundWindow(ASFW_ANY);
                 SetEvent(event);
             }
+        } else {
+            // A hidden launch (`hex start`, `hex restart`, a login launch)
+            // only yields, so nothing else records that it came and went:
+            // say why here, or a lost relaunch leaves no trace at all.
+            tracing::info!("Hex is already running; this hidden launch exits");
         }
         // SAFETY: `event` is a valid handle owned by this function.
         unsafe { CloseHandle(event) };
@@ -203,6 +208,14 @@ impl WindowsDesktopHost {
         processing: crate::dictation::modes::ProcessingState,
     ) -> Self {
         crate::desktop::i18n::apply(settings.ui_language.as_deref());
+        // The Sounds sheet also plays with the listener stopped and volume Off.
+        // Preloading decodes the sounds without opening a device.
+        crate::feedback::set_enabled(settings.sound_effects);
+        crate::feedback::set_volume(settings.sound_effect_volume);
+        crate::feedback::set_sound_set(settings.sound_theme);
+        if let Err(error) = crate::feedback::preload() {
+            tracing::warn!(%error, "Windows recording feedback is unavailable");
+        }
         let mut event_reader = EventReader::open(&event_path);
         let mut activity = DesktopActivity::default();
         activity.refresh(&mut event_reader);
@@ -269,6 +282,11 @@ impl WindowsDesktopHost {
             }
         }
         host
+    }
+
+    /// The host's retained-history store; one store per process.
+    pub(crate) fn history(&self) -> Option<History> {
+        self.history.clone()
     }
 
     /// Setup is ready, so the tour's practice can dictate, or the tour
@@ -384,8 +402,8 @@ impl WindowsDesktopHost {
         }
     }
 
-    /// Follows the foreground layout while switching is on, and starts the
-    /// installed-only preparation of a mapping once it is due.
+    /// Follows the focused window's layout while switching is on, and starts
+    /// the installed-only preparation of a mapping once it is due.
     fn switch_with_keyboard(&mut self) {
         let enabled = self.settings.keyboard_model_switching.enabled;
         if enabled != self.input_sources.is_some() {
@@ -395,11 +413,17 @@ impl WindowsDesktopHost {
             .input_sources
             .as_mut()
             .and_then(|watcher| watcher.poll())
-            && self
+        {
+            tracing::info!(
+                source = source.as_deref().unwrap_or("none"),
+                "keyboard input source changed"
+            );
+            if self
                 .keyboard_switcher
                 .source_changed(source, Instant::now())
-        {
-            self.supersede_automatic();
+            {
+                self.supersede_automatic();
+            }
         }
         let Some(choice) = self.keyboard_switcher.take_due(Instant::now()) else {
             return;
@@ -436,9 +460,14 @@ impl WindowsDesktopHost {
         if self.app_switcher.observe(
             crate::transcription::app_model_switching::Observation::frontmost(
                 application.as_deref(),
+                None,
             ),
-            |application| {
-                crate::transcription::app_model_switching::mode_choice(&self.settings, application)
+            |application, _| {
+                crate::transcription::app_model_switching::mode_choice(
+                    &self.settings,
+                    application,
+                    None,
+                )
             },
             now,
         ) {
@@ -841,7 +870,8 @@ pub(crate) fn foreground_other_process_stem() -> Option<String> {
 }
 
 /// The newest foreground window another process owns, polled with the
-/// runtime's refresh.
+/// runtime's refresh. The desktop and taskbars are skipped: a paste there is
+/// lost, so bringing one forward is never what Paste Last wants.
 #[derive(Default)]
 struct ForeignWindow(Option<isize>);
 
@@ -859,7 +889,9 @@ impl ForeignWindow {
             }
             let mut process_id = 0;
             GetWindowThreadProcessId(window, &mut process_id);
-            if process_id != GetCurrentProcessId() {
+            if process_id != GetCurrentProcessId()
+                && !crate::windows::paste::is_shell_window(window)
+            {
                 self.0 = Some(window as isize);
             }
         }

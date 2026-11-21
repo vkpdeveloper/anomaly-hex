@@ -8,14 +8,17 @@ use rune::{
     text,
 };
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, Menu, MenuItem,
-    Placement, SegmentedControl, Select, SelectAppearance, Switch,
+    Button, ButtonVariant, ControlSize, Kit, Menu, MenuItem, Placement, SegmentedControl, Select,
+    SelectAppearance, Switch,
 };
 
 use super::Ui;
 
 /// Row descriptions and secondary copy.
 pub(super) const DESCRIPTION: TextStyle = TextStyle::new(12.0, 440.0).lh(16.0);
+/// The Dictation stats dialog's headline numbers, above the kit's steps.
+pub(super) const STATS_NUMBER: TextStyle =
+    TextStyle::new(18.0, 620.0).lh(22.0).features("'tnum' 1");
 const SELECT_WIDTH: f32 = 220.0;
 /// The microphone field, wide enough for "System default" and a faint
 /// "Studio Display Microphone".
@@ -241,6 +244,19 @@ fn separator(p: Paint, key: String) -> El {
         .mr(METRICS.row_px)
         .fill(p.k.c.border_muted)
         .a11y_hidden()
+}
+
+/// A folder as a label for the row that chooses it: a path under the home
+/// folder reads from `~` ("~/Pictures/Hex Shots"), else it reads whole.
+pub(super) fn folder_label(folder: &std::path::Path) -> String {
+    crate::app_paths::home_dir()
+        .and_then(|home| {
+            folder
+                .strip_prefix(home)
+                .ok()
+                .map(|relative| format!("~/{}", relative.display()))
+        })
+        .unwrap_or_else(|| folder.display().to_string())
 }
 
 /// A setting: title and optional description on the left, its control on
@@ -647,6 +663,25 @@ pub(super) fn select(
     )
 }
 
+/// The press that opens a select's menu, telling Rune to reveal the chosen
+/// row: a menu shows only six or seven rows of a long list, so a choice
+/// further down would open below the edge with its check out of sight.
+/// `scope` is the key around that menu's rows, so rows keyed alike
+/// elsewhere never answer for it.
+pub(super) fn revealing_press(
+    open: bool,
+    scope: String,
+    chosen: Option<String>,
+    toggle: impl Fn(&mut Ui) + 'static,
+) -> impl Fn(&mut Ui, &mut Tx) + 'static {
+    move |ui: &mut Ui, tx: &mut Tx| {
+        toggle(ui);
+        if !open && let Some(chosen) = chosen.clone() {
+            tx.scroll_into_view_in(scope.clone(), chosen);
+        }
+    }
+}
+
 /// A [`select`] `width` points wide, for labels such as device names that
 /// would truncate at the usual width. A `detail` follows the field's label
 /// in faint text.
@@ -663,19 +698,24 @@ pub(super) fn select_sized(
     layer: &mut Vec<El>,
     width: f32,
 ) -> El {
+    let chosen = choices
+        .iter()
+        .position(|choice| choice.selected)
+        .map(|index| format!("{key}-item{index}"));
+    let press = revealing_press(open, format!("{key}-menu"), chosen, toggle);
     let trigger = match detail {
         None => Select::new::<&str>(format!("{key}-field"), &[])
             .appearance(SelectAppearance::Field)
             .width(width)
             .current(Some(label))
             .open(open)
-            .on_toggle(toggle)
             .trigger(p.k)
+            .on_press_tx(press)
             .label(name)
             .a11y_value(label),
         Some(detail) => detailed_field(p, key, label, detail, open, width)
             .label(name)
-            .on_press(toggle),
+            .on_press_tx(press),
     };
     let mut menu = Menu::new(key)
         .trigger(trigger)
@@ -819,6 +859,19 @@ pub(super) fn button(
     kind: ButtonKind,
     press: impl Fn(&mut Ui, &mut Tx) + 'static,
 ) -> El {
+    button_enabled(p, key, label, kind, true, press)
+}
+
+/// A [`button`] that keeps its place but can't be pressed while `enabled` is
+/// false, so an action with nothing to do never silently does nothing.
+pub(super) fn button_enabled(
+    p: Paint,
+    key: &str,
+    label: &str,
+    kind: ButtonKind,
+    enabled: bool,
+    press: impl Fn(&mut Ui, &mut Tx) + 'static,
+) -> El {
     let variant = match kind {
         ButtonKind::Primary => ButtonVariant::Contrast,
         ButtonKind::Secondary => ButtonVariant::Neutral,
@@ -826,12 +879,14 @@ pub(super) fn button(
     };
     Button::new(label)
         .variant(variant)
+        .disabled(!enabled)
         .on_press_tx(press)
         .build_push(p.k)
         .key(key)
 }
 
 /// An icon-only Secondary button the height of [`button`].
+#[cfg(target_os = "macos")]
 pub(super) fn icon_button(
     p: Paint,
     key: &str,
@@ -839,12 +894,30 @@ pub(super) fn icon_button(
     label: &str,
     press: impl Fn(&mut Ui) + 'static,
 ) -> El {
-    IconButton::new(icon)
-        .variant(IconButtonVariant::Neutral)
+    rune_kit::IconButton::new(icon)
+        .variant(rune_kit::IconButtonVariant::Neutral)
         .control_size(ControlSize::Large)
         .label(label)
         .on_press(press)
         .build(p.k)
+        .key(key)
+}
+
+/// A quiet text action beside a row's control, such as a shortcut's Reset.
+/// Assistive technology reads `label`, which says more than the short `text`.
+pub(super) fn quiet_button(
+    p: Paint,
+    key: &str,
+    text: &str,
+    label: &str,
+    press: impl Fn(&mut Ui) + 'static,
+) -> El {
+    Button::new(text)
+        .variant(ButtonVariant::Ghost)
+        .control_size(ControlSize::Small)
+        .on_press(press)
+        .build(p.k)
+        .label(label)
         .key(key)
 }
 
@@ -1235,3 +1308,15 @@ impl Highlight {
         true
     }
 }
+
+pub(super) static PLAY: rune::Icon = rune::Icon {
+    name: "hex-play",
+    view: 20.0,
+    body: r#"<path d="M6.5 5.1v9.8c0 .5.5.8.9.5l7.6-4.9c.4-.2.4-.8 0-1L7.4 4.6c-.4-.3-.9 0-.9.5Z" fill="currentColor"/>"#,
+};
+
+pub(super) static PAUSE: rune::Icon = rune::Icon {
+    name: "hex-pause",
+    view: 20.0,
+    body: r#"<rect x="5.5" y="4.5" width="3" height="11" rx="1" fill="currentColor"/><rect x="11.5" y="4.5" width="3" height="11" rx="1" fill="currentColor"/>"#,
+};

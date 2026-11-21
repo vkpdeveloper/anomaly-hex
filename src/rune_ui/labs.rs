@@ -3,25 +3,27 @@
 //! every lab as a card under its group's collapsible header, and Turned on
 //! what's on. Each card shows its description and switch, and while on any
 //! settings the lab has of its own. A feature with its own pane (Meetings,
-//! Voice Filter, Playground) joins the main sidebar while on and is hidden
-//! while off.
+//! Voice Filter, Playground, Modes editor) joins the main sidebar while on
+//! and is hidden while off.
 
-mod browser_access;
 mod group;
 #[cfg(all(target_os = "macos", hex_capture))]
-mod screenshots;
+pub(super) mod screenshots;
+mod stop_phrase;
 mod store;
 mod voice_prompt;
+mod yolo_mode;
+
+use std::borrow::Cow;
 
 use rune::{El, Icon, TextEdit, Tx, row, text};
 
 pub(super) use self::store::{page, search_field, tabs};
 use super::controls::{self, Paint};
 use super::icons::{
-    BOOK, CAMERA, CLOCK, FOLDER, GLOBE, KEYBOARD, MOUSE, PANEL, PHONE, SPARKLES, TERMINAL, TIMER,
-    WAVE,
+    BOOK, CALENDAR, CAMERA, CLOCK, FOLDER, GLOBE, KEYBOARD, MOUSE, PANEL, PHONE, SPARKLES,
+    TERMINAL, TIMER, WAVE,
 };
-use super::list_detail::SEARCH_ICON;
 use super::sidebar::{NAV_ROW_GAP, NAV_ROW_HEIGHT, VOICE_FILTER_ICON};
 use super::{Pane, Ui};
 use crate::desktop::i18n::{tr, tr_fill, tr_named};
@@ -33,11 +35,15 @@ pub(super) static LABS_ICON: Icon = Icon {
     body: r#"<path d="M6.25 2.5h3.5M6.75 2.5v4L3.2 12.3a.8.8 0 0 0 .7 1.2h8.2a.8.8 0 0 0 .7-1.2L9.25 6.5v-4M4.8 10h6.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-/// The main sidebar's panes, in order: General, Output, History, then the
-/// features turned on (Meetings and Voice Filter from Labs, Annotate in dev
-/// builds).
+/// The main sidebar's panes, in order: General, Output, the Modes editor
+/// while its lab is on, History, then the features turned on (Meetings and
+/// Voice Filter from Labs, Annotate in dev builds).
 pub(super) fn main_panes(ui: &Ui) -> Vec<Pane> {
-    let mut panes = vec![Pane::General, Pane::Output, Pane::History];
+    let mut panes = vec![Pane::General, Pane::Output];
+    if Pane::Modes.shown(ui) {
+        panes.push(Pane::Modes);
+    }
+    panes.push(Pane::History);
     #[cfg(hex_capture)]
     let optional = [
         Pane::Captures,
@@ -209,17 +215,23 @@ pub(super) struct Store {
     pub(super) tab: Tab,
     /// The chip selected: only this group's labs show.
     pub(super) group: Option<Group>,
-    /// Labs › Voice prompt's phrase while it's on: a draft, so invalid words
+    /// Labs › Rewrite by voice's phrase while it's on: a draft, so invalid words
     /// stay in its field instead of replacing the saved phrase.
     pub(super) phrase: TextEdit,
     /// Whether `phrase` started from the saved phrase.
     pub(super) phrase_synced: bool,
-    /// Labs › Browser access to the local API's origins while it's on: a
-    /// draft, saved as the comma-separated field shows it.
-    pub(super) origins: TextEdit,
-    /// Whether `origins` started from the saved origins.
-    pub(super) origins_synced: bool,
+    /// Labs › Stop phrase's phrase while it's on: a draft, so invalid words
+    /// stay in its field instead of replacing the saved phrase.
+    pub(super) stop_phrase: TextEdit,
+    /// Whether `stop_phrase` started from the saved phrase.
+    pub(super) stop_phrase_synced: bool,
+    /// The lab a `hex://labs/<feature>` link named and when, so its card
+    /// shows a focus border for [`FLASH`].
+    pub(super) flash: Option<(&'static str, std::time::Instant)>,
 }
+
+/// How long a linked lab's card keeps its focus border.
+pub(super) const FLASH: std::time::Duration = std::time::Duration::from_millis(1500);
 
 impl Store {
     fn query(&self) -> String {
@@ -259,52 +271,39 @@ impl Store {
         !draft.is_empty() && draft != settings.labs.voice_prompt_phrase
     }
 
-    /// Starts the origins field at the saved origins, normalized.
-    pub(super) fn sync_origins(&mut self, saved: &[String]) {
-        self.origins = TextEdit::new(origins_text(saved));
-        self.origins_synced = true;
+    /// Starts Stop phrase's field at `saved` when Labs opens or its lab turns
+    /// on.
+    pub(super) fn sync_stop_phrase(&mut self, saved: &str) {
+        self.stop_phrase = TextEdit::new(saved.to_owned());
+        self.stop_phrase_synced = true;
     }
 
-    /// Adopts origins another writer saved, unless the field holds an unsaved
-    /// draft. The field's own save passes the same list on both sides and
-    /// leaves the text (and its caret) as typed.
-    pub(super) fn rebase_origins(&mut self, before: &[String], after: &[String]) {
-        let before = crate::app_settings::normalize_browser_origins(before);
-        let after = crate::app_settings::normalize_browser_origins(after);
-        if before == after {
-            return;
-        }
-        let draft = crate::app_settings::parse_browser_origins(&self.origins.text);
-        if !self.origins_synced || draft == before {
-            self.sync_origins(&after);
+    /// Adopts a phrase another writer saved, unless the field holds an
+    /// unsaved draft.
+    pub(super) fn rebase_stop_phrase(&mut self, before: &str, after: &str) {
+        if !self.stop_phrase_synced || self.stop_phrase.text.trim() == before {
+            self.sync_stop_phrase(after);
         }
     }
 
-    /// The origins `settings` should hold: the field's entries, ignoring
-    /// anything that isn't an `http://` or `https://` origin. A lab that's
-    /// off, or a field this window never opened, leaves its saved list alone.
-    pub(super) fn project_origins(&self, settings: &mut crate::app_settings::AppSettings) {
-        if !settings.labs.api_browser_access || !self.origins_synced {
-            return;
+    /// The phrase Stop phrase's `settings` should hold: the draft when it
+    /// passes validation. An invalid draft never replaces the saved phrase.
+    pub(super) fn project_stop_phrase(&self, settings: &mut crate::app_settings::AppSettings) {
+        let draft = self.stop_phrase.text.trim();
+        if crate::dictation::voice_prompt::phrase_problem(draft).is_none() {
+            settings.labs.stop_phrase_text = draft.to_owned();
         }
-        settings.labs.api_browser_origins =
-            crate::app_settings::parse_browser_origins(&self.origins.text);
     }
 
-    /// Whether the origins field holds typing the saved origins don't have.
-    /// A lab that's off, or a field this window never opened, has no draft.
-    pub(super) fn origins_dirty(&self, settings: &crate::app_settings::AppSettings) -> bool {
-        if !settings.labs.api_browser_access || !self.origins_synced {
+    /// Whether Stop phrase's field holds typing the saved settings don't
+    /// have. A lab that's off has no draft to keep.
+    pub(super) fn stop_phrase_dirty(&self, settings: &crate::app_settings::AppSettings) -> bool {
+        if !settings.labs.stop_phrase {
             return false;
         }
-        crate::app_settings::parse_browser_origins(&self.origins.text)
-            != crate::app_settings::normalize_browser_origins(&settings.labs.api_browser_origins)
+        let draft = self.stop_phrase.text.trim();
+        !draft.is_empty() && draft != settings.labs.stop_phrase_text
     }
-}
-
-/// The saved origins as the card's comma-separated field shows them.
-fn origins_text(origins: &[String]) -> String {
-    crate::app_settings::normalize_browser_origins(origins).join(", ")
 }
 
 /// What a `hex://labs` link asks the store to show.
@@ -352,8 +351,15 @@ pub(super) fn reveal(ui: &mut Ui, link: &LabsLink, tx: &mut Tx) {
     }
     let Some(id) = &link.lab else { return };
     match shown(ui).into_iter().find(|row| row.lab.id() == id) {
-        Some(row) if link.category.is_none() => ui.lab_store.group = Some(row.group),
-        Some(_) => {}
+        Some(row) => {
+            if link.category.is_none() {
+                ui.lab_store.group = Some(row.group);
+            }
+            let id = row.lab.id();
+            ui.lab_store.flash = Some((id, std::time::Instant::now()));
+            tx.scroll_into_view(format!("lab-card-{id}"));
+            tx.wake_after(FLASH);
+        }
         None => tracing::warn!(feature = %id, "a Labs link named no feature this Hex has"),
     }
 }
@@ -365,7 +371,7 @@ fn open(ui: &mut Ui, tx: &mut Tx) {
     ui.lab_store
         .sync_phrase(&ui.settings.labs.voice_prompt_phrase);
     ui.lab_store
-        .sync_origins(&ui.settings.labs.api_browser_origins);
+        .sync_stop_phrase(&ui.settings.labs.stop_phrase_text);
     tx.settle();
 }
 
@@ -379,7 +385,9 @@ struct Row {
     lab: Lab,
     icon: &'static Icon,
     title: &'static str,
-    about: &'static str,
+    /// The card's description: translated copy, or a translated template
+    /// filled with this build's audio formats.
+    about: Cow<'static, str>,
     /// A line computed from this computer's state, shown in addition to
     /// `about` (the Live text card naming the models that stream, or the Live
     /// typing card explaining this desktop has no input method it can use).
@@ -400,17 +408,48 @@ fn shown(ui: &Ui) -> Vec<Row> {
         .collect()
 }
 
+pub(super) fn offered(ui: &Ui, feature: Feature) -> bool {
+    feature.audience() == crate::labs::Audience::Everyone
+        && shown(ui)
+            .iter()
+            .any(|row| row.lab.id() == feature.name() && !row.locked)
+}
+
+/// Search only the cards the current store can reveal. This also covers
+/// Annotate's build-specific card without inventing a second feature gate.
+fn find_cards(ui: &Ui) -> impl Iterator<Item = Row> {
+    shown(ui).into_iter().filter(|row| !row.locked)
+}
+
+pub(super) fn search_entries(
+    ui: &Ui,
+) -> impl Iterator<Item = (Lab, &'static str, Cow<'static, str>, &'static str)> {
+    find_cards(ui).map(|row| (row.lab, row.title, row.about, group::name(row.group)))
+}
+
+pub(super) fn reveal_card(ui: &mut Ui, lab: Lab, tx: &mut Tx) {
+    reveal(
+        ui,
+        &LabsLink {
+            lab: Some(lab.id().into()),
+            ..Default::default()
+        },
+        tx,
+    );
+    tx.focus(row_key(lab), true);
+}
+
 fn rows(ui: &Ui) -> Vec<Row> {
     let caps = ui.platform.caps;
     let settings = &ui.settings;
-    let row = |feature: Feature, icon: Option<&'static Icon>, title, about| {
+    let row = |feature: Feature, icon: Option<&'static Icon>| {
         let lab = Lab::Feature(feature);
         let group = feature.group();
         Row {
             lab,
             icon: icon.unwrap_or_else(|| group::icon(group)),
-            title,
-            about,
+            title: tr(feature.title()),
+            about: tr(feature.summary()).into(),
             note: None,
             on: feature.on(settings),
             locked: false,
@@ -418,75 +457,46 @@ fn rows(ui: &Ui) -> Vec<Row> {
         }
     };
     // An organization's lock shows the row off, disabled, and says why.
-    let row = |feature: Feature, icon, title, about| match feature.managed() {
+    let row = |feature: Feature, icon| match feature.managed() {
         Some(_) => Row {
             on: false,
             locked: true,
-            about: super::managed_note(),
-            ..row(feature, icon, title, about)
+            about: super::managed_note().into(),
+            ..row(feature, icon)
         },
-        None => row(feature, icon, title, about),
+        None => row(feature, icon),
     };
     let mut rows = Vec::new();
     if caps.meetings {
-        rows.push(row(
-            Feature::Meetings,
-            Some(Pane::Meetings.icon()),
-            tr("Meetings (beta)"),
-            tr("Record calls and keep transcripts"),
-        ));
+        rows.push(row(Feature::Meetings, Some(Pane::Meetings.icon())));
     }
     if caps.fun && Feature::VoiceFilter.managed().is_some() {
-        rows.push(row(
-            Feature::VoiceFilter,
-            Some(&VOICE_FILTER_ICON),
-            tr("Voice Filter"),
-            "",
-        ));
+        rows.push(row(Feature::VoiceFilter, Some(&VOICE_FILTER_ICON)));
     } else if caps.fun {
         let locked = super::fun::driver_installed(ui);
+        let voice_filter = row(Feature::VoiceFilter, Some(&VOICE_FILTER_ICON));
         rows.push(Row {
             on: super::fun::running(ui),
             locked,
             about: if locked {
-                tr("On while the Hex Microphone driver is installed. Uninstall the driver in Voice Filter to turn it off.")
+                tr("On while the Hex Microphone driver is installed. Uninstall the driver in Voice Filter to turn it off.").into()
             } else {
-                tr("Hex Microphone virtual input and real-time voice filters")
+                voice_filter.about.clone()
             },
-            ..row(Feature::VoiceFilter, Some(&VOICE_FILTER_ICON), tr("Voice Filter"), "")
+            ..voice_filter
         });
     }
-    rows.push(row(
-        Feature::Playground,
-        Some(&SPARKLES),
-        "Playground",
-        tr("Scene and story browser in the window"),
-    ));
-    let live_text = row(
-        Feature::LiveText,
-        Some(&WAVE),
-        tr("Live text"),
-        tr("Show provisional words beside the HUD while dictating"),
-    );
+    rows.push(row(Feature::Playground, Some(&SPARKLES)));
+    let live_text = row(Feature::LiveText, Some(&WAVE));
     rows.push(Row {
         note: live_text_note(ui),
         ..live_text
     });
-    rows.push(row(
-        Feature::FailureNotices,
-        None,
-        tr("Failure notices"),
-        tr("Show why a dictation failed beside the HUD"),
-    ));
+    rows.push(row(Feature::FasterLiveText, None));
+    rows.push(row(Feature::FailureNotices, None));
+    rows.push(row(Feature::StopPhrase, None));
     if caps.os == super::platform::Os::Linux && ui.platform.wayland {
-        let live_typing = row(
-            Feature::LiveTyping,
-            Some(&KEYBOARD),
-            tr("Live typing"),
-            tr(
-                "Show provisional words in the focused text field while dictating on Wayland, then type the final text there",
-            ),
-        );
+        let live_typing = row(Feature::LiveTyping, Some(&KEYBOARD));
         // An organization's lock and its note already say why the switch is
         // off; the desktop's own limit only replaces an unlocked card.
         if Feature::LiveTyping.managed().is_some() {
@@ -504,533 +514,223 @@ fn rows(ui: &Ui) -> Vec<Row> {
             });
         }
     }
-    rows.push(row(
-        Feature::SettingsSearch,
-        Some(SEARCH_ICON),
-        tr("Settings search"),
-        tr("Find any setting in General with a search field"),
-    ));
-    rows.push(row(
-        Feature::Appearance,
-        Some(&PANEL),
-        tr("Appearance"),
-        tr("Use light or dark for the main window instead of the system's"),
-    ));
-    rows.push(row(
-        Feature::ReleaseNotesLink,
-        None,
-        tr("Release notes link"),
-        tr("Show a link to this build's release notes in the sidebar footer"),
-    ));
+    rows.push(row(Feature::Appearance, Some(&PANEL)));
     if caps.meetings {
-        rows.push(row(
-            Feature::LiveChapters,
-            None,
-            tr("Live chapters"),
-            tr("Break meeting transcripts into chapters while recording"),
-        ));
-        rows.push(row(
-            Feature::SubtitleExport,
-            None,
-            tr("Subtitle export"),
-            tr("Export meeting transcripts as SRT or VTT subtitles with hex meetings show"),
-        ));
-        // macOS's meeting controller reads the call app's audio output, so
-        // Linux renders of macOS scenes leave it out.
+        rows.push(row(Feature::LiveChapters, None));
+        // macOS's status item lists them, from the meeting controller's own
+        // calendar read.
         if cfg!(target_os = "macos") {
-            rows.push(row(
-                Feature::StopWhenCallEnds,
-                Some(&TIMER),
-                tr("Stop when the call ends"),
-                tr("Stop a recording Hex started on its own 30 s after the call app leaves the microphone and goes quiet"),
-            ));
-            // Only macOS's capsules know the screen to snap a drag against.
-            rows.push(row(
-                Feature::MovableMeetingCapsules,
-                None,
-                tr("Movable meeting capsules"),
-                tr("Drag meeting capsules out of the way; they come back in the corner you left them"),
-            ));
+            rows.push(row(Feature::CalendarMenu, Some(&CLOCK)));
+            // macOS's Meetings settings draw the Calendars row's bulk button.
+            rows.push(row(Feature::CalendarSelectAll, Some(&CALENDAR)));
         }
-        rows.push(row(
-            Feature::MeetingNotesVocabulary,
-            Some(&BOOK),
-            tr("Vocabulary in meeting notes"),
-            tr("Meeting titles and summaries read your vocabulary, so names are spelled the way you wrote them"),
-        ));
-        rows.push(row(
-            Feature::MeetingDescriptiveFilenames,
-            None,
-            tr("Descriptive meeting file names"),
-            tr("Rename exported meeting Markdown to the meeting's title once notes or a rename provide one, keeping the date and time"),
-        ));
-        rows.push(row(
-            Feature::MeetingNotesFile,
-            None,
-            tr("Separate notes file"),
-            tr("Write the meeting's notes to their own file next to the transcript, sharing its name, with a link back to the transcript"),
-        ));
-        rows.push(row(
-            Feature::MeetingFinishedEvent,
-            Some(&GLOBE),
-            tr("Meeting finished event"),
-            tr("Tell apps on this computer when a meeting's transcript is ready. They get only the meeting's ID, through Hex's local API"),
-        ));
-        rows.push(row(
-            Feature::FollowLiveTranscript,
-            None,
-            tr("Follow live transcript"),
-            tr("While a meeting records, the transcript scrolls to the newest line. Scroll up to read earlier text; scroll back to the bottom to follow again."),
-        ));
-        rows.push(row(
-            Feature::MoreCallApps,
-            Some(&GLOBE),
-            tr("More call apps"),
-            tr("Offer to record calls in Signal, Telegram, WeChat, LINE, Webex, Element and the Phone app, and name calls on more websites."),
-        ));
         if Feature::MeetingImport.on_this_os() {
-            rows.push(row(
-                Feature::MeetingImport,
-                None,
-                tr("Import audio"),
-                tr("Add an audio file to Meetings and transcribe it on this Mac"),
-            ));
+            rows.push(row(Feature::MeetingImport, None));
         }
-        rows.push(row(
-            Feature::ExpireMeetingAudio,
-            Some(&CLOCK),
-            tr("Expire meeting audio separately"),
-            tr("Choose how long to keep meeting audio. Transcripts, notes, and summaries follow Keep meetings."),
-        ));
     }
-    rows.push(row(
-        Feature::VocabularyBiasing,
-        Some(&BOOK),
-        tr("Vocabulary biasing"),
-        tr("Bias Parakeet transcription toward your vocabulary; rewriting and search use it either way"),
-    ));
+    rows.push(row(Feature::VocabularyFiles, Some(&BOOK)));
     // macOS reads the focused window through Accessibility as a capture
     // becomes real.
     if caps.os == super::platform::Os::Macos {
-        rows.push(row(
-            Feature::ScreenVocabulary,
-            Some(&BOOK),
-            tr("Screen vocabulary"),
-            tr("Window names and terms become temporary vocabulary. Read locally, never saved."),
-        ));
+        rows.push(row(Feature::ScreenVocabulary, Some(&BOOK)));
+        // macOS reads back the field a dictation pasted into.
+        rows.push(row(Feature::LearnFromCorrections, Some(&BOOK)));
     }
     if caps.keyboard_model_switching {
-        rows.push(row(
-            Feature::KeyboardModelSwitching,
-            Some(&KEYBOARD),
-            tr("Switch model with keyboard language"),
-            tr("Changing input source selects its mapped model and language; manual choices still work"),
-        ));
-    }
-    if caps.app_model_switching {
-        rows.push(row(
-            Feature::AppModelSwitching,
-            Some(&KEYBOARD),
-            tr("Switch model with app"),
-            tr("Each mode can pick a speech model; Hex switches to it when you change apps"),
-        ));
+        rows.push(row(Feature::KeyboardModelSwitching, Some(&KEYBOARD)));
     }
     // Every OS's paster can leave a dictation on the clipboard; only macOS's
     // and Windows' can skip the paste.
-    rows.push(row(
-        Feature::KeepOnClipboard,
-        None,
-        tr("Keep dictation on clipboard"),
-        tr("Leave the dictation on the clipboard after pasting instead of restoring what was there"),
-    ));
+    rows.push(row(Feature::KeepOnClipboard, None));
+    // Every OS's paster can press Return after its paste.
+    rows.push(row(Feature::YoloMode, None));
     if matches!(
         caps.os,
         super::platform::Os::Macos | super::platform::Os::Windows
     ) {
-        rows.push(row(
-            Feature::CopyOnly,
-            None,
-            tr("Copy dictation only"),
-            tr("Put the dictation on the clipboard instead of pasting it"),
-        ));
+        rows.push(row(Feature::CopyOnly, None));
     }
     // macOS's paster can bring the app a capture started in back to the front.
     if caps.os == super::platform::Os::Macos {
-        rows.push(row(
-            Feature::ReturnToApp,
-            Some(&PANEL),
-            tr("Return to app"),
-            tr("If another app comes to the front while you dictate, Hex switches back to the app you started in before pasting. If it can't, nothing is pasted and Paste last dictation has the text."),
-        ));
+        rows.push(row(Feature::ReturnToApp, Some(&PANEL)));
         // macOS's listener answers a printing start when its dictation ends.
-        rows.push(row(
-            Feature::PrintStart,
-            None,
-            tr("Print-only CLI dictation"),
-            tr("Let hex dictation start --print answer with the transcript when it ends"),
-        ));
     }
     // macOS's shortcut machine takes a shortcut without a key.
     if caps.os == super::platform::Os::Macos {
-        rows.push(row(
-            Feature::DoubleTapModifiers,
-            Some(&KEYBOARD),
-            tr("Double-tap on a lone modifier"),
-            tr("Let Double-tap shortcut mode work when the shortcut has no key, such as Option, Globe, or ⌃⌥"),
-        ));
+        rows.push(row(Feature::DoubleTapModifiers, Some(&KEYBOARD)));
+        // A held Option long enough keeps recording through a joining key.
+        rows.push(row(Feature::HoldThroughKeys, Some(&KEYBOARD)));
     }
     if caps.os == super::platform::Os::Macos {
-        rows.push(row(
-            Feature::MouseShortcuts,
-            Some(&MOUSE),
-            tr("Mouse shortcuts"),
-            tr("Record mouse buttons as shortcuts"),
-        ));
-        rows.push(row(
-            Feature::CapsLockDictation,
-            Some(&KEYBOARD),
-            tr("Caps Lock dictation"),
-            tr("Press Caps Lock to start dictation and again to finish. Hex keeps Caps Lock off and uses its light while it records and transcribes"),
-        ));
-        rows.push(row(
-            Feature::PauseBrowser,
-            Some(&GLOBE),
-            tr("Also pause the browser"),
-            tr("While dictating with Pause media: YouTube and other tabs, resumed only if Hex paused them"),
-        ));
+        rows.push(row(Feature::MouseShortcuts, Some(&MOUSE)));
+        rows.push(row(Feature::CapsLockDictation, Some(&KEYBOARD)));
+        rows.push(row(Feature::PauseBrowser, Some(&GLOBE)));
         // macOS's listener only, so Linux renders of macOS scenes leave it out.
         if cfg!(target_os = "macos") {
             // Up to four more, each with its own activation mode.
-            rows.push(row(
-                Feature::MoreDictationShortcuts,
-                Some(&KEYBOARD),
-                tr("More dictation shortcuts"),
-                tr("Up to four more shortcuts that each dictate like the main one, each with its own mode"),
-            ));
+            rows.push(row(Feature::MoreDictationShortcuts, Some(&KEYBOARD)));
             // Reads the text before the cursor through macOS Accessibility.
-            rows.push(row(
-                Feature::SmartSpacing,
-                None,
-                tr("Smart spacing"),
-                tr("Add a space before a dictation pasted right after a word"),
-            ));
+            rows.push(row(Feature::SmartSpacing, None));
             // macOS's recorder reads each modifier key's side.
-            rows.push(row(
-                Feature::SidedChords,
-                Some(&KEYBOARD),
-                tr("Sided modifier chords"),
-                tr("Record which side each modifier of a shortcut is on, such as Right ⌘ + Right ⌥"),
-            ));
+            rows.push(row(Feature::SidedChords, Some(&KEYBOARD)));
             // macOS's shortcut machine reads it at each Toggle release.
-            rows.push(row(
-                Feature::TapOrHold,
-                Some(&KEYBOARD),
-                tr("Tap or hold"),
-                tr("In Toggle mode, hold the shortcut to dictate until you let go; a short tap still starts and stops"),
-            ));
+            rows.push(row(Feature::TapOrHold, Some(&KEYBOARD)));
             // macOS's menu-bar menu lists them.
-            rows.push(row(
-                Feature::RecentDictations,
-                None,
-                tr("Copy recent dictations"),
-                tr("Copy one of your last five dictations from the menu bar, under Paste Last Dictation"),
-            ));
+            rows.push(row(Feature::RecentDictations, None));
             // macOS's status item hides itself while nothing records.
-            rows.push(row(
-                Feature::HideMenuBarIcon,
-                None,
-                tr("Hide menu bar icon"),
-                tr("Hide Hex's icon from the menu bar. Shortcuts keep working; open Hex again from Finder or Spotlight for Settings"),
-            ));
+            rows.push(row(Feature::HideMenuBarIcon, None));
             // macOS's status item offers Pause Hex while its keyboard
             // listener stays up.
-            rows.push(row(
-                Feature::PauseMenu,
-                None,
-                tr("Pause from menu bar"),
-                tr("Add Pause Hex to the menu bar. While paused, Hex ignores its shortcuts so other apps get the keys"),
-            ));
+            rows.push(row(Feature::PauseMenu, None));
             // macOS's app menu Quit Hex closes the window instead.
-            rows.push(row(
-                Feature::QuitClosesWindow,
-                None,
-                tr("⌘Q closes Settings"),
-                tr("⌘Q closes the Settings window instead of quitting Hex. Dictation keeps running; quit from the menu bar icon"),
-            ));
             // macOS's HUD reads the screen's notch from NSScreen.
-            rows.push(row(
-                Feature::NotchIndicator,
-                Some(&WAVE),
-                tr("Notch indicator"),
-                tr("On a screen with a notch, the recording indicator grows out of the notch instead of sitting below the menu bar"),
-            ));
+            rows.push(row(Feature::NotchIndicator, Some(&WAVE)));
             // Hex's session tap takes the shortcut; ScreenCaptureKit shoots.
             #[cfg(hex_capture)]
-            rows.push(row(
-                Feature::Screenshots,
-                Some(&CAMERA),
-                tr("Screenshots"),
-                tr("Press ⌘⇧4 to capture an area, or press Space for a window. The shot goes on the clipboard and into a folder"),
-            ));
+            rows.push(row(Feature::Screenshots, Some(&CAMERA)));
             // macOS 27's SCClipBufferingOutput keeps a rolling 15 s display ring in replayd.
             #[cfg(hex_capture)]
             if Feature::AnnotateReplay.on_this_os() {
-                rows.push(row(
-                    Feature::AnnotateReplay,
-                    Some(Pane::Annotate.icon()),
-                    tr("Annotate 15 s replay"),
-                    tr("Save the last 15 seconds of your screen. macOS shows the screen-recording dot the whole time it's on"),
-                ));
+                rows.push(row(Feature::AnnotateReplay, Some(Pane::Annotate.icon())));
             }
         }
     }
     // The ISO section key, left of 1, may be a shortcut with no modifier
-    // (Labs › Section key alone, Linux and macOS).
+    // (Labs › § key alone, Linux and macOS).
     if matches!(
         caps.os,
         super::platform::Os::Linux | super::platform::Os::Macos
     ) {
-        rows.push(row(
-            Feature::SectionKeyAlone,
-            Some(&KEYBOARD),
-            tr("Section key alone"),
-            tr("Use the key left of 1 on ISO keyboards, § or a dead key such as ^, alone as a shortcut; Hex takes it from every app while it's bound"),
-        ));
+        rows.push(row(Feature::SectionKeyAlone, Some(&KEYBOARD)));
+    }
+    // The microphone (dictation) key in a laptop keyboard's top row reports
+    // itself as Fn with key code 176, which macOS's recorder otherwise
+    // refuses (Labs › Microphone key alone, macOS).
+    if caps.os == super::platform::Os::Macos {
+        rows.push(row(Feature::MicrophoneKeyAlone, Some(&KEYBOARD)));
     }
     // Linux's X11 grabs and shortcuts portal take these keys alone.
     if caps.os == super::platform::Os::Linux {
-        rows.push(row(
-            Feature::StandaloneSpecialKeys,
-            Some(&KEYBOARD),
-            tr("Special keys alone"),
-            tr("Use Menu, Pause, or Scroll Lock as a shortcut without a modifier, such as Caps Lock remapped to Menu"),
-        ));
+        rows.push(row(Feature::StandaloneSpecialKeys, Some(&KEYBOARD)));
         // Linux's shortcut machine reads it with the listener's options.
-        rows.push(row(
-            Feature::TapOrHold,
-            Some(&KEYBOARD),
-            tr("Tap or hold"),
-            tr("In Toggle mode, hold the shortcut to dictate until you let go; a short tap still starts and stops"),
-        ));
-        rows.push(row(
-            Feature::GnomeClipboardRestore,
-            None,
-            tr("Restore clipboard on GNOME"),
-            tr("Put back what you copied before a dictation, through XWayland. Works only while XWayland is already running"),
-        ));
-        rows.push(row(
-            Feature::TypedText,
-            Some(&KEYBOARD),
-            tr("Transform typed text"),
-            tr("Adds a shortcut that runs your Output steps on text you typed and replaces it."),
-        ));
-        rows.push(row(
-            Feature::GnomeMeetingCapsules,
-            None,
-            tr("Floating meeting capsules on GNOME"),
-            tr("Show the recording offer and recording indicator floating over your call, through XWayland. Works only while XWayland is already running"),
-        ));
-        rows.push(row(
-            Feature::GnomeAnnotate,
-            None,
-            tr("Annotate on GNOME"),
-            tr("Show Annotate's recording capsule and ink over your screen, through XWayland. Works only while XWayland is already running; Esc can't stop drawing there, so use the capsule's pen button or let go of a held Annotate key"),
-        ));
+        rows.push(row(Feature::TapOrHold, Some(&KEYBOARD)));
+        rows.push(row(Feature::GnomeClipboardRestore, None));
+        rows.push(row(Feature::TypedText, Some(&KEYBOARD)));
+        rows.push(row(Feature::GnomeMeetingCapsules, None));
+        rows.push(row(Feature::GnomeAnnotate, None));
+        // Wayland's ScreenCast keeps one remembered screen; this one asks for
+        // the monitor under the pointer at each screen capture.
+        rows.push(row(Feature::AnnotatePointerScreen, None));
     }
     // Linux's and Windows' engines transcribe a whole clip on the CPU.
     if caps.os != super::platform::Os::Macos {
-        rows.push(row(
-            Feature::SkipPauses,
-            Some(&TIMER),
-            tr("Skip long pauses"),
-            tr("Shorten long pauses before a whole dictation goes to the model, so slow computers paste sooner"),
-        ));
+        rows.push(row(Feature::SkipPauses, Some(&TIMER)));
     }
-    rows.push(row(
-        Feature::UnloadIdle,
-        Some(&TIMER),
-        tr("Unload model when idle"),
-        tr("Frees the speech model's memory after a while unused; the next dictation reloads it"),
-    ));
-    rows.push(row(
-        Feature::RestoreShortcutDefault,
-        Some(&KEYBOARD),
-        tr("Restore shortcut default"),
-        tr("Offer Restore default next to Paste last dictation's shortcut"),
-    ));
-    rows.push(row(
-        Feature::SpokenFormatting,
-        None,
-        tr("Spoken formatting"),
-        tr("Say \"new line\", \"new paragraph\", \"open quote\", or \"close quote\" to insert line breaks and quotation marks"),
-    ));
-    rows.push(row(
-        Feature::SpokenSymbols,
-        None,
-        tr("Spoken symbols"),
-        tr("Say \"comma\", \"colon\", \"hashtag\", \"underscore\", or \"slash\" to insert the symbol joined to its words"),
-    ));
-    rows.push(row(
-        Feature::FillerWords,
-        None,
-        tr("Remove filler words"),
-        tr("Remove filler words such as um and uh from dictations, without an AI model"),
-    ));
-    rows.push(row(
-        Feature::HistoryStats,
-        None,
-        tr("Dictation stats"),
-        tr("Add a Stats button to History that shows a summary of your retained dictations, with hex history stats"),
-    ));
-    rows.push(row(
-        Feature::KeepRecordings,
-        None,
-        tr("Keep recordings"),
-        tr("Keep the audio of dictations saved to History, so you can transcribe them again with another model"),
-    ));
-    rows.push(row(
-        Feature::HistoryMultiSelect,
-        None,
-        tr("Select multiple dictations"),
-        tr("Shift-click, Cmd-click (Ctrl on Windows and Linux) or drag to select several dictations, then copy or delete them together"),
-    ));
-    rows.push(row(
-        Feature::OutputFixes,
-        Some(&BOOK),
-        tr("Fix results in Output"),
-        tr("Offer Vocabulary and Fix this beside Output's Try result, to correct a wrong result"),
-    ));
-    rows.push(row(
-        Feature::VoicePrompt,
-        None,
-        tr("Voice prompt"),
-        tr("Say \"rewrite this\" in a dictation, then an instruction; Hex applies it with the mode's OpenCode model"),
-    ));
-    rows.push(row(
-        Feature::PickerSortFilter,
-        None,
-        tr("Sort and filter models"),
-        tr("Sort the Local transcription picker by size or name and show only models for the saved language"),
-    ));
-    rows.push(row(
-        Feature::BenchmarkDetails,
-        None,
-        tr("Benchmark details"),
-        tr("Show each model's raw error rate, benchmark, and source in the Local transcription picker"),
-    ));
-    rows.push(row(
-        Feature::PickerActiveFirst,
-        None,
-        tr("Model in use first"),
-        tr("The speech model picker lists the model you're using first"),
-    ));
-    rows.push(row(
-        Feature::ModelInPlace,
-        None,
-        tr("Use model files where they are"),
-        tr("Add a speech model file without copying it, so several accounts can share one file"),
-    ));
-    rows.push(row(
-        Feature::PickerDownloaded,
-        None,
-        tr("Downloaded models only"),
-        tr("Show only downloaded speech models in the picker, with the space they take"),
-    ));
-    rows.push(row(
-        Feature::TranscribeFiles,
-        None,
-        tr("Transcribe files"),
-        tr("Adds hex transcribe <file> to turn a WAV recording into text with your dictation model."),
-    ));
-    rows.push(row(
-        Feature::ApiProcessing,
-        None,
-        tr("Process API transcripts"),
-        tr("Apps can ask Hex's local API for transcripts with Global mode's processing applied."),
-    ));
-    rows.push(row(
-        Feature::ApiTimestamps,
-        None,
-        tr("Timestamps in API transcripts"),
-        tr("Apps can ask Hex's local API for each segment's or word's start and end times."),
-    ));
-    rows.push(row(
-        Feature::ApiBrowserAccess,
-        Some(&GLOBE),
-        tr("Browser access to the local API"),
-        tr("Let web pages from these origins call Hex's local API. Requests still need the API token."),
-    ));
-    rows.push(row(
-        Feature::SpeakersOnly,
-        None,
-        tr("Only on speakers"),
-        tr("Apply \"While dictating\" only when sound plays through speakers. Headphones are left alone."),
-    ));
-    rows.push(row(
-        Feature::KeepMicrophoneOpen,
-        Some(&TIMER),
-        tr("Keep mic open after dictating"),
-        tr("With Turn off the mic when not dictating on, the microphone stays open for a while after each dictation, so the next one starts at once"),
-    ));
+    rows.push(row(Feature::UnloadIdle, Some(&TIMER)));
+    rows.push(row(Feature::SpokenFormatting, None));
+    rows.push(row(Feature::SpokenSymbols, None));
+    rows.push(row(Feature::FillerWords, None));
+    // macOS reads the pass through Apple Intelligence: a managed lock keeps
+    // the row it built (off, disabled, saying why), else the card says why.
+    if caps.os == super::platform::Os::Macos {
+        let clean_up = row(Feature::CleanUpWithAppleIntelligence, Some(&SPARKLES));
+        rows.push(match Feature::CleanUpWithAppleIntelligence.managed() {
+            Some(_) => clean_up,
+            None => Row {
+                locked: !ui.platform.notes.is_available() && !clean_up.on,
+                note: super::platform_settings::clean_up_note(ui.platform.notes),
+                ..clean_up
+            },
+        });
+        // The same local model, in the modes that opt in, instead of the
+        // OpenCode rewrite.
+        let neutral = row(Feature::NeutralVoice, Some(&SPARKLES));
+        rows.push(match Feature::NeutralVoice.managed() {
+            Some(_) => neutral,
+            None => Row {
+                locked: !ui.platform.notes.is_available() && !neutral.on,
+                note: super::platform_settings::clean_up_note(ui.platform.notes),
+                ..neutral
+            },
+        });
+    }
+    rows.push(row(Feature::HistoryStats, None));
+    rows.push(row(Feature::KeepRecordings, None));
+    rows.push(row(Feature::CopyDictationAudio, None));
+    // The picker is a Mac gesture and History; elsewhere neither exists.
+    if caps.os == super::platform::Os::Macos {
+        rows.push(row(Feature::PasteLastPicker, None));
+    }
+    rows.push(row(Feature::OutputFixes, Some(&BOOK)));
+    // The Modes editor's card carries its pane.
+    rows.push(row(Feature::ModesEditor, Some(Pane::Modes.icon())));
+    rows.push(row(Feature::VoicePrompt, None));
+    // macOS's Accessibility reads the text element's caret and nearby text.
+    if caps.os == super::platform::Os::Macos {
+        rows.push(Row {
+            note: Some(
+                tr("That text goes to the mode's OpenCode model, which may be a cloud provider. Password fields are never read.")
+                    .to_owned(),
+            ),
+            ..row(Feature::CursorContext, Some(&BOOK))
+        });
+    }
+    rows.push(row(Feature::PickerSortFilter, None));
+    rows.push(row(Feature::BenchmarkDetails, None));
+    rows.push(row(Feature::ModelInPlace, None));
+    // Metal has the K-quant kernels; the Vulkan builds embed shaders only for
+    // the catalog's types.
+    if caps.os == super::platform::Os::Macos {
+        rows.push(row(Feature::KQuantModels, None));
+    }
+    rows.push(row(Feature::PickerDownloaded, None));
+    // The card names the kinds the drop target offers, unless an
+    // organization's lock already says why it can't be used.
+    let drop = row(Feature::DropTranscribe, Some(&WAVE));
+    rows.push(match Feature::DropTranscribe.managed() {
+        Some(_) => drop,
+        None => Row {
+            about: tr_fill(
+                "Drop a {} file on the Hex window to save its transcript as a text file next to it",
+                super::drop_transcribe::formats(),
+            )
+            .into(),
+            ..drop
+        },
+    });
+    rows.push(row(Feature::ApiProcessing, None));
+    rows.push(row(Feature::ApiTimestamps, None));
+    rows.push(row(Feature::SpeakersOnly, None));
+    rows.push(row(Feature::KeepMicrophoneOpen, Some(&TIMER)));
     let ultra_locked = Feature::ParakeetUltra.managed().is_none()
         && Feature::ParakeetUltra.off_refusal(&ui.settings).is_some();
-    let ultra = row(Feature::ParakeetUltra, None, tr("Parakeet Ultra"), "");
+    let ultra = row(Feature::ParakeetUltra, None);
     // A managed row already says so.
-    rows.push(if ultra.locked {
+    rows.push(if ultra.locked || !ultra_locked {
         ultra
     } else {
         Row {
-            locked: ultra_locked,
-            about: if ultra_locked {
-                tr("On while it is the dictation model. Choose another model to turn it off.")
-            } else {
-                tr("Offer Parakeet Ultra, Moondream's post-trained Parakeet v3, in the Local transcription picker")
-            },
+            locked: true,
+            about: tr("On while it is the dictation model. Choose another model to turn it off.")
+                .into(),
             ..ultra
         }
     });
-    rows.push(row(
-        Feature::PhoneDictation,
-        Some(&PHONE),
-        tr("Phone dictation"),
-        tr("Dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi"),
-    ));
+    rows.push(row(Feature::PhoneDictation, Some(&PHONE)));
     if caps.share_shortcut {
-        rows.push(row(
-            Feature::ShareShortcut,
-            Some(&KEYBOARD),
-            tr("Share dictation shortcut with other apps"),
-            tr("Lets apps such as Discord detect the same key"),
-        ));
+        rows.push(row(Feature::ShareShortcut, Some(&KEYBOARD)));
     }
     if caps.os == super::platform::Os::Windows {
-        rows.push(row(
-            Feature::TerminalPaste,
-            Some(&TERMINAL),
-            tr("Terminal paste"),
-            tr("Paste with Ctrl+Shift+V so terminals accept it"),
-        ));
-        rows.push(row(
-            Feature::OpenCodeInWsl,
-            Some(&TERMINAL),
-            tr("OpenCode in WSL"),
-            tr("Use an OpenCode service running in your default WSL distribution for Modes rewriting and the Modes model picker. Looking for it can start WSL."),
-        ));
+        rows.push(row(Feature::TerminalPaste, Some(&TERMINAL)));
+        rows.push(row(Feature::OpenCodeInWsl, Some(&TERMINAL)));
+        // Windows's keyboard hook holds a modifier-only shortcut through a
+        // joining key.
+        rows.push(row(Feature::HoldThroughKeys, Some(&KEYBOARD)));
     }
     // Another shortcut dictates exactly like the main one, on every OS (#627).
-    rows.push(row(
-        Feature::SecondDictationShortcut,
-        Some(&KEYBOARD),
-        tr("Second dictation shortcut"),
-        tr("Another shortcut that dictates like the main one, such as a key on an external keyboard"),
-    ));
+    rows.push(row(Feature::SecondDictationShortcut, Some(&KEYBOARD)));
     if caps.os != super::platform::Os::Macos {
-        rows.push(row(
-            Feature::TerminalPasteShortcut,
-            Some(&TERMINAL),
-            tr("Terminal paste shortcut"),
-            tr("Another dictation shortcut that always pastes with Ctrl+Shift+V"),
-        ));
+        rows.push(row(Feature::TerminalPasteShortcut, Some(&TERMINAL)));
     }
     #[cfg(hex_capture)]
     if ui.platform.scrawl.is_some() {
@@ -1038,20 +738,44 @@ fn rows(ui: &Ui) -> Vec<Row> {
         // Annotate lock.
         let annotate_locked = crate::policy::Policy::current().locks(crate::policy::Lock::Annotate);
         let locked = annotate_locked || Feature::CopyCaptureZip.managed().is_some();
+        let copy_zip = row(Feature::CopyCaptureZip, Some(&FOLDER));
         rows.push(Row {
             locked,
             about: if locked {
-                super::managed_note()
+                super::managed_note().into()
             } else {
-                tr("A finished capture copies as one zip file, without video or audio.")
+                copy_zip.about.clone()
             },
             on: !locked && Feature::CopyCaptureZip.on(settings),
-            ..row(
-                Feature::CopyCaptureZip,
-                Some(&FOLDER),
-                tr("Copy captures as a zip"),
-                "",
-            )
+            ..copy_zip
+        });
+        // `hex annotate inspect|zoom|frames|skill` for coding agents: the
+        // same engine and Annotate lock as the copy above.
+        let agent_locked = annotate_locked || Feature::AnnotateAgentTools.managed().is_some();
+        let agent_tools = row(Feature::AnnotateAgentTools, Some(&TERMINAL));
+        rows.push(Row {
+            locked: agent_locked,
+            about: if agent_locked {
+                super::managed_note().into()
+            } else {
+                agent_tools.about.clone()
+            },
+            on: !agent_locked && Feature::AnnotateAgentTools.on(settings),
+            ..agent_tools
+        });
+        // The Annotate pane's Agents section writes that skill into each
+        // coding agent's folder and links hex onto PATH (macOS).
+        let install_locked = annotate_locked || Feature::AnnotateAgentInstall.managed().is_some();
+        let agent_install = row(Feature::AnnotateAgentInstall, Some(&TERMINAL));
+        rows.push(Row {
+            locked: install_locked,
+            about: if install_locked {
+                super::managed_note().into()
+            } else {
+                agent_install.about.clone()
+            },
+            on: !install_locked && Feature::AnnotateAgentInstall.on(settings),
+            ..agent_install
         });
         let locked = annotate_locked;
         rows.push(Row {
@@ -1059,9 +783,9 @@ fn rows(ui: &Ui) -> Vec<Row> {
             icon: Pane::Annotate.icon(),
             title: tr("Annotate"),
             about: if locked {
-                super::managed_note()
+                super::managed_note().into()
             } else {
-                tr("Record your screen, draw on it, and talk over it with a shortcut")
+                tr("Record your screen, draw on it, and talk over it with a shortcut").into()
             },
             note: None,
             on: !locked && ui.settings.capture.enabled,
@@ -1132,25 +856,25 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::VoiceFilter => "lab-voice-filter",
         Feature::Playground => "lab-playground",
         Feature::LiveText => "lab-live-text",
+        Feature::FasterLiveText => "lab-faster-live-text",
         Feature::FailureNotices => "lab-failure-notices",
         Feature::LiveTyping => "lab-live-typing",
         Feature::LiveChapters => "lab-live-chapters",
-        Feature::VocabularyBiasing => "lab-vocabulary-biasing",
         Feature::ScreenVocabulary => "lab-screen-vocabulary",
+        Feature::LearnFromCorrections => "lab-learn-from-corrections",
         Feature::TerminalPaste => "lab-terminal-paste",
         Feature::KeyboardModelSwitching => "lab-keyboard-model-switching",
-        Feature::AppModelSwitching => "lab-app-model-switching",
         Feature::MouseShortcuts => "lab-mouse-shortcuts",
         Feature::PauseBrowser => "lab-pause-browser",
         Feature::ShareShortcut => "lab-share-shortcut",
         Feature::UnloadIdle => "lab-unload-idle",
-        Feature::RestoreShortcutDefault => "lab-restore-shortcut-default",
         Feature::KeepOnClipboard => "lab-keep-on-clipboard",
         Feature::CopyOnly => "lab-copy-only",
         Feature::ReturnToApp => "lab-return-to-app",
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
-        Feature::SubtitleExport => "lab-subtitle-export",
+        Feature::CleanUpWithAppleIntelligence => "lab-clean-up",
+        Feature::NeutralVoice => "lab-neutral-voice",
         Feature::SecondDictationShortcut => "lab-second-dictation-shortcut",
         Feature::MoreDictationShortcuts => "lab-more-dictation-shortcuts",
         Feature::TerminalPasteShortcut => "lab-terminal-paste-shortcut",
@@ -1166,48 +890,47 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::HistoryStats => "lab-history-stats",
         Feature::RecentDictations => "lab-recent-dictations",
         Feature::SkipPauses => "lab-skip-pauses",
-        Feature::StopWhenCallEnds => "lab-stop-when-call-ends",
         Feature::OutputFixes => "lab-output-fixes",
-        Feature::PickerActiveFirst => "lab-picker-active-first",
         Feature::ModelInPlace => "lab-model-in-place",
+        Feature::KQuantModels => "lab-k-quant-models",
         Feature::PickerDownloaded => "lab-picker-downloaded",
         Feature::SectionKeyAlone => "lab-section-key",
+        Feature::MicrophoneKeyAlone => "lab-microphone-key",
         Feature::KeepRecordings => "lab-keep-recordings",
-        Feature::HistoryMultiSelect => "lab-history-multi-select",
-        Feature::SettingsSearch => "lab-settings-search",
+        Feature::CopyDictationAudio => "lab-copy-dictation-audio",
+        Feature::PasteLastPicker => "lab-paste-last-picker",
         Feature::Appearance => "lab-appearance",
-        Feature::ReleaseNotesLink => "lab-release-notes-link",
         Feature::HideMenuBarIcon => "lab-hide-menu-bar-icon",
         Feature::PauseMenu => "lab-pause-menu",
-        Feature::QuitClosesWindow => "lab-quit-closes-window",
+        Feature::CalendarMenu => "lab-calendar-menu",
+        Feature::CalendarSelectAll => "lab-calendar-select-all",
         Feature::CapsLockDictation => "lab-caps-lock-dictation",
-        Feature::MovableMeetingCapsules => "lab-movable-meeting-capsules",
         Feature::GnomeClipboardRestore => "lab-gnome-clipboard-restore",
         Feature::TypedText => "lab-typed-text",
-        Feature::MeetingNotesVocabulary => "lab-meeting-notes-vocabulary",
         Feature::NotchIndicator => "lab-notch-indicator",
-        Feature::MeetingFinishedEvent => "lab-meeting-finished-event",
         Feature::GnomeMeetingCapsules => "lab-gnome-meeting-capsules",
         Feature::GnomeAnnotate => "lab-gnome-annotate",
+        Feature::AnnotatePointerScreen => "lab-annotate-pointer-screen",
         Feature::Screenshots => "lab-screenshots",
-        Feature::FollowLiveTranscript => "lab-follow-live-transcript",
-        Feature::MoreCallApps => "lab-more-call-apps",
         Feature::AnnotateReplay => "lab-annotate-replay",
         Feature::PhoneDictation => "lab-phone-dictation",
         Feature::CopyCaptureZip => "lab-copy-capture-zip",
+        Feature::AnnotateAgentTools => "lab-annotate-agent-tools",
+        Feature::AnnotateAgentInstall => "lab-annotate-agent-install",
         Feature::MeetingImport => "lab-meeting-import",
-        Feature::MeetingDescriptiveFilenames => "lab-meeting-descriptive-filenames",
-        Feature::MeetingNotesFile => "lab-meeting-notes-file",
-        Feature::ExpireMeetingAudio => "lab-expire-meeting-audio",
         Feature::OpenCodeInWsl => "lab-opencode-in-wsl",
-        Feature::TranscribeFiles => "lab-transcribe-files",
+        Feature::YoloMode => "lab-yolo-mode",
         Feature::ApiProcessing => "lab-api-processing",
         Feature::ApiTimestamps => "lab-api-timestamps",
-        Feature::ApiBrowserAccess => "lab-api-browser-access",
         Feature::SpeakersOnly => "lab-speakers-only",
         Feature::KeepMicrophoneOpen => "lab-keep-microphone-open",
-        Feature::PrintStart => "lab-print-start",
         Feature::VoicePrompt => "lab-voice-prompt",
+        Feature::CursorContext => "lab-cursor-context",
+        Feature::StopPhrase => "lab-stop-phrase",
+        Feature::HoldThroughKeys => "lab-hold-through-keys",
+        Feature::ModesEditor => "lab-modes-editor",
+        Feature::DropTranscribe => "lab-drop-transcribe",
+        Feature::VocabularyFiles => "lab-vocabulary-files",
     }
 }
 
@@ -1239,20 +962,25 @@ fn flip(ui: &mut Ui, lab: Lab) {
     ui.update(|settings| feature.set(settings, on));
     match feature {
         Feature::KeyboardModelSwitching => ui.open = None,
-        // Its selects live only in the Modes pane, and they close with it.
-        Feature::AppModelSwitching => ui.open = None,
         // The card's duration menu closes when its lab does.
         Feature::KeepMicrophoneOpen => ui.open = None,
+        // Its application picker closes with it.
+        Feature::YoloMode => {
+            if ui.modes.picker_target == super::modes::PickerTarget::YoloMode {
+                ui.modes.application_picker_open = false;
+            }
+        }
         // The phrase field starts at the saved phrase, and an invalid draft
         // leaves with its lab.
         Feature::VoicePrompt => {
             let saved = ui.settings.labs.voice_prompt_phrase.clone();
             ui.lab_store.sync_phrase(&saved);
         }
-        // Its origins field starts at (and shows) the saved origins.
-        Feature::ApiBrowserAccess => {
-            let saved = ui.settings.labs.api_browser_origins.clone();
-            ui.lab_store.sync_origins(&saved);
+        // Its phrase field starts at the saved phrase, and an invalid draft
+        // leaves with its lab.
+        Feature::StopPhrase => {
+            let saved = ui.settings.labs.stop_phrase_text.clone();
+            ui.lab_store.sync_stop_phrase(&saved);
         }
         // A notice already on screen leaves with its lab.
         Feature::FailureNotices if !on => crate::rune_ui::live_text::dismiss_failure(),
@@ -1300,6 +1028,7 @@ fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
                 )
                 .child(keep_microphone_open_for(ui, p, layer)),
         ),
+        Lab::Feature(Feature::YoloMode) => Some(yolo_mode::body(ui, p, layer)),
         Lab::Feature(Feature::CapsLockDictation) => Some(
             row()
                 .key("caps-lock-light-row")
@@ -1329,7 +1058,9 @@ fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
                 .child(appearance_theme(ui, p)),
         ),
         Lab::Feature(Feature::VoicePrompt) => Some(voice_prompt::body(ui, p)),
-        Lab::Feature(Feature::ApiBrowserAccess) => Some(browser_access::body(ui, p)),
+        Lab::Feature(Feature::StopPhrase) => Some(stop_phrase::body(ui, p)),
+        // Wayland reports no file drags, so its card offers the file dialog.
+        Lab::Feature(Feature::DropTranscribe) => Some(super::drop_transcribe::card(p)),
         #[cfg(all(target_os = "macos", hex_capture))]
         Lab::Feature(Feature::Screenshots) => Some(screenshots::body(
             ui,

@@ -1,7 +1,6 @@
-//! The speech model and language a person can switch to: an input source's
-//! mapping in General, and a dictation mode's choice in Modes. Both show the
-//! picker's installed GGUF models plus Don't switch, then a language the
-//! model supports.
+//! The speech model and language an input source's mapping in General
+//! switches to: the picker's installed GGUF models plus Don't switch, then a
+//! language the model supports.
 
 use rune::{El, row};
 
@@ -11,12 +10,6 @@ use super::{Menu, Ui};
 use crate::app_settings::KeyboardModelChoice;
 use crate::desktop::i18n::tr;
 use crate::transcription::models::{self as transcription_models, ModelDefinition, ModelRuntime};
-
-/// Whether the Modes pane offers a speech choice per mode: Labs › Switch
-/// model with app is on where the runtime can follow the frontmost app.
-pub(super) fn enabled(ui: &Ui) -> bool {
-    ui.platform.caps.app_model_switching && ui.settings.labs.app_model_switching
-}
 
 /// One row's keys and copy.
 pub(super) struct SpeechRow<'a> {
@@ -150,7 +143,9 @@ fn language(
     layer: &mut Vec<El>,
 ) -> El {
     let current = transcription_models::language_name(&choice.language);
-    let codes = transcription_models::definition(choice.model).language_choices();
+    let codes = transcription_models::menu_order(
+        &transcription_models::definition(choice.model).language_choices(),
+    );
     if codes.len() <= 1 {
         return fixed_select(p, key, tr("Language"), current);
     }

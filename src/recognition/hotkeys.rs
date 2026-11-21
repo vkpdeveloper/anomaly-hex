@@ -144,12 +144,32 @@ impl Hotkeys {
             .any(DictationHotkey::is_recording)
     }
 
+    /// Labs › Stop phrase: ends whichever machine's hands-free capture records
+    /// now, as its own finishing press would, and reports which one it was. A
+    /// held press (Hold mode, or Toggle's push-to-talk) records on.
+    pub(super) fn finish_hands_free(&mut self) -> Option<(Shortcut, HotkeyAction)> {
+        let shortcut = Shortcut::all().find(|shortcut| {
+            self.machine(*shortcut)
+                .is_some_and(DictationHotkey::is_locked)
+        })?;
+        let action = self.machine_mut(shortcut)?.finish_hands_free()?;
+        Some((shortcut, action))
+    }
+
     /// The cancel shortcut of the recording that takes one, for the tap to
     /// keep from the app in front.
     pub(super) fn recording_cancel(&self) -> Option<crate::app_settings::RuntimeHotkey> {
         Shortcut::all()
             .filter_map(|shortcut| self.machine(shortcut))
             .find_map(DictationHotkey::recording_cancel)
+    }
+
+    /// Whether a held capture takes Escape at `now`, for the tap to keep it
+    /// from the app in front.
+    pub(super) fn takes_escape(&self, now: CaptureInstant) -> bool {
+        Shortcut::all()
+            .filter_map(|shortcut| self.machine(shortcut))
+            .any(|machine| machine.takes_escape(now))
     }
 
     pub(super) fn suppresses_recognition(&self) -> bool {

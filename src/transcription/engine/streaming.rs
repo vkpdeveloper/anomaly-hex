@@ -150,6 +150,39 @@ pub(super) fn stream_trailing_silence(model: &Model) -> usize {
     model.stream_trailing_silence()
 }
 
+/// Whether a dictation stream of `model` must end its text with closing
+/// sentence punctuation before it is trusted: Unified English's chunked
+/// decode drops the full stop or question mark its whole-clip run keeps often
+/// enough that the clip decides instead (issue 1933). Applies on every OS.
+pub(super) fn stream_requires_closing_mark(model: &Model) -> bool {
+    model.stream_requires_closing_mark()
+}
+
+/// Refuses a stream's `text` when it must close a sentence and, past trailing
+/// spaces and closing quotes or brackets, ends in something other than `.`,
+/// `?`, `!`, or `…`, so the whole clip decides instead. Text with nothing left
+/// by then is refused too: a stream that dropped its whole last words is no
+/// more trustworthy than one that dropped the mark. [`finish_stream`] rejects
+/// text that is empty outright.
+pub(super) fn check_closing_mark(text: String, required: bool) -> Result<String, String> {
+    if !required || has_closing_mark(&text) {
+        return Ok(text);
+    }
+    Err("the stream ended without closing sentence punctuation".into())
+}
+
+/// Whether `text` ends in a sentence mark once trailing spaces and closing
+/// quotes or brackets are stripped. Text with nothing left by then has no mark
+/// to judge and fails.
+fn has_closing_mark(text: &str) -> bool {
+    const CLOSERS: [char; 8] = ['"', '\'', '”', '’', ')', ']', '}', '»'];
+    text.trim_end()
+        .trim_end_matches(CLOSERS)
+        .chars()
+        .last()
+        .is_some_and(|last| matches!(last, '.' | '?' | '!' | '…'))
+}
+
 /// Pause audio a dictation stream still hears before its long pauses are
 /// cut: longer than a chunk plus its lookahead (2.08 s for Unified English),
 /// so the words before a pause decode during it.
@@ -172,10 +205,12 @@ pub(super) const UNTRANSCRIBED_SPEECH_SAMPLES: usize = 4_800;
 /// offline fallback, keeps every sample.
 ///
 /// It also checks the finalized text covers the speech the stream heard at
-/// both ends: speech well before its start means the stream lost its opening,
-/// speech well past its end means it dropped a phrase (#1101), and the whole
-/// clip decides. A raw decode carrying two different language tags means it
-/// changed language mid-clip, so the whole clip decides too.
+/// both ends: speech before its start that Hex did not itself play means the
+/// stream lost its opening, speech well past its end means it dropped a
+/// phrase (#1101), and the whole clip decides. The capture's own sounds (the
+/// pre-roll, the start tone) are ignored at the head. A raw decode carrying
+/// two different language tags means it changed language mid-clip, so the
+/// whole clip decides too.
 pub(super) struct PauseCap<'a, S> {
     stream: &'a mut S,
     speech: crate::transcription::pause_segmenter::SpeechFrames,
@@ -194,6 +229,9 @@ pub(super) struct PauseCap<'a, S> {
     heard: bool,
     /// Silence fed after the clip, just before finalizing.
     trailing_silence: usize,
+    /// Clip samples of Hex's own sounds at the capture's head: the pre-roll
+    /// and the start tone. Speech there is never a lost opening.
+    head_ignored: usize,
 }
 
 impl<'a, S: StreamFeed> PauseCap<'a, S> {
@@ -209,7 +247,15 @@ impl<'a, S: StreamFeed> PauseCap<'a, S> {
             dropped: 0,
             heard: false,
             trailing_silence,
+            head_ignored: 0,
         }
+    }
+
+    /// Ignores `head` clip samples when it judges a lost opening, as Hex's own
+    /// sounds at the capture's head are not speech the stream lost.
+    pub(super) fn ignoring_head(mut self, head: usize) -> Self {
+        self.head_ignored = head;
+        self
     }
 
     fn frame(&mut self, out: &mut Vec<f32>) {
@@ -287,20 +333,32 @@ impl<S: StreamFeed> StreamFeed for PauseCap<'_, S> {
             && let Some(start_ms) = self.stream.text_start_ms()
         {
             // The trailing check's slack and threshold, on the speech that
-            // ends before the text begins. Unlike the trailing check, a
-            // late-emitted first token moves t0 later, the unsafe direction
-            // here, so the cost is at most a whole-clip run.
+            // ends before the text begins, without Hex's own sounds at the
+            // capture's head. Unlike the trailing check, a late-emitted first
+            // token moves t0 later, the unsafe direction here, so the cost is
+            // at most a whole-clip run.
             let covered = (start_ms as usize * 16).saturating_sub(UNTRANSCRIBED_SLACK_SAMPLES);
-            let untranscribed = self
+            let frame = crate::transcription::pause_segmenter::FRAME_SAMPLES;
+            let (mut first, mut last, mut untranscribed) = (None, 0, 0);
+            for end in self
                 .speech_ends
                 .iter()
-                .filter(|&&end| end < covered)
-                .count()
-                * crate::transcription::pause_segmenter::FRAME_SAMPLES;
-            if untranscribed >= UNTRANSCRIBED_SPEECH_SAMPLES {
+                .copied()
+                .filter(|&end| end > self.head_ignored && end < covered)
+            {
+                first.get_or_insert(end);
+                last = end;
+                untranscribed += frame;
+            }
+            if untranscribed >= UNTRANSCRIBED_SPEECH_SAMPLES
+                && let Some(first) = first
+            {
                 return Err(format!(
-                    "the stream's text starts at {start_ms} ms but {} ms of speech precedes it",
-                    untranscribed / 16
+                    "the stream's text starts at {start_ms} ms but {} ms of speech precedes it, \
+                     from {} to {} ms",
+                    untranscribed / 16,
+                    (first - frame) / 16,
+                    last / 16
                 ));
             }
         }
@@ -550,4 +608,51 @@ pub(super) fn finish_stream(
         return Err("the stream returned no text".into());
     }
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_closing_mark;
+
+    #[test]
+    fn a_sentence_mark_ends_every_accepted_stream() {
+        for text in ["Done.", "Done?", "Done!", "Wait…"] {
+            assert_eq!(check_closing_mark(text.into(), true), Ok(text.into()));
+        }
+    }
+
+    #[test]
+    fn closing_quotes_and_brackets_do_not_hide_the_mark() {
+        for text in ["He said \"stop.\"", "(done.)", "«fini.»", "“Quoi ?”"] {
+            assert_eq!(check_closing_mark(text.into(), true), Ok(text.into()));
+        }
+    }
+
+    #[test]
+    fn a_stream_that_must_close_a_sentence_without_a_mark_falls_back() {
+        assert_eq!(
+            check_closing_mark("Done".into(), true),
+            Err("the stream ended without closing sentence punctuation".into())
+        );
+        assert_eq!(
+            check_closing_mark("He said \"stop\"".into(), true),
+            Err("the stream ended without closing sentence punctuation".into())
+        );
+    }
+
+    #[test]
+    fn a_missing_mark_is_accepted_when_the_model_does_not_require_one() {
+        assert_eq!(check_closing_mark("Done".into(), false), Ok("Done".into()));
+    }
+
+    #[test]
+    fn text_with_nothing_before_the_closers_fails_the_mark_check() {
+        for text in ["", "\")"] {
+            assert_eq!(
+                check_closing_mark(text.into(), true),
+                Err("the stream ended without closing sentence punctuation".into())
+            );
+            assert_eq!(check_closing_mark(text.into(), false), Ok(text.into()));
+        }
+    }
 }

@@ -62,13 +62,16 @@ transcript line starts with [mm:ss] and a speaker: You is the person who recorde
 and Them is one or more other participants. Name what most of the new lines are about in two to \
 five words, judging them on their own, and say what they cover in one short sentence. Then say \
 whether they are still about the current chapter named after them. Small talk, tangents, and follow-up questions on the same subject stay in the \
-current chapter. Use only what the transcript says; never invent names, dates, or numbers.";
+current chapter. Use only what the transcript says; never invent names, dates, or numbers. You \
+MUST name chapters and write their summaries in the language spoken in the transcript, even \
+though these instructions are in English; never translate them.";
 
 const REFINE_INSTRUCTIONS: &str = "You find where a finished meeting changed topic. Each \
 line starts with an L number, [mm:ss], and a speaker: You is the person who recorded the \
 meeting, and Them is one or more other participants. The lines run from the end of the chapter \
 before into the chapter after. List the L number of every line about the chapter after, \
-including the line that introduces it. Use only L numbers shown.";
+including the line that introduces it. Use only L numbers shown. The transcript may be in a \
+language other than English; that never changes which L numbers you list.";
 
 /// One topic of a meeting, from `start_ms` to the next chapter's start.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -834,9 +837,9 @@ pub(super) fn refine(
 }
 
 /// Corrects a finished meeting's live boundaries once and records them.
-/// The Markdown heading, and with its lab the exported file's name, follows
-/// a title the new chapters change. Failures leave the live chapters in
-/// place.
+/// The Markdown heading, and with Descriptive meeting file names the
+/// exported file's name, follows a title the new chapters change. Failures
+/// leave the live chapters in place.
 /// Each call first yields to dictation; a stop or quit ends the pass
 /// without recording anything, so the next notes run redoes it.
 pub(super) fn refine_meeting(directory: &Path, entries: &[TranscriptEntry], stop: &AtomicBool) {
@@ -918,7 +921,7 @@ pub(super) fn retitle_export(manifest: &mut MeetingManifest, previous: &str) {
         super::export_name::rename_to_title(
             manifest,
             &title,
-            crate::labs::meeting_descriptive_filenames(),
+            crate::app_settings::meeting_descriptive_filenames(),
         );
         super::notes_file::refresh(manifest);
     }

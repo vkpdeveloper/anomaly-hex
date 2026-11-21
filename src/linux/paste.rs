@@ -17,7 +17,9 @@ use x11rb::protocol::xproto::{ConnectionExt, KeyButMask};
 use x11rb::protocol::xtest;
 use x11rb::rust_connection::RustConnection;
 
+use crate::continuation::Continuation;
 use crate::linux::clipboard::{Selection, Snapshot};
+use crate::linux::input::activity;
 use crate::linux::input::{
     KEY_PRESS, KEY_RELEASE, Keymap, ShortcutKeys, XK_CONTROL_L, XK_SHIFT_L, connect_x11,
 };
@@ -27,6 +29,7 @@ use crate::linux::session::LinuxSession;
 const XK_A: u32 = 0x61;
 const XK_C: u32 = 0x63;
 const XK_V: u32 = 0x76;
+const XK_RETURN: u32 = 0xff0d;
 const HELPER_TIMEOUT: Duration = Duration::from_secs(3);
 const PASTE_SETTLE: Duration = Duration::from_millis(100);
 const PORTAL_FOCUS_SETTLE: Duration = Duration::from_millis(250);
@@ -52,6 +55,8 @@ pub(crate) struct LinuxPaster {
     keys: ShortcutKeys,
     selection: Selection,
     restore: Arc<Mutex<Restore>>,
+    /// The dictation the next one may join.
+    continuation: Continuation,
 }
 
 /// The clipboard a paste replaced, waiting to come back.
@@ -157,6 +162,8 @@ pub(crate) enum Chord {
     SelectAll,
     Copy,
     Paste,
+    /// Return alone, after a paste (Labs › YOLO mode).
+    Return,
 }
 
 impl WaylandKeys {
@@ -370,6 +377,26 @@ fn file_uri(path: &Path) -> Result<String> {
     Ok(uri)
 }
 
+/// The process's one paster for copies that outlive the call, such as a file
+/// on the clipboard: on X11 it serves the clipboard for as long as it lives,
+/// so what it copied stays pasteable. Built on first use from the saved
+/// terminal-paste preference.
+pub(crate) fn with_paster(use_it: impl FnOnce(&mut LinuxPaster) -> Result<()>) -> Result<()> {
+    static PASTER: Mutex<Option<LinuxPaster>> = Mutex::new(None);
+    let mut paster = PASTER.lock().unwrap_or_else(|error| error.into_inner());
+    if paster.is_none() {
+        let shift = crate::app_settings::AppSettings::load()
+            .map(|settings| settings.paste_with_shift)
+            .unwrap_or(false);
+        *paster = Some(LinuxPaster::new(
+            Arc::default(),
+            Arc::new(AtomicBool::new(shift)),
+            Default::default(),
+        )?);
+    }
+    use_it(paster.as_mut().expect("made above"))
+}
+
 impl LinuxPaster {
     pub(crate) fn new(
         stop: Arc<AtomicBool>,
@@ -394,6 +421,7 @@ impl LinuxPaster {
             keys,
             selection,
             restore: Arc::default(),
+            continuation: Continuation::default(),
         })
     }
 
@@ -421,7 +449,7 @@ impl LinuxPaster {
     }
 
     /// Puts `path` on the clipboard as a `text/uri-list` file, so a chat app
-    /// or agent attaches the file itself (Labs › Copy captures as a zip).
+    /// or agent attaches the file itself (Labs › Copy a capture as one file).
     pub(crate) fn copy_file_uri(&mut self, path: &Path) -> Result<()> {
         let uri = file_uri(path)?;
         let mut restore = self.restore.lock().unwrap_or_else(PoisonError::into_inner);
@@ -522,13 +550,23 @@ impl LinuxPaster {
         self.selection.current().restore(snapshot)
     }
 
-    /// Sends Ctrl+A, Ctrl+C, or Ctrl+V through this session's key path.
+    /// Labs › YOLO mode: presses Return after a paste, once the
+    /// paste has had [`crate::dictation::yolo_mode::SETTLE`] to land.
+    pub(crate) fn press_return(&mut self) -> Result<()> {
+        // Return sends the message, so the next dictation starts a new one.
+        self.continuation.clear();
+        thread::sleep(crate::dictation::yolo_mode::SETTLE);
+        self.send_chord(Chord::Return)
+    }
+
+    /// Sends Ctrl+A, Ctrl+C, Ctrl+V, or Return through this session's key
+    /// path.
     fn send_chord(&mut self, chord: Chord) -> Result<()> {
         match &mut self.backend {
             Backend::X11(paster) => paster.chord(chord, &self.stop, &self.keys),
             Backend::Wayland(wayland) => {
                 self.keys.settle(&self.stop)?;
-                wayland.send(&self.stop, chord, false)
+                activity::sending(|| wayland.send(&self.stop, chord, false))
             }
         }
     }
@@ -542,6 +580,23 @@ impl LinuxPaster {
         // paste's pending restore stands down.
         let keep = crate::labs::keep_on_clipboard();
         self.paste_as(Mime::Text, text.as_bytes(), None, shift, keep)
+    }
+
+    /// Pastes a dictation, joined onto the one before it when the person
+    /// did nothing in between, as macOS and Windows join them. Only where
+    /// [`activity`] reports their input; elsewhere it pastes as is.
+    pub(crate) fn paste_dictation(&mut self, text: &str, shift: bool) -> Result<()> {
+        let Some(revision) = activity::revision() else {
+            return self.paste(text, shift);
+        };
+        let text = self
+            .continuation
+            .join(revision, true, text)
+            .unwrap_or_else(|| text.to_string());
+        self.paste(&text, shift)?;
+        // Only a paste that reached the app is continued by the next one.
+        self.continuation.record(revision, true, text);
+        Ok(())
     }
 
     /// Pastes over a typed-text selection, then puts `original` back: the
@@ -573,6 +628,9 @@ impl LinuxPaster {
         shift: bool,
         keep: bool,
     ) -> Result<()> {
+        // Whatever this inserts, a dictation after it no longer follows the
+        // last one; a dictation's own paste records itself afterwards.
+        self.continuation.clear();
         let restore = self.restore.clone();
         let selection = self.selection.current();
         let mut state = restore.lock().unwrap_or_else(PoisonError::into_inner);
@@ -631,8 +689,7 @@ impl LinuxPaster {
                 // wl-copy's parent exits only after the selection is installed.
                 // Never read a pipe inherited by its clipboard-serving daemon.
                 self.keys.settle(&self.stop)?;
-                wayland
-                    .send(&self.stop, Chord::Paste, paste_with_shift)
+                activity::sending(|| wayland.send(&self.stop, Chord::Paste, paste_with_shift))
                     .map_err(|error| copied_only(error, paste_with_shift))?;
             }
         }
@@ -709,13 +766,18 @@ impl X11Paster {
         })
     }
 
-    /// Sends Ctrl+A, Ctrl+C, or Ctrl+V without touching the clipboard.
+    /// Sends Ctrl+A, Ctrl+C, Ctrl+V, or Return without touching the
+    /// clipboard.
     fn chord(&mut self, chord: Chord, stop: &AtomicBool, keys: &ShortcutKeys) -> Result<()> {
         self.wait_for_modifier_release(stop, keys)?;
         let key = match chord {
             Chord::SelectAll => self.keymap.keycode(XK_A)?,
             Chord::Copy => self.keymap.keycode(XK_C)?,
             Chord::Paste => self.v,
+            Chord::Return => {
+                let key = self.keymap.keycode(XK_RETURN)?;
+                return self.send_keys(&[(KEY_PRESS, key), (KEY_RELEASE, key)]);
+            }
         };
         self.send_keys(&[
             (KEY_PRESS, self.control),
@@ -829,6 +891,7 @@ impl X11Paster {
 const EVDEV_KEY_A: usize = 30;
 const EVDEV_KEY_C: usize = 46;
 const EVDEV_KEY_V: usize = 47;
+const EVDEV_KEY_ENTER: usize = 28;
 
 fn chord_keys(chord: Chord, with_shift: bool) -> Vec<String> {
     let (key, evdev, shift) = match chord {
@@ -836,7 +899,9 @@ fn chord_keys(chord: Chord, with_shift: bool) -> Vec<String> {
         Chord::Copy => ("c", EVDEV_KEY_C, false),
         // Only a paste reads the terminal-paste preference.
         Chord::Paste => ("v", EVDEV_KEY_V, with_shift),
+        Chord::Return => ("Return", EVDEV_KEY_ENTER, false),
     };
+    let control = chord != Chord::Return;
     // wtype numbers its keymap in order of first use from evdev code 1, so a
     // bare `-k v` sends evdev 1 (Escape in the standard keymap). Hyprland
     // reads virtual-keyboard keys through its configured layout to match
@@ -847,7 +912,9 @@ fn chord_keys(chord: Chord, with_shift: bool) -> Vec<String> {
     let mut keys: Vec<String> = (0..evdev - 1)
         .flat_map(|index| ["-p".to_owned(), format!("U{:04X}", 0x2460 + index)])
         .collect();
-    keys.extend(["-M".to_owned(), "ctrl".to_owned()]);
+    if control {
+        keys.extend(["-M".to_owned(), "ctrl".to_owned()]);
+    }
     if shift {
         keys.extend(["-M".to_owned(), "shift".to_owned()]);
     }
@@ -855,7 +922,9 @@ fn chord_keys(chord: Chord, with_shift: bool) -> Vec<String> {
     if shift {
         keys.extend(["-m".to_owned(), "shift".to_owned()]);
     }
-    keys.extend(["-m".to_owned(), "ctrl".to_owned()]);
+    if control {
+        keys.extend(["-m".to_owned(), "ctrl".to_owned()]);
+    }
     // GTK 3's reverse keymap lookup skips the final keycode. Keep the key
     // before a neutral VoidSymbol release so its shortcut remains discoverable
     // (#28).
@@ -1147,6 +1216,18 @@ mod tests {
                     ["-M", "ctrl", "-k", key, "-m", "ctrl", "-p", "VoidSymbol"]
                 );
             }
+        }
+    }
+
+    /// Labs › YOLO mode: Return alone, on `KEY_ENTER`, with no
+    /// Ctrl and whatever the paste preference.
+    #[test]
+    fn return_sends_no_modifier() {
+        for with_shift in [false, true] {
+            assert_eq!(
+                chord_keys(Chord::Return, with_shift)[(EVDEV_KEY_ENTER - 1) * 2..],
+                ["-k", "Return", "-p", "VoidSymbol"]
+            );
         }
     }
 
