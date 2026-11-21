@@ -1,8 +1,10 @@
 # Hex for Android
 
-A thin client for Hex: a floating button over any focused text field records
-you, sends the audio to a computer running Hex (Labs › Phone dictation), and
-types the transcript into the field. No model runs on the phone. Protocol:
+A thin client for Hex: a floating button, always on screen, records you,
+sends the audio to a computer running Hex (Labs › Phone dictation), and types
+the transcript into the focused text field (or copies it when none has
+focus). A silent, minimum-priority notification keeps the button's service in
+the foreground so battery savers don't stop it. No model runs on the phone. Protocol:
 [`docs/phone-dictation.md`](../docs/phone-dictation.md).
 
 ```sh
@@ -28,7 +30,8 @@ settings; the page says so.
 
 | File | Role |
 | --- | --- |
-| `HexAccessibilityService.kt` | shows the button over a focused editable field, records, sends, inserts at the cursor (paste as fallback) |
+| `HexAccessibilityService.kt` | keeps the button on screen, records, sends, inserts at the cursor (paste as fallback) |
+| `Foreground.kt` | the silent notification that keeps the service in the foreground |
 | `BubbleView.kt` | the button: idle mark, level bars, Thinking pill, short messages |
 | `Router.kt` | picks and caches the route (Tailscale first), probing all at once |
 | `HexClient.kt` | hello and transcription requests |

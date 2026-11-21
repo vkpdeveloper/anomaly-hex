@@ -26,9 +26,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Shows the Hex button while a text field has focus. A tap records, a second
- * tap sends the audio to the paired computer, and the transcript goes into
- * the field at the cursor.
+ * Keeps the Hex button on screen while the service runs. A tap records, a
+ * second tap sends the audio to the paired computer, and the transcript goes
+ * into the focused field at the cursor (or is copied when none has focus).
+ * A silent notification holds the service in the foreground so battery
+ * savers that kill background apps (OxygenOS) leave it running.
  */
 class HexAccessibilityService : AccessibilityService() {
     private lateinit var store: Store
@@ -36,15 +38,19 @@ class HexAccessibilityService : AccessibilityService() {
     private lateinit var windows: WindowManager
     private lateinit var bubble: BubbleView
     private lateinit var params: WindowManager.LayoutParams
+    private var shown = false
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    /** Whether the button's window is attached (it may be popping out). */
-    private var attached = false
     private var recorder: Recorder? = null
     private var settling = false
+    /** Whether a text field had focus at the last look. */
+    private var typing = false
     private val settle = Runnable {
         settling = false
-        refresh()
+        // Have the route ready when a field gains focus, before any tap.
+        val now = focusedField() != null
+        if (now && !typing) router.prewarm()
+        typing = now
     }
     private val clearMessage = Runnable {
         if (bubble.mode == BubbleView.Mode.MESSAGE || bubble.mode == BubbleView.Mode.DONE) idle()
@@ -75,6 +81,11 @@ class HexAccessibilityService : AccessibilityService() {
             y = store.bubbleY.takeIf { it >= 0 } ?: (resources.displayMetrics.heightPixels * 0.45f).toInt()
         }
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(network, main)
+        Foreground.start(this)
+        windows.addView(bubble, params)
+        shown = true
+        bubble.appear()
+        router.prewarm()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
@@ -93,7 +104,7 @@ class HexAccessibilityService : AccessibilityService() {
         recorder?.cancel()
         scope.cancel()
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network) }
-        if (attached) runCatching { windows.removeViewImmediate(bubble) }
+        if (shown) runCatching { windows.removeViewImmediate(bubble) }
         super.onDestroy()
     }
 
@@ -113,24 +124,6 @@ class HexAccessibilityService : AccessibilityService() {
             for (index in 0 until node.childCount) node.getChild(index)?.let(pending::addLast)
         }
         return null
-    }
-
-    /** Pops the button in over a focused field; keeps it while it's working. */
-    private fun refresh() {
-        val busy = bubble.mode != BubbleView.Mode.IDLE
-        if (busy || focusedField() != null) {
-            if (!attached) {
-                windows.addView(bubble, params)
-                attached = true
-                router.prewarm()
-            }
-            bubble.appear()
-        } else if (attached) {
-            bubble.disappear {
-                windows.removeView(bubble)
-                attached = false
-            }
-        }
     }
 
     private fun tap() {
@@ -262,14 +255,10 @@ class HexAccessibilityService : AccessibilityService() {
         main.postDelayed(clearMessage, 900)
     }
 
-    private fun idle() {
-        bubble.show(BubbleView.Mode.IDLE)
-        refresh()
-    }
+    private fun idle() = bubble.show(BubbleView.Mode.IDLE)
 
     private fun message(text: String) {
         bubble.show(BubbleView.Mode.MESSAGE, text)
-        refresh()
         main.removeCallbacks(clearMessage)
         main.postDelayed(clearMessage, 2_200)
     }
@@ -277,7 +266,7 @@ class HexAccessibilityService : AccessibilityService() {
     private fun drag(dy: Float) {
         val height = resources.displayMetrics.heightPixels
         params.y = (params.y + dy.toInt()).coerceIn(0, (height - bubble.height).coerceAtLeast(0))
-        if (attached) windows.updateViewLayout(bubble, params)
+        if (shown) windows.updateViewLayout(bubble, params)
     }
 
     private fun saveY() {

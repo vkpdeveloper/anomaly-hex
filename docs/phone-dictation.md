@@ -12,7 +12,7 @@ Phone pairs once
 │   name), then the code
 └── Tailscale or anywhere else -> "Enter an address" (host or host:port), then the code
 Hello -> the computer's routes, saved on the phone
-Each dictation -> the route picked when the Hex button appeared (cached 2 min,
+Each dictation -> the route picked when a text field gained focus (cached 2 min,
     dropped on any network change), else probe every allowed route at once and
     take the first in order that answers:
     ├── Automatic -> Tailscale, then Wi-Fi (LAN)

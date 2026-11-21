@@ -52,7 +52,7 @@ class BubbleView(
     /** Room around the circle for its shadow and the pulse rings. */
     private val margin = 12 * dp
 
-    // Springs: presence (pop in and out), press, rest (the mark, only while
+    // Springs: presence (pop in), press, rest (the mark, only while
     // idle), recording (the bars), expand (circle to pill), done (the check).
     private val presence = Spring(0f, stiffness = 520f, ratio = 0.62f)
     private val press = Spring(1f, stiffness = 900f, ratio = 0.5f)
@@ -75,7 +75,6 @@ class BubbleView(
     private var sweep = 0f
     private var lastFrame = 0L
     private var ticking = false
-    private var onGone: (() -> Unit)? = null
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -120,19 +119,9 @@ class BubbleView(
         describe()
     }
 
-    /** Pops in (again, if it was leaving). */
+    /** Pops in. */
     fun appear() {
-        onGone = null
         presence.target = 1f
-        tick()
-    }
-
-    /** Pops out, then [gone] runs once it has. */
-    fun disappear(gone: () -> Unit) {
-        if (presence.target == 0f) return
-        onGone = gone
-        presence.target = 0f
-        press.target = 1f
         tick()
     }
 
@@ -203,12 +192,6 @@ class BubbleView(
             moving = true
         }
 
-        if (presence.target == 0f && presence.value < 0.02f) {
-            presence.value = 0f
-            ticking = false
-            onGone?.also { onGone = null }?.invoke()
-            return
-        }
         if ((bodyWidth() + margin * 2).toInt() + 1 != widthBefore) requestLayout()
         invalidate()
         if (moving) {
@@ -389,7 +372,6 @@ class BubbleView(
 
     @SuppressLint("ClickableViewAccessibility") // performClick runs on tap.
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (presence.target == 0f) return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downY = event.rawY

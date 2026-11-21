@@ -238,10 +238,11 @@ substitute for source inspection or a second roadmap.
   else 47213, else a free one in 47300..48900) to private and Tailscale
   peers holding the pairing code, advertises `_hex-phone._tcp` on the LAN,
   and transcribes through `transcription/service` like the local API.
-  `android/` is Hex for Android in Kotlin: an accessibility-service button
-  over focused text fields that records 16 kHz audio, sends it on a
-  pre-picked route (Tailscale first), and inserts the transcript, which
-  went through Global's Output steps as a desktop dictation does.
+  `android/` is Hex for Android in Kotlin: an always-on accessibility-service
+  button (held in the foreground by a silent notification) that records
+  16 kHz audio, sends it on a pre-picked route (Tailscale first), and
+  inserts the transcript, which went through Global's Output steps as a
+  desktop dictation does.
   Contract: [`docs/phone-dictation.md`](docs/phone-dictation.md).
 - `sdk/typescript`: Promise and Effect v4 host wrappers for direct-child
   lifecycle, authenticated model preparation, and host-audio transcription.

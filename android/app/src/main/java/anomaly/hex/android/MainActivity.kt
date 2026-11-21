@@ -199,7 +199,7 @@ private fun AccessibilityStep(on: Boolean) {
     val context = LocalContext.current
     Step(2, "Hex button", on) {
         if (on) {
-            Note("Shows beside any text field you type in.")
+            Note("Stays on screen over your apps.")
             return@Step
         }
         Note("Turn on Hex dictation in Accessibility so the button can appear over your apps and type what you say.")
