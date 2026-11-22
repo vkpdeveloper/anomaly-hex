@@ -2975,6 +2975,17 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   (HinglishTest; unit tests only, no device run)
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Write one spelling of a word far more ("nhi", "colour") -> the strip, autocorrect,
+│   predictions and glides give yours; distinct words never merge ("main", "mein");
+│   Hindi spellings only once English's model has loaded (SpellingsTest,
+│   SpellingPreferenceTest; unit tests only, no device run)
+├── Type a personal-dictionary shortcut -> its phrase in the strip; a tap puts it in,
+│   space leaves the shortcut as typed
+├── Type an email address -> addresses that complete it in the strip: the phone's
+│   accounts, ones typed before (never learned in password or incognito fields) and,
+│   with Keyboard > Suggest contacts' emails (off) and the Contacts permission,
+│   contacts'; first in email fields, last elsewhere (AddressesAndShortcutsTest;
+│   unit tests only, no device run)
 └── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)
     ├── Tap the toolbar's spellcheck button (English or Hinglish layout) -> fix words
     │   within 1,000 characters of the caret

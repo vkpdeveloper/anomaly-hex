@@ -54,4 +54,43 @@ class LearnedWordsTest {
         copy.clear()
         assertTrue(copy.words().isEmpty())
     }
+
+    @Test fun theSpellingYouWriteFarMoreIsPreferred() {
+        val learned = LearnedWords()
+        val alike = { a: String, b: String -> Spellings.hindi(a, b) }
+        repeat(2) { learned.learn("nhi", null, false) }
+        assertNull("two uses may be slips", learned.preferred("nahi", alike))
+        learned.learn("nhi", null, false)
+        assertEquals("nhi", learned.preferred("nahi", alike))
+        assertEquals("nhi", learned.preferred("Nahin", alike))
+        assertNull("yours already", learned.preferred("nhi", alike))
+        // Your other spelling, used often enough, isn't put aside.
+        learned.learn("nahi", null, false)
+        assertNull(learned.preferred("nahi", alike))
+        repeat(5) { learned.learn("nhi", null, false) }
+        assertEquals("nhi", learned.preferred("nahi", alike))
+        // Words that aren't alike never are, however often.
+        repeat(9) { learned.learn("mein", null, false) }
+        assertNull(learned.preferred("main", alike))
+        val copy = LearnedWords().apply { read(learned.write()) }
+        assertEquals("nhi", copy.preferred("nahi", alike))
+        copy.clear()
+        assertNull(copy.preferred("nahi", alike))
+    }
+
+    @Test fun typedAddressesAreOfferedMostUsedFirstAndSurviveASave() {
+        val learned = LearnedWords()
+        learned.learnAddress("Asha@example.com")
+        repeat(2) { learned.learnAddress("ashok@example.org") }
+        learned.learnAddress("bob@example.com")
+        assertEquals(listOf("ashok@example.org", "Asha@example.com"), learned.addresses("as"))
+        assertEquals(listOf("Asha@example.com"), learned.addresses("ASHA@"))
+        assertTrue(learned.addresses("bob@example.com").isEmpty())
+        val copy = LearnedWords().apply { read(learned.write() + "e\tnot an address\t3\n") }
+        assertEquals(learned.addresses("a"), copy.addresses("a"))
+        assertEquals(listOf("bob@example.com"), copy.addresses("b"))
+        assertTrue(copy.addresses("n").isEmpty())
+        copy.clear()
+        assertTrue(copy.addresses("a").isEmpty())
+    }
 }

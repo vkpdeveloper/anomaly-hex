@@ -81,7 +81,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         }.orEmpty()
         val upper = addsCapitals && (capitalize ?: startsSentence(text))
         val out = ArrayList<String>(3)
-        for (w in words) {
+        for (word in words) {
+            val w = decoder.preferred(word)?.let { matchCase(word, it) } ?: word
             val shown = if (upper) w.replaceFirstChar { it.uppercase() } else if (addsCapitals) displayed(w)
                 else if (decoder.personal?.owns(w) == true) w else w.lowercase()
             if (out.none { it.equals(shown, ignoreCase = true) }) out.add(shown)
@@ -100,28 +101,32 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     /** The strip while a word is typed (iOS AutocorrectEngine.suggestions): what was typed
      * ([Suggestion.Kind.Typed]), then what space will put in ([Suggestion.Kind.Fix]) or the likeliest
      * candidate, then the runner-up. An unfinished word that space leaves alone (no word yet, "th")
-     * gets three candidates instead. Candidates: a suggest-only English contraction ("ill" ->
-     * "I'll"), the likeliest completions of a 1–3 letter word after the word before, then, for a
-     * word of three letters or more, the decoder's other readings of the taps before completions by
-     * frequency (after two letters the word is usually unfinished: completions first). Never what was
-     * typed again. [autocorrect] off: no fix and no readings, completions only. */
+     * gets three candidates instead. Candidates: your shortcut's phrase ("addr"), which only a tap puts
+     * in, as on Gboard; your spelling of a word you typed another way ("nhi" for "nahi",
+     * [SpatialDecoder.preferred]); a suggest-only English contraction ("ill" -> "I'll"), the likeliest
+     * completions of a 1–3 letter word after the word before, then, for a word of three letters or
+     * more, the decoder's other readings of the taps before completions by frequency (after two
+     * letters the word is usually unfinished: completions first). Each in the spelling you write.
+     * Never what was typed again. [autocorrect] off: no fix and no readings, completions only. */
     fun strip(autocorrect: Boolean = true): List<Suggestion> {
         if (token.length !in 1..MAX_LENGTH) return emptyList()
         val typed = Suggestion(token, Suggestion.Kind.Typed)
-        // Your shortcut: what you typed and its phrase, which space puts in whatever autocorrect does.
-        decoder.personal?.shortcut(token)?.let { return listOf(typed, Suggestion(it, Suggestion.Kind.Fix)) }
+        val shortcut = decoder.personal?.shortcut(token)
         val fix = if (autocorrect) replacement() else null
         val pool = ArrayList<String>(4)
         val lower = token.lowercase()
-        val showTyped = fix != null || blocked(token) || knows(lower)
+        val showTyped = fix != null || shortcut != null || blocked(token) || knows(lower)
         val size = if (showTyped) 2 else 3
         val lowered = !addsCapitals && token.none { it.isUpperCase() }
-        fun add(word: String) {
+        fun add(candidate: String) {
+            val word = preferredSpelling(candidate)
             val s = if (lowered && decoder.personal?.owns(word) != true) word.lowercase() else word
             if (pool.size < size && !s.equals(token, ignoreCase = true) && pool.none { it.equals(s, ignoreCase = true) } &&
                 !blocked(s)) pool.add(s)
         }
         fix?.let { pool.add(it) }
+        shortcut?.let { pool.add(it) }
+        if (fix == null) decoder.preferred(lower)?.let { add(matchCase(token, it)) }
         if (autocorrect && fix == null && model.spelling == "en") suggestOnly[lower]?.let { add(matchCase(token, it)) }
         // Your own word, completed once two letters match, before the dictionary's: a word you added is
         // likelier what you mean than a reading's runner-up ("zor" offers "Zorbex" beside the fix "or").
@@ -144,6 +149,13 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         return if (showTyped) listOf(typed) + words else words
     }
 
+    // The spelling you write of a candidate, cased as it is; the candidate itself while it completes what
+    // was typed and yours doesn't ("nah" offers "nahi", not "nhi").
+    private fun preferredSpelling(word: String): String {
+        val yours = decoder.preferred(word) ?: return word
+        if (word.startsWith(token, ignoreCase = true) && !yours.startsWith(token, ignoreCase = true)) return word
+        return matchCase(word, yours)
+    }
     // A candidate cased as the word was typed, with the capital the strip shows for names.
     private fun shown(word: String) = matchCase(token, if (token.firstOrNull()?.isUpperCase() == true) word else displayed(word))
     fun letter(text: String, x: Double, y: Double, grid: KeyGrid) {
@@ -160,10 +172,15 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     }
     private val glider by lazy { GlideDecoder(model) }
     /** The words a glide spells after `before` (the text before the cursor), likeliest first, spelled as
-     * the strip shows them: a name with its capital, your own word your way. */
+     * the strip shows them: a name with its capital, your own word your way, and the spelling you write
+     * of a word written several ways ("nhi" for "nahi"). */
     fun glide(path: List<KeyPoint>, grid: KeyGrid, before: String): List<String> =
         glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal, decoder.learned)
-            .map { if (it.personal) it.text else learnedSpelling(it.text) ?: displayed(it.text) }
+            .map { c ->
+                val yours = decoder.preferred(c.text)?.takeUnless(::blocked)
+                if (yours != null) learnedSpelling(yours) ?: displayed(yours)
+                else if (c.personal) c.text else learnedSpelling(c.text) ?: displayed(c.text)
+            }.distinct()
     // How you write a model word when you give it capitals it doesn't have ("hex" -> "Hex").
     private fun learnedSpelling(word: String) = decoder.learned?.spelling(word)?.takeIf { it != word && it.lowercase() == word }
     private fun decision() = decision ?: decoder.decide(token.lowercase(), taps, previous, suggestSwearWords).also { decision = it }
@@ -214,10 +231,6 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         return prefix in elisions && before.dropLast(1 + prefix.length).lastOrNull().let { boundary(it) }
     }
 
-    /** Your text replacement whose shortcut ends `before` (the text before the cursor), from the personal
-     * dictionary: on space, a closing mark or return, put it in before anything else, autocorrect on
-     * or off (iOS #2152, #2173). Null when no shortcut ends the text. */
-    fun textReplacement(before: String): Correction? = decoder.personal?.replacement(before)
     // A capitalised word of yours that is also an ordinary lowercase word ("Will", "Bill") stays
     // lowercase when typed so, as iOS's withoutStrayCapital.
     private fun ordinary(word: String) = word.lowercase().let { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 95 }
@@ -237,7 +250,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private fun withCapitals(): String? {
         if (token.isEmpty()) return null
         val personal = decoder.personal
-        personal?.shortcut(token)?.let { return it }
+        // Your shortcut stays as typed: its phrase is the strip's to offer.
+        if (personal?.shortcut(token) != null) return null
         // Your own word: never corrected into another, and spelled your way ("github" -> "GitHub").
         personal?.index(token)?.takeIf { it >= 0 }?.let { return yours(personal.text(it)).takeIf { s -> s != token } }
         if (literalOnly || blocked(token)) return null
@@ -257,7 +271,12 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (allCaps || !spatial) return null
         // A name, day or place typed in lowercase takes its capital ("mary" -> "Mary"), and so does a
         // German noun ("haus" -> "Haus"), as the capitals list beside the model says.
-        val fix = decision().replace?.let { if (decoder.personal?.owns(it) == true) yours(it) else cased(it) } ?: return capitalised(token)
+        // In the spelling you write, which may be what you typed ("nhi" when you write it, not "nahi").
+        val replace = decision().replace?.let { r ->
+            if (' ' in r || decoder.personal?.owns(r) == true) r else decoder.preferred(r)?.takeUnless(::blocked) ?: r
+        }
+        if (replace == null || replace.equals(token, ignoreCase = true)) return capitalised(token)
+        val fix = if (decoder.personal?.owns(replace) == true) yours(replace) else cased(replace)
         // A missed space after English "i" ("iwant") gives "I want", as "i" alone does.
         if (model.spelling == "en" && ' ' in fix) return fix.split(' ').joinToString(" ") { if (it == "i") "I" else it }
         // German's model is lowercase: a noun it corrects to takes its capital ("hsus" -> "Haus").

@@ -42,6 +42,11 @@ internal class TypingPreferences(context: Context) {
     var fixButton: Boolean
         get() = prefs.getBoolean(FIX_BUTTON, false)
         set(value) { prefs.edit().putBoolean(FIX_BUTTON, value).apply() }
+    /** Whether the strip offers your contacts' email addresses (`EmailAddresses`); it reads them only
+     * while Hex has the Contacts permission too. */
+    var contactEmails: Boolean
+        get() = prefs.getBoolean(CONTACT_EMAILS, false)
+        set(value) { prefs.edit().putBoolean(CONTACT_EMAILS, value).apply() }
     /** When the computer's words last arrived, in wall-clock milliseconds; 0 for never. */
     var historyWordsAt: Long
         get() = prefs.getLong("historyWordsAt", 0)
@@ -69,5 +74,6 @@ internal class TypingPreferences(context: Context) {
         const val LEARN_FROM_HISTORY = "learnFromHistory"
         const val FORGET_LEARNED = "forgetLearned"
         const val FIX_BUTTON = "fixButton"
+        const val CONTACT_EMAILS = "contactEmails"
     }
 }

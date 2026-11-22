@@ -15,8 +15,8 @@ internal interface Lexicon {
 /** Your own words and text shortcuts from Android's personal dictionary (`UserDictionary.Words`),
  * as iOS reads `UILexicon`: the decoder reads taps as them (a word you added is a word, scored as a
  * moderately common one), the strip completes them, a word typed in lowercase takes the capitals you
- * gave it ("github" -> "GitHub") unless it is also an ordinary word ("will"), and a shortcut is
- * replaced by its phrase (`replacement`). Words in the model's alphabet only; nothing is written. */
+ * gave it ("github" -> "GitHub") unless it is also an ordinary word ("will"), and a shortcut typed
+ * offers its phrase ([shortcut]). Words in the model's alphabet only; nothing is written. */
 internal class PersonalWords(private val model: TypingModel, words: Collection<String>, shortcuts: Map<String, String>) : Lexicon {
     private val codes: Array<ByteArray>
     private val texts: Array<String>
@@ -73,22 +73,6 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         val letters = typed.filter { it.isLetter() }
         val leading = typed.first().isUpperCase() && (letters.length < 2 || letters != letters.uppercase())
         return if (leading && stored.first().isLowerCase()) stored.replaceFirstChar { it.uppercase() } else stored
-    }
-
-    /** The text replacement whose shortcut ends `before` (the text before the cursor), as space, a
-     * closing mark or return finds it (iOS AutocorrectEngine.textReplacement): the longest one at a word
-     * boundary, digits and dots allowed ("ad2", "s.o"), after a bracket or comma ("(myem", "hi,myem"),
-     * never the end of a longer word ("xmyem"). Null when none ends the text. */
-    fun replacement(before: String): Correction? {
-        if (shortcuts.isEmpty() || before.lastOrNull()?.isWhitespace() != false) return null
-        val chunk = before.takeLast(64).takeLastWhile { !it.isWhitespace() }
-        fun joins(c: Char) = c.isLetterOrDigit() || c == '\'' || c == '\u2019'
-        for (start in chunk.indices) {
-            if (start > 0 && joins(chunk[start - 1]) && joins(chunk[start])) continue
-            val typed = chunk.substring(start)
-            shortcut(typed)?.let { return Correction(typed, it) }
-        }
-        return null
     }
 
     companion object {

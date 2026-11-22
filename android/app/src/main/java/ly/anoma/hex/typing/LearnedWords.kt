@@ -7,12 +7,19 @@ import kotlin.math.ln
  * and each word after another, went into a text field, typed or swiped here or counted in the paired
  * computer's Hex History ([seed]). The decoder, swipe typing and the strip mix it into the model's
  * likelihoods ([mixed]), so words you use win; a word the model lacks becomes one of yours once you've
- * used it twice ([words]), so a name you write swipes. Kept on the phone only; thread-safe. */
+ * used it twice ([words]), so a name you write swipes; of two spellings of one word the one you write
+ * wins ([preferred]). The email addresses you've typed are kept too ([addresses]). Kept on the phone
+ * only; thread-safe. */
 internal class LearnedWords {
     private class Seen(var typed: Int, var seeded: Int, var spelling: String) {
         val count get() = typed + seeded
     }
     private val words = HashMap<String, Seen>()
+    // The words in [words] by `Spellings.key`, so [preferred] reads a word's few other spellings.
+    private val spellings = HashMap<String, HashSet<String>>()
+    // Addresses by their lowercase, as typed and how often.
+    private class Address(var text: String, var uses: Int)
+    private val typedAddresses = HashMap<String, Address>()
     private val typedPairs = HashMap<String, Int>()
     private var seededPairs = HashMap<String, Int>()
     private var total = 0L
@@ -25,7 +32,7 @@ internal class LearnedWords {
     @Synchronized fun learn(word: String, previous: String?, sentenceStart: Boolean): Boolean {
         val lower = word.lowercase()
         if (!learnable(lower)) return false
-        val seen = words.getOrPut(lower) { Seen(0, 0, lower) }
+        val seen = entry(lower, lower)
         val was = seen.count >= WORD_USES
         seen.typed++; total++
         if (!sentenceStart) seen.spelling = word
@@ -40,22 +47,55 @@ internal class LearnedWords {
         for ((spelling, count) in counts) {
             val lower = spelling.lowercase()
             if (!learnable(lower) || count <= 0) continue
-            val seen = words.getOrPut(lower) { Seen(0, 0, spelling) }
+            val seen = entry(lower, spelling)
             if (seen.typed == 0) seen.spelling = spelling
             seen.seeded = count; total += count
         }
-        words.values.removeAll { it.count == 0 }
+        words.entries.filter { it.value.count == 0 }.forEach { forget(it.key) }
         seededPairs = HashMap<String, Int>().also { m -> for ((a, b, n) in pairs) if (n > 0) m[pair(a.lowercase(), b.lowercase())] = n }
         revision++
     }
 
-    @Synchronized fun clear() { words.clear(); typedPairs.clear(); seededPairs.clear(); total = 0; revision++ }
+    @Synchronized fun clear() {
+        words.clear(); spellings.clear(); typedPairs.clear(); seededPairs.clear(); typedAddresses.clear(); total = 0; revision++
+    }
 
     /** Your words, spelled your way, used at least twice: the ones the keyboard treats as words. */
     @Synchronized fun words(): List<String> = words.values.filter { it.count >= WORD_USES }.map { it.spelling }
 
     /** Your spelling of a word you've used, or null. */
     @Synchronized fun spelling(word: String): String? = words[word.lowercase()]?.spelling
+
+    /** The spelling you write of [word] (in lowercase) when you write another one of it far more: one that
+     * [alike] calls the same word, used at least [PREFERRED_USES] times and [PREFERRED_SHARE] times as
+     * often as [word], so a slip or two never turns it ("nhi" for one who writes it, not "nahi"). Null
+     * when [word] is yours already or none is. */
+    @Synchronized fun preferred(word: String, alike: (String, String) -> Boolean): String? {
+        val lower = word.lowercase()
+        var best: String? = null
+        var uses = maxOf(PREFERRED_USES, PREFERRED_SHARE * (words[lower]?.count ?: 0)) - 1
+        for (other in spellings[Spellings.key(lower)] ?: return null) {
+            val count = words[other]?.count ?: continue
+            if (other != lower && count > uses && alike(lower, other)) { best = other; uses = count }
+        }
+        return best
+    }
+
+    /** [address], a whole email address, went into a text field. */
+    @Synchronized fun learnAddress(address: String) {
+        val seen = typedAddresses.getOrPut(address.lowercase()) { Address(address, 0) }
+        seen.text = address; seen.uses++
+        if (typedAddresses.size > MAX_ADDRESSES)
+            typedAddresses.entries.sortedBy { it.value.uses }.take(typedAddresses.size - MAX_ADDRESSES * 9 / 10)
+                .forEach { typedAddresses.remove(it.key) }
+    }
+
+    /** The addresses you've typed that start with [prefix] (in any case) and are longer, most used first. */
+    @Synchronized fun addresses(prefix: String, limit: Int = 3): List<String> {
+        val lower = prefix.lowercase()
+        return typedAddresses.entries.asSequence().filter { (k, _) -> k.length > lower.length && k.startsWith(lower) }
+            .sortedByDescending { it.value.uses }.take(limit).map { it.value.text }.toList()
+    }
 
     /** -ln P(word | previous) by your own counts alone, or infinity for a word you never used. */
     @Synchronized fun cost(word: String, previous: String?): Double {
@@ -96,10 +136,11 @@ internal class LearnedWords {
             .map { words[it.key]?.spelling ?: it.key }
     }
 
-    /** One line per word and pair, tab-separated: `w spelling typed seeded`, `p first second typed`,
-     * `s first second seeded`. */
+    /** One line per word, pair and address, tab-separated: `w spelling typed seeded`, `p first second
+     * typed`, `s first second seeded`, `e address uses`. */
     @Synchronized fun write(): String = buildString {
         for (s in words.values) append("w\t").append(s.spelling).append('\t').append(s.typed).append('\t').append(s.seeded).append('\n')
+        for (a in typedAddresses.values) append("e\t").append(a.text).append('\t').append(a.uses).append('\n')
         for ((k, n) in typedPairs) append("p\t").append(k.replace(' ', '\t')).append('\t').append(n).append('\n')
         for ((k, n) in seededPairs) append("s\t").append(k.replace(' ', '\t')).append('\t').append(n).append('\n')
     }
@@ -113,11 +154,16 @@ internal class LearnedWords {
                     val typed = f[2].toIntOrNull() ?: continue; val seeded = f[3].toIntOrNull() ?: continue
                     val lower = f[1].lowercase()
                     if (!learnable(lower) || typed < 0 || seeded < 0) continue
-                    val seen = words.getOrPut(lower) { Seen(0, 0, f[1]) }
+                    val seen = entry(lower, f[1])
                     seen.typed += typed; seen.seeded += seeded; total += typed + seeded
                 }
                 f.size == 4 && f[0] == "p" -> f[3].toIntOrNull()?.let { typedPairs.merge(pair(f[1], f[2]), it, Int::plus) }
                 f.size == 4 && f[0] == "s" -> f[3].toIntOrNull()?.let { seededPairs[pair(f[1], f[2])] = it }
+                f.size == 3 && f[0] == "e" -> {
+                    val uses = f[2].toIntOrNull()?.takeIf { it > 0 } ?: continue
+                    if (!EmailAddresses.valid(f[1])) continue
+                    typedAddresses.getOrPut(f[1].lowercase()) { Address(f[1], 0) }.uses += uses
+                }
             }
         }
         revision++
@@ -127,13 +173,23 @@ internal class LearnedWords {
     private fun trim() {
         if (words.size > MAX_WORDS) {
             val drop = words.entries.sortedBy { it.value.count }.take(words.size - MAX_WORDS * 9 / 10)
-            for ((w, s) in drop) { words.remove(w); total -= s.count }
+            for ((w, s) in drop) { forget(w); total -= s.count }
             typedPairs.keys.removeAll { k -> k.substringBefore(' ') !in words || k.substringAfter(' ') !in words }
         }
         if (typedPairs.size > MAX_PAIRS) {
             val drop = typedPairs.entries.sortedBy { it.value }.take(typedPairs.size - MAX_PAIRS * 9 / 10).map { it.key }
             for (k in drop) typedPairs.remove(k)
         }
+    }
+
+    private fun entry(lower: String, spelling: String) = words.getOrPut(lower) {
+        spellings.getOrPut(Spellings.key(lower)) { HashSet(2) }.add(lower)
+        Seen(0, 0, spelling)
+    }
+    private fun forget(lower: String) {
+        words.remove(lower)
+        val key = Spellings.key(lower)
+        spellings[key]?.let { if (it.remove(lower) && it.isEmpty()) spellings.remove(key) }
     }
 
     private fun pairCount(first: String, second: String): Int {
@@ -148,6 +204,10 @@ internal class LearnedWords {
         const val WORD_USES = 2
         private const val MAX_WORDS = 20_000
         private const val MAX_PAIRS = 50_000
+        private const val MAX_ADDRESSES = 1_000
+        /** Uses, and times as many as the word itself, before your spelling of a word takes its place. */
+        const val PREFERRED_USES = 3
+        const val PREFERRED_SHARE = 4
         // How much of the blend is the model's, and how much of yours is the word after the one before.
         private const val MODEL_SHARE = 0.7
         private const val PAIR_SHARE = 0.6

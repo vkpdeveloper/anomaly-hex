@@ -33,6 +33,31 @@ swear words are enabled. The filter applies to completions, next words, autocorr
 both halves of a missed-space correction. Typing a listed word in full keeps your exact
 spelling; its literal chip accepts what you typed. The filter never changes the HXTM models.
 
+**Your spellings.** Hindi in Latin letters has no one spelling: nahi, nhi and nahin; acha, accha
+and achha; theek and thik; kya and kia. Once you write one spelling of a word at least three times,
+and four times as often as another, the strip, autocorrect, next-word predictions and glides give
+yours: typing "nahi" offers "nhi", and a slip aimed at "nahi" becomes "nhi". A spelling you type that
+is a word is only offered another, never replaced. British and American English spellings ("colour",
+"realise", "centre") work the same way on the English and Hinglish layouts. The
+[rules](app/src/main/java/ly/anoma/hex/typing/Spellings.kt) are narrow so two words never merge: main
+and mein, kya and kiya, bhi and bhai, hai and hain stay apart, and a word English's model has
+("sheet") is never read as Hindi. It counts what the keyboard already learns, so password fields and
+apps that ask for no personalised learning teach it nothing, and **Forget learned words** clears it.
+There is no setting.
+
+**Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
+tap it to replace the shortcut. Space, marks and return leave the shortcut as typed.
+
+**Email addresses.** While you type one, the strip offers addresses that complete it: the phone's
+accounts that Android shows Hex without a permission, addresses you've typed before, and, with
+**Keyboard › Suggest contacts' emails** (off by default; it asks for the Contacts permission), your
+contacts'. An address is learned once a space, comma, semicolon or return follows it, or you leave the
+field, and never in password fields, URL fields or apps that ask for no personalised learning. Email
+fields offer up to three from the first letter, before the strip's words, and a tap puts one in with
+no space after it. Elsewhere one address takes the strip's last slot once three characters match, and
+contacts' only after an @. Contacts are read in the background, at most 5,000, and again a moment
+after they change. Typed addresses stay on the phone with the learned words.
+
 **Keyboard › Fix button** is off by default. Turning it on downloads tinyfix's model and word
 lists (3.5 MB, MIT, pinned to one Hugging Face revision and checked by size and SHA-256) into
 the app's files; the APK ships none of it, and turning it off deletes them. The toolbar then
