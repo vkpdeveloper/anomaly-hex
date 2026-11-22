@@ -3,6 +3,7 @@ package ly.anoma.hex.keyboard
 import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.text.TextUtils
@@ -39,6 +40,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private fun color(id: Int) = context.getColor(id)
     private val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val toolbarHeight = px(if (landscape) KeyboardMetrics.TOOLBAR_LANDSCAPE else KeyboardMetrics.TOOLBAR)
+    private val shotHeight = toolbarHeight - px(6f)
     private val centre = px(if (landscape) KeyboardMetrics.TOOLBAR_CENTER_LANDSCAPE else KeyboardMetrics.TOOLBAR_CENTER)
     private val pill = px(KeyboardMetrics.PILL)
 
@@ -69,7 +71,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val chip = LinearLayout(context)
     private val chipIcon = ImageView(context)
     private val chipText = TextView(context)
-    private val chipImage = ImageView(context)
+    /** A copied image or new screenshot, shown whole at the strip's height in place of the chip. */
+    private val shot = ImageView(context)
     private var chipOffer: ChipOffer? = null
     private val noteText = TextView(context)
     private val undo = LinearLayout(context)
@@ -140,28 +143,24 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             background = pressable(color(R.color.kb_key), false, pill / 2f)
             setPadding(px(12f), 0, px(14f), 0); isFocusable = true
-            chipIcon.imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+            chipIcon.setImageResource(R.drawable.ic_clipboard); chipIcon.imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
             addView(chipIcon, LinearLayout.LayoutParams(px(20.2f), px(20.2f)).apply { marginEnd = px(8.2f) })
             chipText.apply {
                 text(this, 16.5f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             }
             addView(chipText, LinearLayout.LayoutParams(0, -2, 1f))
-            chipImage.apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true
-                background = GradientDrawable().apply { setColor(color(R.color.kb_function)); cornerRadius = px(5f).toFloat() }
-            }
-            addView(chipImage, LinearLayout.LayoutParams(px(44f), px(26f)))
-            setOnClickListener {
-                val offer = chipOffer ?: return@setOnClickListener
-                when (offer) {
-                    is ChipOffer.Text -> ime.engine.paste(offer.text)
-                    is ChipOffer.Image -> ime.clips.insert(offer.clip)
-                    is ChipOffer.Photo -> ime.clips.insert(offer.photo)
-                }
-                ime.clips.used(offer)
-            }
+            setOnClickListener { useOffer() }
         }
         addView(chip, LayoutParams(px(CHIP_WIDTH), pill, Gravity.CENTER))
+        shot.apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; isFocusable = true
+            background = GradientDrawable().apply { setColor(color(R.color.kb_function)); cornerRadius = px(6f).toFloat() }
+            foreground = GradientDrawable().apply {
+                setStroke(px(1f), color(R.color.kb_key_pressed)); cornerRadius = px(6f).toFloat()
+            }
+            setOnClickListener { useOffer() }
+        }
+        addView(shot, LayoutParams(shotHeight * 9 / 16, shotHeight, Gravity.CENTER))
 
         // Undo dictation or the fix button's fixes, in place of the suggestions until the next edit (KeyboardEngine.UNDO_MS).
         undo.apply {
@@ -360,39 +359,52 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
         slots.visibility = if (idle && !noting && !undoing && !filling && suggesting && offer == null) VISIBLE else GONE
-        chip.visibility = if (offer != null) VISIBLE else GONE
+        chip.visibility = if (offer is ChipOffer.Text) VISIBLE else GONE
+        shot.visibility = if (offer != null && offer !is ChipOffer.Text) VISIBLE else GONE
         val fresh = offer != chipOffer
         // Set first: a cached thumbnail arrives at once and checks it is still this offer's.
         chipOffer = offer
         if (offer != null && fresh) offer(offer)
     }
 
-    /** The chip for a copy or a photo ([ClipKeeper.offer]): text as it reads, masked when sensitive, or a
-     * thumbnail with the clipboard's icon for a copied image and the photo icon for a new photo. */
+    /** The chip for a copy, as it reads and masked when sensitive, or the image itself for a copied
+     * picture or a new screenshot ([ClipKeeper.offer]). */
     private fun offer(offer: ChipOffer) {
-        chipIcon.setImageResource(if (offer is ChipOffer.Photo) R.drawable.ic_image else R.drawable.ic_clipboard)
-        val text = offer as? ChipOffer.Text
-        chipText.visibility = if (text != null) VISIBLE else GONE
-        chipImage.visibility = if (text != null) GONE else VISIBLE
-        val params = chip.layoutParams
-        params.width = if (text != null) px(CHIP_WIDTH) else LayoutParams.WRAP_CONTENT
-        chip.layoutParams = params
         when (offer) {
             is ChipOffer.Text -> {
                 chipText.text = if (offer.sensitive) "••••••" else offer.text.replace('\n', ' ')
                 chip.contentDescription = context.getString(R.string.keyboard_paste_clip, if (offer.sensitive) "" else chipText.text)
             }
             is ChipOffer.Image -> {
-                chip.contentDescription = context.getString(R.string.keyboard_paste_image)
-                chipImage.setImageDrawable(null)
-                ime.clips.thumbnail(offer.clip) { if (chipOffer == offer) chipImage.setImageBitmap(it) }
+                shot.contentDescription = context.getString(R.string.keyboard_paste_image)
+                shot.setImageDrawable(null)
+                ime.clips.thumbnail(offer.clip) { if (chipOffer == offer) show(it) }
             }
             is ChipOffer.Photo -> {
-                chip.contentDescription = context.getString(R.string.keyboard_add_photo)
-                chipImage.setImageDrawable(null)
-                ime.clips.thumbnail(offer.photo) { if (chipOffer == offer) chipImage.setImageBitmap(it) }
+                shot.contentDescription = context.getString(R.string.keyboard_add_photo)
+                shot.setImageDrawable(null)
+                ime.clips.thumbnail(offer.photo) { if (chipOffer == offer) show(it) }
             }
         }
+    }
+
+    /** The whole image at the strip's height; one wider than the text chip is cropped to its width. */
+    private fun show(bitmap: Bitmap?) {
+        shot.setImageBitmap(bitmap)
+        if (bitmap == null || bitmap.height == 0) return
+        val params = shot.layoutParams
+        params.width = (shotHeight * bitmap.width / bitmap.height).coerceIn(px(16f), px(CHIP_WIDTH))
+        shot.layoutParams = params
+    }
+
+    private fun useOffer() {
+        val offer = chipOffer ?: return
+        when (offer) {
+            is ChipOffer.Text -> ime.engine.paste(offer.text)
+            is ChipOffer.Image -> ime.clips.insert(offer.clip)
+            is ChipOffer.Photo -> ime.clips.insert(offer.photo)
+        }
+        ime.clips.used(offer)
     }
 
     override fun onDetachedFromWindow() { cancelGestures(); super.onDetachedFromWindow() }
