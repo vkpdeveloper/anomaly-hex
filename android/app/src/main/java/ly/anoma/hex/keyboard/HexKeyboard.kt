@@ -9,7 +9,9 @@ import android.provider.UserDictionary
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import java.io.File
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,8 +36,10 @@ class HexKeyboard : InputMethodService() {
     private var view: KeyboardView? = null
     internal val feedback by lazy { TypingPreferences(this) }
     internal val layoutLanguage get() = feedback.layout ?: Spoken.system()
-    // Android's personal dictionary is read off the main thread, and again whenever it changes.
-    private val words = Executors.newSingleThreadExecutor { Thread(it, "Hex personal words") }
+    // Android's personal dictionary is read off the main thread, and again whenever it changes. Work
+    // that arrives once the keyboard is destroyed (a save posted late) is dropped, never a crash.
+    private val words = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue(),
+        { Thread(it, "Hex personal words") }, ThreadPoolExecutor.DiscardPolicy())
     private val dictionaryChanged = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = engine.personalWordsChanged()
     }
