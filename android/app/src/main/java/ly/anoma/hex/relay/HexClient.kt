@@ -71,6 +71,14 @@ object HexClient {
         return Heard(json.optString("transcript").trim(), language)
     }
 
+    /** Sends text from the text box and returns it rewritten by OpenCode on the computer
+     * (`POST /phone/v1/rewrite`). The computer allows itself up to 30 s. */
+    fun rewrite(host: String, port: Int, code: String, text: String): String {
+        val body = JSONObject().put("text", text).toString().encodeToByteArray()
+        val json = request(host, port, code, "POST", "/phone/v1/rewrite", body, 2_000, 45_000, "application/json")
+        return json.optString("text").trim()
+    }
+
     private fun request(
         host: String,
         port: Int,
@@ -80,6 +88,7 @@ object HexClient {
         wav: ByteArray?,
         connectTimeoutMs: Int,
         readTimeoutMs: Int,
+        contentType: String = "audio/wav",
     ): JSONObject {
         val connection = try {
             URL("http", host, port, path).openConnection() as HttpURLConnection
@@ -94,7 +103,7 @@ object HexClient {
             connection.setRequestProperty("Authorization", "Bearer ${normalizeCode(code)}")
             if (wav != null) {
                 connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "audio/wav")
+                connection.setRequestProperty("Content-Type", contentType)
                 // Streams straight to the socket instead of buffering a copy.
                 connection.setFixedLengthStreamingMode(wav.size)
             }

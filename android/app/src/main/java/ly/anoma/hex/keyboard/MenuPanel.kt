@@ -49,11 +49,13 @@ internal class MenuPanel(
         addView(tiles, LayoutParams(-1, -2))
     }
 
-    /** The tiles as things are now: Fix mistakes only where the fix button works. */
+    /** The tiles as things are now: Fix mistakes only where the fix button works, Rewrite only with a
+     * computer paired and never in a password field. */
     fun open() {
         val tools = buildList {
             add(Triple(R.drawable.ic_clipboard, R.string.keyboard_clipboard) { openClipboard() })
             if (ime.fixShown) add(Triple(R.drawable.ic_spellcheck, R.string.keyboard_fix) { close(); ime.fix() })
+            if (ime.rewriteShown) add(Triple(R.drawable.ic_rewrite, R.string.keyboard_rewrite) { close(); ime.rewrite() })
             add(Triple(R.drawable.ic_settings, R.string.keyboard_settings) {
                 close()
                 context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

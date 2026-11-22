@@ -33,10 +33,16 @@ internal interface KeyboardSurface {
     fun undo(offer: UndoOffer?)
 }
 
-internal enum class UndoOffer { Dictation, Fixes }
+internal enum class UndoOffer { Dictation, Fixes, Rewrite }
 
 /** The field's text around the caret for the fix button: [text] starts at [start] in the field. */
 internal data class FieldText(val text: String, val start: Int, val selStart: Int, val selEnd: Int)
+
+/** What Rewrite sends: [field]'s text from [from] to [to], the selection or else all of it, without the
+ * spaces at either end. */
+internal data class RewriteSpan(val field: FieldText, val from: Int, val to: Int) {
+    val text get() = field.text.substring(from, to)
+}
 
 /** Keys in, text out: the current word, autocorrection and its undo, spaces, shift and the key pages.
  * It talks to the editor only through [KeyboardTextTarget] and to the views through [KeyboardSurface]. */
@@ -93,10 +99,12 @@ internal class KeyboardEngine(
     private var tapped: Tapped? = null
     // Undo dictation, as iPhone Hex's: the dictation just inserted and the text after it then, offered
     // back until the next edit, 12 s, or the cursor leaving its end, so the chip never does nothing.
-    // Undo fixes is offered the same way, and works while the field still reads as the fixes left it.
+    // Undo fixes and Undo rewrite are offered the same way, and work while the field still reads as the
+    // fixes or the rewrite left it.
     private sealed interface Offer
     private data class Dictated(val text: String, val after: String) : Offer
-    private class Fixed(val field: FieldText, val fixes: List<Fix>, val result: String) : Offer
+    private class Fixed(val field: FieldText, val fixes: List<Fix>, val result: String,
+                        val kind: UndoOffer = UndoOffer.Fixes) : Offer
     private var offer: Offer? = null
     private val dropDictation = Runnable { offerUndo(null) }
     private var pendingChip: Runnable? = null
@@ -785,7 +793,8 @@ internal class KeyboardEngine(
                 }
                 edited(); resetTyping(); clearSpaces()
                 rewrite(now, back)
-                return o.fixes.map { it.original }
+                // A rewrite's text isn't a word for the fixer to leave alone.
+                return if (o.kind == UndoOffer.Fixes) o.fixes.map { it.original } else emptyList()
             }
         }
         return emptyList()
@@ -807,6 +816,28 @@ internal class KeyboardEngine(
         rewrite(field, fixes)
         surface?.suggestions(emptyList())
         offerUndo(Fixed(field, fixes, Tinyfix.apply(field.text, fixes)))
+        return true
+    }
+
+    /** What Rewrite sends, or null where it mustn't read or there is nothing but spaces. */
+    fun rewriteSpan(): RewriteSpan? {
+        val field = fieldText() ?: return null
+        val selected = minOf(field.selStart, field.selEnd) - field.start until maxOf(field.selStart, field.selEnd) - field.start
+        val range = if (selected.isEmpty()) field.text.indices else selected
+        val from = range.firstOrNull { !field.text[it].isWhitespace() } ?: return null
+        val to = range.last { !field.text[it].isWhitespace() } + 1
+        return RewriteSpan(field, from, to)
+    }
+
+    /** Puts [rewritten] in place of [span] in one edit, or nothing if the field has changed since it was
+     * read; the rewritten text stays selected when it was a selection. Offers Undo rewrite. */
+    fun applyRewrite(span: RewriteSpan, rewritten: String): Boolean {
+        if (fieldText() != span.field) return false
+        val edit = listOf(Fix(span.from, span.to, span.text, rewritten))
+        edited(); resetTyping(); clearSpaces()
+        rewrite(span.field, edit)
+        surface?.suggestions(emptyList())
+        offerUndo(Fixed(span.field, edit, Tinyfix.apply(span.field.text, edit), UndoOffer.Rewrite))
         return true
     }
 
@@ -844,7 +875,7 @@ internal class KeyboardEngine(
         if (next != null) main.postDelayed(dropDictation, UNDO_MS)
         if (shown || next != null) surface?.undo(when (next) {
             is Dictated -> UndoOffer.Dictation
-            is Fixed -> UndoOffer.Fixes
+            is Fixed -> next.kind
             null -> null
         })
     }

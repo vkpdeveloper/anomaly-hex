@@ -6,7 +6,7 @@ A keyboard and a floating button that dictate with Hex on your computer. The pho
 
 Pair once under **Computer**: Hex finds the computer on the local network, or takes an address (Tailscale works anywhere), then its pairing code. The protocol, routes and limits are in [docs/phone-dictation.md](../docs/phone-dictation.md). The computer turns on **Labs › Phone dictation** and answers only private and Tailscale addresses.
 
-What leaves the phone: each recording, to the paired computer only; with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
+What leaves the phone: each recording, to the paired computer only; the text you tap **Rewrite** on, to the paired computer, which sends it on to whatever model its OpenCode uses (which may be a cloud model); with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
 
 A transcript goes back to the field it was spoken in. If that field went away while the computer was transcribing (another field, or the keyboard closed), it's copied instead and the strip's chip offers it; an app that restarts the same field (chat apps do) still gets it. The keyboard shapes it with the language the computer says it heard: mid-sentence, a capital the model gave an ordinary first word goes. When the computer chooses the language itself, the text stays as it came.
 
@@ -60,7 +60,17 @@ picked twice. Picks are counts per word (at most 1,000 words), never learned in 
 apps that ask for no personalised learning, and **Forget learned words** clears them.
 
 **Grid menu.** The grid at the strip's start opens a menu in place of the strip and keys:
-**Clipboard**, **Fix mistakes** (only where the Fix button works) and **Settings**.
+**Clipboard**, **Fix mistakes** (only where the Fix button works), **Rewrite** (only with a
+computer paired, never in a password field) and **Settings**.
+
+**Rewrite** sends the selection, or else the text within 1,000 characters of the caret as Fix
+mistakes reads it, to the paired computer, where OpenCode rewrites it for grammar, spelling and
+clarity in the same language and tone, with Global mode's OpenCode model and instructions. The
+text goes to the computer and from there to whatever model OpenCode uses, which may be a cloud
+model; it leaves the phone only on the tap. The strip says Rewriting while you can keep typing,
+and the answer replaces the text in one edit only if the field hasn't changed meanwhile;
+otherwise it says so and leaves the text alone. **Undo rewrite** on the strip puts it back. The
+computer needs OpenCode running; Hex never starts it.
 
 **Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
 tap it to replace the shortcut. Space, marks and return leave the shortcut as typed.
