@@ -54,8 +54,8 @@ internal class Tinyfix(scorer: Scorer, vocabulary: List<String>, confusions: Lis
     /** Never change this word again, for example after the fix that changed it was undone. */
     fun ignore(word: String) = spelling.rememberUndo(word)
 
-    /** The fixes for [text], in order and never overlapping. */
-    fun check(text: String): List<Fix> {
+    /** The fixes for [text], in order and never overlapping. Words [keep] holds are never changed. */
+    fun check(text: String, keep: (String) -> Boolean = { false }): List<Fix> {
         val code = (FENCED_CODE.findAll(text) + INLINE_CODE.findAll(text)).map { it.range.first..it.range.last + 1 }.toList()
         val fixes = ArrayList<Fix>()
         // The text up to the word being checked, with the fixes found so far already made: a later word
@@ -67,7 +67,7 @@ internal class Tinyfix(scorer: Scorer, vocabulary: List<String>, confusions: Lis
             val from = match.range.first
             val to = match.range.last + 1
             if (code.any { from < it.last && to > it.first }) continue
-            if (spelling.wasUndone(original) || NOT_PROSE.containsMatchIn(tokenAround(text, from, to))) continue
+            if (keep(original) || spelling.wasUndone(original) || NOT_PROSE.containsMatchIn(tokenAround(text, from, to))) continue
             val before = (fixedSoFar + text.substring(consumed, from)).takeLast(CONTEXT_BEFORE)
             val replacement = spelling.correct(before, original) ?: run {
                 val lineEnd = text.indexOf('\n', to).let { if (it == -1) text.length else it }

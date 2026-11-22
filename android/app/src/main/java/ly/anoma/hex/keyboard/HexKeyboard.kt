@@ -122,21 +122,31 @@ class HexKeyboard : InputMethodService() {
     // dropped when the button goes off. One check at a time.
     private val fixWork = Executors.newSingleThreadExecutor { Thread(it, "Hex fix") }
     private var tinyfix: Tinyfix? = null // Only touched on fixWork.
+    // Hinglish's Hindi words, those its typing model has and English's lacks: tinyfix knows only English
+    // and would "fix" them ("nahi" into "nazi"). Read on first use, on fixWork.
+    private val hindiWords: (String) -> Boolean by lazy {
+        val hinglish = TypingModel.asset(assets, Spoken.Hinglish.code)
+        val english = TypingModel.asset(assets, Spoken.English.code)
+        fun hindi(word: String) = word.lowercase().let { hinglish.index(it) >= 0 && english.index(it) < 0 }
+        ::hindi
+    }
     /** A check is running; the toolbar dims the button until it's done. */
     internal var fixing = false
         private set(value) { field = value; view?.fixChanged() }
-    // tinyfix knows only English: on another layout it would "fix" every word it doesn't know, such as
-    // Hinglish "nahi" into "nazi".
-    internal val fixShown get() = feedback.fixButton && !engine.secure && layoutLanguage == Spoken.English
+    // tinyfix knows only English: on another layout it would "fix" every word it doesn't know.
+    internal val fixShown get() = feedback.fixButton && !engine.secure &&
+        (layoutLanguage == Spoken.English || layoutLanguage == Spoken.Hinglish)
     internal fun fix() {
         if (fixing || !fixShown) return
         val field = engine.fieldText() ?: return
         if (field.text.isBlank()) { view?.note(getString(R.string.keyboard_nothing_to_fix)); return }
         fixing = true
         val dir = TinyfixFiles.dir(this)
+        val hinglish = layoutLanguage == Spoken.Hinglish
         fixWork.execute {
             val fixes = try {
-                (tinyfix ?: TinyfixFiles.load(dir).also { tinyfix = it }).check(field.text)
+                val fixer = tinyfix ?: TinyfixFiles.load(dir).also { tinyfix = it }
+                if (hinglish) fixer.check(field.text, hindiWords) else fixer.check(field.text)
             } catch (_: Exception) { null } // The files are gone or damaged: Settings downloads them again.
             main.post {
                 fixing = false

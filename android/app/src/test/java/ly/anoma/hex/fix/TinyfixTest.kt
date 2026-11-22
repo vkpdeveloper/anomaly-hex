@@ -4,6 +4,7 @@ import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import ly.anoma.hex.typing.TypingModel
 
 class TinyfixTest {
     @Test fun tokenizesAsTheJavaScriptRegexDoes() {
@@ -51,5 +52,18 @@ class TinyfixTest {
             if (got == expected) null else "$typed\n  expected $expected\n  got      $got"
         }
         assertEquals(wrong.joinToString("\n"), 0, wrong.size)
+    }
+
+    // On Hinglish the button keeps Hindi words, which tinyfix would read as English misspellings.
+    @Test fun leavesHinglishHindiWordsAlone() {
+        val dir = System.getenv("HEX_TINYFIX_DIR")?.let(::File)
+        assumeTrue(dir != null && File(dir, "wrong-word.onnx").exists())
+        val hinglish = TypingModel.file(File("src/main/assets/typing/hien.hextm"), "hien")
+        val english = TypingModel.file(File("src/main/assets/typing/en.hextm"), "en")
+        val hindi = { word: String -> word.lowercase().let { hinglish.index(it) >= 0 && english.index(it) < 0 } }
+        val fixer = TinyfixFiles.load(dir!!)
+        val text = "kya hai yaar main khush nahi hoon, theek hai. how to go form here"
+        assertEquals("kya hai yaar main khush nahi hoon, theek hai. how to go from here",
+            Tinyfix.apply(text, fixer.check(text, hindi)))
     }
 }
