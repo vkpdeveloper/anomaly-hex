@@ -194,6 +194,7 @@ impl Feature {
             Self::ModesEditor => settings.labs.modes_editor,
             Self::PasteLastPicker => settings.labs.paste_last_picker,
             Self::VocabularyFiles => settings.labs.vocabulary_files,
+            Self::Hinglish => settings.labs.hinglish,
             Self::AnnotateAgentTools => settings.labs.annotate_agent_tools,
             Self::AnnotateAgentInstall => settings.labs.annotate_agent_install,
         }
@@ -282,6 +283,7 @@ impl Feature {
             &mut labs.modes_editor,
             &mut labs.paste_last_picker,
             &mut labs.vocabulary_files,
+            &mut labs.hinglish,
             &mut labs.annotate_agent_tools,
             &mut labs.annotate_agent_install,
         ]
@@ -380,6 +382,7 @@ impl Feature {
             Self::ModesEditor => settings.labs.modes_editor = on,
             Self::PasteLastPicker => settings.labs.paste_last_picker = on,
             Self::VocabularyFiles => settings.labs.vocabulary_files = on,
+            Self::Hinglish => settings.labs.hinglish = on,
             Self::AnnotateAgentTools => settings.labs.annotate_agent_tools = on,
             Self::AnnotateAgentInstall => settings.labs.annotate_agent_install = on,
             // Off, no shortcut keeps a key only the feature allows.
@@ -436,7 +439,9 @@ const FASTER_LIVE_TEXT: u64 = 1 << 23;
 // Kept only for the state-word encoding; no gate reads it.
 const VOCABULARY_FILES: u64 = 1 << 24;
 const GNOME_CLIPBOARD_RESTORE: u64 = 1 << 25;
-// 1 << 26 is free (Vocabulary in meeting notes graduated).
+/// Labs › Hindi in Latin letters, on the bit Vocabulary in meeting notes
+/// left free.
+const HINGLISH: u64 = 1 << 26;
 const NOTCH_INDICATOR: u64 = 1 << 27;
 // 1 << 28 is free (Meeting finished event graduated).
 const GNOME_MEETING_CAPSULES: u64 = 1 << 29;
@@ -929,6 +934,7 @@ fn encode_where(settings: &LabsSettings, reaches: impl Fn(Feature) -> bool) -> u
             settings.vocabulary_files,
             VOCABULARY_FILES,
         ),
+        (Feature::Hinglish, settings.hinglish, HINGLISH),
         (
             Feature::GnomeClipboardRestore,
             settings.gnome_clipboard_restore,
@@ -2059,6 +2065,30 @@ mod tests {
         assert_eq!(Feature::VocabularyFiles.name(), "vocabulary-files");
         assert_eq!(
             Feature::VocabularyFiles.oses(),
+            &[Os::Macos, Os::Windows, Os::Linux]
+        );
+    }
+
+    #[test]
+    fn hinglish_is_its_own_switch_and_everywhere() {
+        let mut labs = LabsSettings::default();
+        assert!(!Feature::Hinglish.on(&AppSettings::default()));
+        assert_eq!(encode(&labs) & HINGLISH, 0);
+        labs.hinglish = true;
+        let settings = AppSettings {
+            labs,
+            ..AppSettings::default()
+        };
+        assert!(Feature::Hinglish.on(&settings));
+        assert_ne!(encode(&settings.labs) & HINGLISH, 0);
+        assert!(Feature::Hinglish.on_this_os());
+        assert_eq!(Feature::Hinglish.added(), 20261122);
+        assert_eq!(Feature::Hinglish.audience(), Audience::Everyone);
+        assert_eq!(Feature::Hinglish.group(), Group::Dictation);
+        assert_eq!(Feature::Hinglish.settings_key(), "labs.hinglish");
+        assert_eq!(Feature::Hinglish.name(), "hinglish");
+        assert_eq!(
+            Feature::Hinglish.oses(),
             &[Os::Macos, Os::Windows, Os::Linux]
         );
     }

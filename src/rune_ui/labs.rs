@@ -630,6 +630,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
     rows.push(row(Feature::SpokenFormatting, None));
     rows.push(row(Feature::SpokenSymbols, None));
     rows.push(row(Feature::FillerWords, None));
+    rows.push(row(Feature::Hinglish, None));
     // macOS reads the pass through Apple Intelligence: a managed lock keeps
     // the row it built (off, disabled, saying why), else the card says why.
     if caps.os == super::platform::Os::Macos {
@@ -931,6 +932,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::ModesEditor => "lab-modes-editor",
         Feature::DropTranscribe => "lab-drop-transcribe",
         Feature::VocabularyFiles => "lab-vocabulary-files",
+        Feature::Hinglish => "lab-hinglish",
     }
 }
 

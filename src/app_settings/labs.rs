@@ -220,6 +220,9 @@ pub struct LabsSettings {
     /// The Vocabulary sheet imports terms from a CSV file and exports the
     /// list as one (Labs › Vocabulary files).
     pub vocabulary_files: bool,
+    /// Devanagari in each dictation is written in Latin letters the way
+    /// Hindi is texted (Labs › Hindi in Latin letters).
+    pub hinglish: bool,
     /// `hex annotate inspect`, `zoom`, `frames`, and `skill` read a capture
     /// bundle for a coding agent (Labs › Agent tools for captures).
     pub annotate_agent_tools: bool,
@@ -432,6 +435,7 @@ impl Default for LabsSettings {
             drop_transcribe: false,
             paste_last_picker: false,
             vocabulary_files: false,
+            hinglish: false,
             annotate_agent_tools: false,
             annotate_agent_install: false,
             api_processing: false,

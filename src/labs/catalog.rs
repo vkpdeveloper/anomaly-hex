@@ -87,6 +87,7 @@ impl Feature {
             | Self::HoldThroughKeys
             | Self::ModesEditor
             | Self::VocabularyFiles
+            | Self::Hinglish
             | Self::AnnotateAgentTools
             | Self::AnnotateAgentInstall
             | Self::PhoneDictation => Audience::Everyone,
@@ -163,6 +164,7 @@ impl Feature {
             Self::LearnFromCorrections | Self::AnnotateAgentTools | Self::AnnotateAgentInstall => {
                 20261121
             }
+            Self::Hinglish => 20261122,
         }
     }
 
@@ -315,6 +317,7 @@ impl Feature {
             | Self::StopPhrase
             | Self::ModesEditor
             | Self::VocabularyFiles
+            | Self::Hinglish
             | Self::AnnotateAgentTools
             | Self::AnnotateAgentInstall => EVERY,
         }
@@ -400,6 +403,7 @@ impl Feature {
             Self::ModesEditor => "modes-editor",
             Self::PasteLastPicker => "paste-last-picker",
             Self::VocabularyFiles => "vocabulary-files",
+            Self::Hinglish => "hinglish",
             Self::AnnotateAgentTools => "annotate-agent-tools",
             Self::AnnotateAgentInstall => "annotate-agent-install",
         }
@@ -485,6 +489,7 @@ impl Feature {
             Self::HoldThroughKeys => "labs.hold_through_keys",
             Self::ModesEditor => "labs.modes_editor",
             Self::VocabularyFiles => "labs.vocabulary_files",
+            Self::Hinglish => "labs.hinglish",
             Self::AnnotateAgentTools => "labs.annotate_agent_tools",
             Self::AnnotateAgentInstall => "labs.annotate_agent_install",
         }

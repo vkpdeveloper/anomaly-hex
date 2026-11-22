@@ -81,7 +81,8 @@ impl Feature {
             | Self::SpeakersOnly
             | Self::Playground
             | Self::StopPhrase
-            | Self::VocabularyFiles => Group::Dictation,
+            | Self::VocabularyFiles
+            | Self::Hinglish => Group::Dictation,
             Self::SmartSpacing
             | Self::SpokenFormatting
             | Self::SpokenSymbols
