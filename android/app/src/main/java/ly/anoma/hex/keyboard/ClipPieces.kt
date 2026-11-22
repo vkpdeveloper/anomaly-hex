@@ -53,15 +53,17 @@ internal object ClipPieces {
         return split(text, found)
     }
 
-    /** The pieces of [text], from what the classifier [found] plus any web link it missed: in the order
-     * they appear, each once, at most [MAX_PIECES]. A piece that is the whole copy names its kind instead. */
+    /** The pieces of [text], from what the classifier [found] plus any web link or date it missed: in the
+     * order they appear, each once, at most [MAX_PIECES]. Where two overlap the earlier wins, and at the same
+     * start the classifier's. A piece that is the whole copy names its kind instead. */
     fun split(text: String, found: List<ClipPiece.Found>): ClipPiece.Split {
         val links = Links.find(text).mapNotNull { link ->
             val start = text.indexOf(link)
             if (start < 0) null else ClipPiece.Found(start, start + link.length, ClipPiece.Kind.Link)
         }
+        val dates = Dates.find(text).map { ClipPiece.Found(it.first, it.last + 1, ClipPiece.Kind.Date) }
         val taken = ArrayList<ClipPiece.Found>()
-        for (piece in (found + links).sortedBy { it.start }) {
+        for (piece in (found + links + dates).sortedBy { it.start }) {
             if (piece.start < 0 || piece.end > text.length || piece.start >= piece.end) continue
             if (taken.any { piece.start < it.end && it.start < piece.end }) continue
             taken += piece
@@ -71,4 +73,33 @@ internal object ClipPieces {
         val pieces = taken.map { ClipPiece(it.kind, text.substring(it.start, it.end).trim()) }.distinct().take(MAX_PIECES)
         return ClipPiece.Split(null, pieces)
     }
+}
+
+/** Dates the classifier leaves out, since it marks one only with a time: "tomorrow", "next Friday",
+ * "25 Nov", "Nov 25th, 2026", "22/11/2026", each with its time when one follows ("tomorrow at 9am").
+ * Day names count in full only, never "sat" or "sun"; a number alone or a fraction is never a date. */
+internal object Dates {
+    private const val DAY = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    private const val MONTH = "january|february|march|april|may|june|july|august|september|october|november|december" +
+        "|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec"
+    private const val NUM = """(?:0?[1-9]|[12]\d|3[01])"""
+    private const val NTH = """$NUM(?:st|nd|rd|th)?"""
+    private const val YEAR = """(?:,?\s+\d{4})?"""
+    // A dot after the month only before its day ("Dec. 3"): one after "25 Nov" ends the sentence.
+    private const val DAY_MONTH = """$NTH\s+(?:of\s+)?(?:$MONTH)$YEAR"""
+    private const val MONTH_DAY = """(?:$MONTH)\.?\s+$NTH$YEAR"""
+    private const val PART = """(?:\s+(?:morning|afternoon|evening|night))?"""
+    private const val TIME = """(?:,?\s+(?:at\s+)?\d{1,2}(?::[0-5]\d)?\s*(?:am|pm)|\s+at\s+\d{1,2}:[0-5]\d)?"""
+    private val DATE = Regex(
+        """(?<![\p{L}\p{N}])(?:""" +
+            """(?:(?:the\s+)?day\s+after\s+)?(?:today|tonight|tomorrow|tmrw|tmr)$PART""" +
+            """|(?:(?:next|this)\s+)?(?:$DAY)(?:,?\s+(?:the\s+)?(?:$DAY_MONTH|$MONTH_DAY)|$PART)""" +
+            """|$DAY_MONTH|$MONTH_DAY""" +
+            """|$NUM[/.-]$NUM[/.-]\d{4}|$NUM[/-]$NUM[/-]\d{2}|\d{4}-(?:0?[1-9]|1[0-2])-$NUM""" +
+            """)$TIME(?![\p{L}\p{N}])""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Where each date in [text] is. */
+    fun find(text: String): List<IntRange> = DATE.findAll(text).map { it.range }.toList()
 }

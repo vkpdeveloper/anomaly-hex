@@ -3089,6 +3089,8 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   ├── Phone numbers, emails, links, addresses, dates, flights in a copy -> up to two as their
 │   │   own chips with icons, found by Android's on-device classifier, and in a row on the
 │   │   copy's panel card; a tap pastes that piece; a sensitive copy is never looked at
+│   ├── Dates without a time ("tomorrow", "next Friday", "25 Nov", "22/11/2026") -> found by
+│   │   Hex too, since the classifier marks a date only with a time
 │   └── Proof limits: ClipPiecesTest; pieces and favicons seen in the strip and the panel on a
 │       Pixel emulator
 ├── Keyboard > Remove tracking from links (off) -> a link copied while the keyboard runs (under
