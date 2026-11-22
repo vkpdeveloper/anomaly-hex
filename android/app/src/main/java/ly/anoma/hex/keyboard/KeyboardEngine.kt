@@ -738,10 +738,12 @@ internal class KeyboardEngine(
         target.commit(""); resetTyping(); surface?.suggestions(emptyList())
     }
 
-    /** The toolbar's clipboard chip: the clip goes in as it is, never autocorrected. */
+    /** A clip from the toolbar's chip or the clipboard: it goes in as it is, never autocorrected, but its
+     * links lose their tracking when Remove tracking from links is on. */
     fun paste(text: String) {
         if (!target.connected) return
-        edited(); resetTyping(); clearSpaces(); target.commit(text); surface?.suggestions(emptyList()); refreshCaps()
+        val clip = if (feedback.cleanLinks) Links.clean(text) else text
+        edited(); resetTyping(); clearSpaces(); target.commit(clip); surface?.suggestions(emptyList()); refreshCaps()
     }
 
     /** Dictation starts: the word in progress is left as typed. */

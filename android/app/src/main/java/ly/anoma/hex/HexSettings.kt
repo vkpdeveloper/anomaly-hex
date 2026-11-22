@@ -89,6 +89,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val glideTrail = remember(revision) { typing.glideTrail }
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
     val sayToSend = remember(revision) { typing.sayToSend }
+    val cleanLinks = remember(revision) { typing.cleanLinks }
     // On only with the Contacts permission too. Once Android stops asking (a second no), the switch opens
     // Hex's app info instead.
     var contactsAllowed by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
@@ -214,6 +215,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 glideTrail, enabled = glide) { typing.glideTrail = it }
                             Rule(); Toggle("Recent screenshots", if (photos.partial) "Only the photos you chose" else "Offer a screenshot you just took",
                                 photos.on) { photos.change(it) }
+                            Rule(); Toggle("Remove tracking from links", "When you paste a link from the keyboard", cleanLinks) {
+                                typing.cleanLinks = it
+                            }
                             Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
                                 typing.learnFromHistory = it
                             }

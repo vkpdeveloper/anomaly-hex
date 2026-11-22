@@ -59,6 +59,10 @@ internal class TypingPreferences(context: Context) {
     var sayToSend: Boolean
         get() = prefs.getBoolean(SAY_TO_SEND, false)
         set(value) { prefs.edit().putBoolean(SAY_TO_SEND, value).apply() }
+    /** Off by default: a link pasted from the keyboard's clipboard loses its tracking ([ly.anoma.hex.keyboard.Links]). */
+    var cleanLinks: Boolean
+        get() = prefs.getBoolean(CLEAN_LINKS, false)
+        set(value) { prefs.edit().putBoolean(CLEAN_LINKS, value).apply() }
     /** The paired computer's text replacements, as [Replacements.write] keeps them; "" for none. */
     var replacements: String
         get() = prefs.getString(REPLACEMENTS, "").orEmpty()
@@ -96,5 +100,6 @@ internal class TypingPreferences(context: Context) {
         const val SAY_TO_SEND = "sayToSend"
         const val REPLACEMENTS = "replacements"
         const val NUMBER_ROW = "numberRow"
+        const val CLEAN_LINKS = "cleanLinks"
     }
 }
