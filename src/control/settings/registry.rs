@@ -771,6 +771,30 @@ pub(super) const KEYS: &[Key] = &[
          letters; \"stop dictation\" by default",
     ),
     key(
+        "labs.signature",
+        Kind::Bool,
+        "Labs: every normal dictation is signed with labs.signature_text on its own line at \
+         the end, before it is pasted, kept in History, and remembered for Paste Last",
+    ),
+    key(
+        "labs.signature_text",
+        Kind::Text,
+        "Labs: the line added to each normal dictation, one line of at most 200 characters; \
+         \"Sent from Hex\" by default, and empty adds nothing",
+    ),
+    key(
+        "labs.dictation_style",
+        Kind::Bool,
+        "Labs: every normal dictation is written as Polished, Casual, Notes, or Verbatim \
+         (labs.dictation_style_choice), like the iPhone app, without an AI model",
+    ),
+    key(
+        "labs.dictation_style_choice",
+        Kind::Choice(&["polished", "casual", "notes", "verbatim"]),
+        "Labs: the style every normal dictation is written as while Labs › Dictation style \
+         is on; polished by default",
+    ),
+    key(
         "meetings.enabled",
         Kind::Bool,
         "Labs: Meetings (beta), call detection, recording, and transcripts",

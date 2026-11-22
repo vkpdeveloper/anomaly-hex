@@ -85,6 +85,10 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        with Turn off the mic when not dictating on, the microphone stays open for that
 │                                        long after a capture, so the next dictation starts at once
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (every OS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
+├── Signature       no    labs.signature + labs.signature_text ("Sent from Hex", every OS)
+│                                        every normal dictation pastes with the signature on its own line at the end, and
+│                                        History and Paste Last keep that same text; not added to an empty transcript, one
+│                                        that already ends with it as its own line, raw, printed, or API output
 ├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
 ├── YOLO mode no labs.yolo_mode (every OS) press Return after pasting a shortcut dictation in a chosen app (none chosen = everywhere); Escape after release skips Return on macOS
 ├── Return to app   no    labs.return_to_app           (macOS)   a dictation pastes into the app it started in, switching back to it first when another app came forward
@@ -108,6 +112,9 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        "क्या हाल है यार" → "kya haal hai yaar"; English stays as heard; needs Language set to Hindi
 │                                        // dictation/hinglish.rs tests; hindi_in_latin_letters_precedes_replacements_and_only_when_on
 │                                        // (dictation/processor.rs); hinglish_is_its_own_switch_and_everywhere (labs.rs)
+├── Dictation style no    labs.dictation_style + labs.dictation_style_choice (polished/casual/notes/verbatim, polished by default, every OS)
+│                                        each dictation is written as Polished, Casual, Notes, or Verbatim like the iPhone app,
+│                                        without an AI model
 ├── Clean up with Apple Intelligence no labs.clean_up_with_apple_intelligence (macOS)
 │                                        one short on-device pass after the corrections fixes clearly misheard words and
 │                                        resolves spoken self-corrections ("tuesday, no wait, wednesday" → "wednesday");
@@ -1133,6 +1140,83 @@ in [control/settings.rs](../../src/control/settings.rs);
 dictation with the lab on, and the Mac and Windows builds, which the Linux host
 cannot compile.
 
+Signature (`signature`, every OS): while on, every normal dictation is pasted
+with `labs.signature_text` on its own line at the end. The line is added once,
+at the one point each output stage's final text feeds the paste, History, and
+Paste last dictation, so History shows exactly what was inserted and Paste
+last reinserts it unchanged. macOS signs in `parakeet::finish_output` only a
+`TranscriptionTarget::Paste` or `CopyOnlyPaste` (never raw, printed, or the
+local API), Windows in `windows::dictation::output::process_dictation_job`
+only when the job is neither printed nor a raw flavour, and Linux in
+`linux::dictation::output::DictationOutput::deliver` behind the same gate.
+Nothing signs meetings, typed text, Annotate, or `Paster::paste` itself.
+
+The pure rule is `dictation::signature::append`: it appends only when the lab
+is on, the text is not empty after trimming, the saved signature is not empty
+after trimming, and the text does not already carry it on a line of its own.
+That means the text is the signature, or the signature follows a line break
+with nothing but spaces or tabs in between; a signature that merely ends a line
+of prose, like "Hex" in "I love Hex", is appended. The saved signature is
+trimmed, so its own edges add no blank line. A saved value must be one line of
+at most 200 characters with no control characters; another value is an
+`invalid-value` error, and settings load falls back to the default without
+changing the saved file and keeps the switch. While the lab is on, its card
+shows Text: a draft that fails validation stays in the field with the reason
+under it in danger color, and the saved line keeps working; a valid draft saves
+once typing pauses. A line saved elsewhere updates the field without resetting
+its focus, and an invalid draft leaves when the lab is turned off.
+
+A signed paste is standalone on every OS: it neither joins the dictation
+before it nor records a continuation, so the next dictation is never glued onto
+the signature line. macOS passes `PasteMode::Standalone`; Windows and Linux
+pass `standalone` through their paster. Paste last dictation remembers with
+its kept text whether that text was signed (`dictation::paste_last::LastDictation`)
+and reinserts a signed one standalone as well, so it neither joins nor leaves a
+continuation even after the lab is turned off or its line changes; an unsigned
+one reinserts as a continuation. On Linux, Live typing commits the
+signed text in its own final input-method step, so the provisional preedit never
+shows the line and the text is typed exactly once; if that commit fails, the
+ordinary paste path carries the same signed text.
+
+```ts
+Dictate "we ship friday"                  // labs.signature + labs.signature_text
+├── Off -> pasted and kept exactly as before
+├── On, "Sent from Hex" -> pasted "we ship friday\nSent from Hex"
+│   -> History and Paste Last hold the same two lines
+├── Text already ends with the line
+│   └── it is the signature, or follows a line break -> left alone
+├── Empty text, empty signature -> nothing appended
+├── Raw (Dictate without processing), printed, API, meeting, typed text, Annotate -> unaffected
+├── Paste Last of a signed text -> standalone too, even after the lab is off
+└── The next dictation -> standalone: never continues the signature line
+```
+
+Checks: `the_signature_is_appended_once_on_its_own_line`,
+`off_appends_nothing`, `empty_text_appends_nothing`,
+`an_empty_or_whitespace_signature_appends_nothing`,
+`text_that_already_ends_with_the_signature_is_left_alone`,
+`a_signature_that_ends_a_line_of_prose_is_still_appended`,
+`a_signature_after_a_line_break_is_left_alone`,
+`a_saved_signature_is_trimmed_before_it_is_appended`,
+`a_signature_must_be_one_line_of_at_most_the_limit`, and
+`a_signature_refuses_line_and_control_characters` in
+[dictation/signature.rs](../../src/dictation/signature.rs);
+`a_signed_dictation_reinserts_standalone` and
+`an_unsigned_dictation_reinserts_as_a_continuation` in
+[dictation/paste_last.rs](../../src/dictation/paste_last.rs);
+`paste_last_reinserts_a_signed_dictation_standalone` in
+[parakeet.rs](../../src/parakeet.rs), macOS; and
+`signature_is_its_own_atomic_and_carries_its_text` in
+[labs.rs](../../src/labs.rs); `a_signature_is_trimmed_and_must_be_one_line` in
+[control/settings.rs](../../src/control/settings.rs);
+`an_invalid_signature_loads_the_default_and_keeps_its_switch` and
+`an_empty_signature_stays_empty_and_appends_nothing` in
+[persistence/tests.rs](../../src/app_settings/persistence/tests.rs). Nothing
+pastes into a real app here; the three call sites are gated by the same pure
+rule and their platform tests, and CI's clippy builds compile macOS and
+Windows. Not yet observed: a real dictation with the lab on, and the next
+dictation's continuation after a signed paste.
+
 Spoken formatting (`spoken-formatting`, issue 630, every OS): while on,
 `Profiles::process_cancellable` in
 [dictation/processor.rs](../../src/dictation/processor.rs) reads
@@ -1298,8 +1382,72 @@ them into "kya haal hai yaar main khush nahi hoon lekin theek hai" and "bhai
 kal ki meeting kitne baje hai mujhe thoda der ho jayegi". That run joined
 the model and the rewrite by hand, since `hex transcribe` doesn't process.
 Not yet observed: a real dictation with the toggle on through the shortcut
-or a phone; the Labs page goldens need regenerating on Linux with the new
-row.
+or a phone.
+
+Dictation style (`dictation-style`, every OS, off by default): while on,
+`Profiles::process_cancellable_with` in
+[dictation/processor.rs](../../src/dictation/processor.rs) reads
+`labs::dictation_style()` (the switch and `labs.dictation_style_choice`,
+one of `polished`, `casual`, `notes`, or `verbatim`, Polished by
+default) as each dictation's processing starts, and
+[dictation/style.rs](../../src/dictation/style.rs) writes the text after the
+Global and mode corrections and after any Apple Intelligence cleanup,
+OpenCode rewrite, or voice-prompt rewrite, and before the selected
+transformations. The styled text is therefore `Processed.text` when the
+transformations run, and transformations still have the last word. Only a
+heard dictation (`Source::Dictation`) is styled: Labs › Transform typed
+text, the local API's `process=global` (which promises Global's
+replacement, correction, rewrite, and transformation steps, not a dictation
+style), meetings, and live text keep their text exactly. Dictate without
+processing skips the processor entirely. With the toggle off, processing is
+byte-for-byte as before.
+
+The rules are the iPhone app's `TranscriptFormatter` (`ios/HEXShared/`),
+ported without its spoken lists, spoken punctuation, insertion spacing, or
+"End with a period" handling, which desktop already has as its own Labs or
+does not have. Verbatim only collapses runs of spaces and tabs and trims the
+ends. Polished trims fillers, writes the English informal contractions
+("gonna", "wanna", "gotta", "kinda", "lemme") out except inside quotes or on
+a name mid-sentence, capitalizes each sentence, writes the English pronoun
+"I", and ends every line with "." or, after Chinese or Japanese, "。" (never
+a second mark, and never after a lone address or a line that already ends a
+sentence). Casual trims fillers, drops an opening English interjection's
+comma ("Yeah, sounds good" becomes "yeah sounds good"), lowercases sentence
+starts except acronyms, words with inner capitals, and addresses ("OK"
+becomes "ok"), writes English "I" as "i", and drops the final full stop on a
+short message (one line, up to three sentences). Notes trims fillers, turns
+spoken "new line", "new paragraph", and "bullet"/"bullet point"/"next bullet"
+into lines, makes several sentences a list, splits a short "Intro: a, b,
+and c" into a colon line and bullets (English also splits the last "and" or
+"or"), drops an opening English connective ("so", "yeah", "and then", and
+the rest), removes a final full stop, and capitalizes the first letter.
+
+Filler trimming follows the dictation's language as the iPhone app's
+patterns do: English, Spanish, German, and Norwegian/Danish/Swedish have
+their own hesitations, and any other language trims nothing ("er" is "is" in
+Norwegian, "um" is "a" in Portuguese, and "eh" is "anyway" in German). The
+English-only rules apply when that dictation's language is `en` or starts
+with `en-`/`en_`; `auto` and an empty language say nothing about the
+language, so they get only the language-neutral rules and trim no fillers
+(the iPhone app treats an unknown language as English, which desktop does
+not). Checks: `styles_differ_on_ordinary_short_dictation`,
+`polished_writes_full_sentences`, `casual_texts`,
+`notes_list_several_items_concisely`, `styles_keep_an_address_whole`,
+`styles_trim_spanish_and_german_hesitations`,
+`filler_trimming_follows_the_dictation_language`, and
+`verbatim_collapses_horizontal_spaces_only` in
+[dictation/style/tests.rs](../../src/dictation/style/tests.rs);
+`the_dictation_style_writes_a_dictation_and_leaves_typed_text_and_the_api_alone`
+in [dictation/processor.rs](../../src/dictation/processor.rs);
+`dictation_style_is_its_own_atomic_and_carries_its_choice` in
+[labs.rs](../../src/labs.rs);
+`dictation_style_shows_its_choices_on_its_card_while_on` and
+`output_shows_the_style_row_while_its_lab_is_on` in
+[panes.rs](../../src/rune_ui/tests/panes.rs);
+`every_dictation_style_string_has_every_language` in
+[i18n.rs](../../src/desktop/i18n.rs). Not yet observed with a real
+dictation; the Labs-page goldens were regenerated on Linux, and no Output
+golden moved because its scene leaves the lab off.
 
 Clean up with Apple Intelligence (`clean-up-apple-intelligence`, macOS, off
 by default): while on, each macOS dictation that its mode does not rewrite

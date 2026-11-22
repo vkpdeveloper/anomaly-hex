@@ -851,6 +851,32 @@
       ],
       "summary": "Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi.",
       "title": "Hindi in Latin letters"
+    },
+    {
+      "added": "2026-11-21",
+      "group": "output",
+      "groupTitle": "Output",
+      "id": "signature",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Add a line to the end of each dictation, such as \"Sent from Hex\"",
+      "title": "Signature"
+    },
+    {
+      "added": "2026-11-22",
+      "group": "output",
+      "groupTitle": "Output",
+      "id": "dictation-style",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Format every dictation as Polished, Casual, Notes, or Verbatim, like the iPhone app, without an AI model",
+      "title": "Dictation style"
     }
   ]
 }

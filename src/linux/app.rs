@@ -466,7 +466,7 @@ pub(crate) fn run(
         )),
     );
     // Labs › Phone dictation: idle until its setting asks for it.
-    let phone_dictation = crate::local_api::phone::PhoneDictation::start(
+    let _phone_dictation = crate::local_api::phone::PhoneDictation::start(
         crate::local_api::processing::dictation_processor(processing.clone()),
     );
     let enable_on_launch = launch.settings.enable_on_launch;
@@ -527,7 +527,6 @@ pub(crate) fn run(
     crate::desktop::process_exit::arm_deadline();
     shutdown.store(true, Ordering::Release);
     let _ = worker.join();
-    drop(phone_dictation);
     drop(local_api);
     drop(tray);
     Ok(())
@@ -1434,6 +1433,10 @@ impl LinuxDesktopHost {
                     .transcription_preparation
                     .as_ref()
                     .map(|preparation| preparation.model),
+                // The listener shares its engine with this process, so its
+                // last finished command says where the model runs.
+                backend: crate::transcription::engine::TranscriptionEngine::shared()
+                    .and_then(|engine| engine.held_backend()),
             },
             update_status,
             update_notes: self.updater.notes(),

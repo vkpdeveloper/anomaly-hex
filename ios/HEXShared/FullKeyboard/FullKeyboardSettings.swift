@@ -18,6 +18,24 @@ nonisolated enum DictationBarAutoStart: String, CaseIterable, Sendable {
     case always
 }
 
+/// Settings › Experiments › Korean keyboard (두벌식), read where the pure language helpers need
+/// it before a keyboard exists (Settings' Languages list, Automatic). Stored as
+/// `experiments.koreanKeyboard`, off by default like every experiment.
+nonisolated enum KoreanKeyboardExperiment {
+    static let key = "experiments.koreanKeyboard"
+
+    static var isEnabled: Bool {
+        UserDefaults(suiteName: KeyboardBridge.appGroup)?.bool(forKey: key) ?? false
+    }
+
+    /// The flag in a store a caller already owns (LanguageSettings' injected defaults), so a
+    /// test's own suite decides without touching the App Group.
+    static func isEnabled(in defaults: UserDefaults?) -> Bool {
+        guard let defaults else { return isEnabled }
+        return defaults.object(forKey: key) as? Bool ?? false
+    }
+}
+
 /// The full keyboard's switches in the shared App Group.
 ///
 /// Without Full Access an iPhone may not let the keyboard read the App Group (the simulator
@@ -34,6 +52,11 @@ struct FullKeyboardSettings {
     static let hexKeyLaunchArgument = "--hex-key"
     /// Simulator scenes pass `--keyboard dictation-bar` (or `full`) to pick the keyboard.
     static let keyboardLaunchArgument = "--keyboard"
+    /// Simulator scenes pass `--number-row on` (or `off`) for Settings › Keyboard › Number row.
+    static let numberRowLaunchArgument = "--number-row"
+    /// Simulator scenes pass `--join-unfolded-keyboard on` (or `off`) for Settings ›
+    /// Experiments › Join the keyboard when unfolded.
+    static let joinUnfoldedKeyboardLaunchArgument = "--join-unfolded-keyboard"
 
     private enum Key {
         static let fullKeyboard = "experiments.fullKeyboard"
@@ -41,6 +64,7 @@ struct FullKeyboardSettings {
         static let autoCapitalization = "settings.keyboardAutoCapitalization"
         static let spatialAutocorrect = "experiments.spatialAutocorrect"
         static let germanSpatialAutocorrect = "experiments.germanSpatialAutocorrect"
+        static let koreanKeyboard = KoreanKeyboardExperiment.key
         static let keyPopups = "settings.keyboardKeyPopups"
         static let haptics = "settings.keyboardHaptics"
         static let hapticStrength = "settings.keyboardHapticStrength"
@@ -48,10 +72,13 @@ struct FullKeyboardSettings {
         static let emoji = "experiments.emoji"
         static let emojiLettersUnderEmojiKey = "experiments.emojiLettersUnderEmojiKey"
         static let swipeTyping = "experiments.swipeTyping"
+        static let swipeDeleteLetterByLetter = "experiments.swipeDeleteLetterByLetter"
         static let twoThumbSelection = "experiments.twoThumbSelection"
         static let hideWordSuggestions = "experiments.hideWordSuggestions"
         static let hexKeyOnLeft = "settings.keyboardHexKeyLeft"
+        static let numberRow = "settings.keyboardNumberRow"
         static let dictationBarAutoStart = "settings.dictationBarAutoStart"
+        static let joinKeyboardWhenUnfolded = "experiments.joinKeyboardWhenUnfolded"
     }
 
     private let defaults: UserDefaults?
@@ -106,6 +133,15 @@ struct FullKeyboardSettings {
     var germanSpatialAutocorrect: Bool {
         get { defaults?.object(forKey: Key.germanSpatialAutocorrect) as? Bool ?? false }
         nonmutating set { defaults?.set(newValue, forKey: Key.germanSpatialAutocorrect) }
+    }
+
+    /// Settings › Experiments › Korean keyboard (두벌식): adds 한국어 to Settings › Keyboard ›
+    /// Languages, typed on the standard two-set layout and composed as Hangul while the run is
+    /// in the field (`HangulComposer`). Off by default: 한국어 isn't offered, Automatic never
+    /// picks it, and a stored "ko" is ignored.
+    var koreanKeyboard: Bool {
+        get { defaults?.object(forKey: Key.koreanKeyboard) as? Bool ?? false }
+        nonmutating set { defaults?.set(newValue, forKey: Key.koreanKeyboard) }
     }
 
     /// The typing model the keyboard may read `language`'s taps with: its bundled model, with
@@ -194,12 +230,42 @@ struct FullKeyboardSettings {
         nonmutating set { defaults?.set(newValue, forKey: Key.swipeTyping) }
     }
 
+    /// Settings › Experiments › Delete swiped words letter by letter: delete right after a swipe
+    /// acts as anywhere else and takes one character, instead of the whole swiped word and the
+    /// space the swipe added before it (`FullKeyboardEngine.deleteBackward`). The swipe's record
+    /// clears with that delete, as with any delete, so what remains types like ordinary text.
+    /// Off by default, like every experiment. Stored as
+    /// `experiments.swipeDeleteLetterByLetter`; off, delete takes the whole word back as before.
+    var deletesSwipedWordsLetterByLetter: Bool {
+        get { defaults?.object(forKey: Key.swipeDeleteLetterByLetter) as? Bool ?? false }
+        nonmutating set { defaults?.set(newValue, forKey: Key.swipeDeleteLetterByLetter) }
+    }
+
     /// Settings › Keyboard › Hex key: Right (false, the default) or Left. Left puts the Hex key
     /// at the strip's leading end, for people who type with their left thumb; everything
     /// tied to it (the recording bar's ✕ and ✓, its menu, the Full Access hint) follows.
     var hexKeyOnLeft: Bool {
         get { defaults?.bool(forKey: Key.hexKeyOnLeft) ?? false }
         nonmutating set { defaults?.set(newValue, forKey: Key.hexKeyOnLeft) }
+    }
+
+    /// Settings › Keyboard › Number row: 1 to 0 in a row of their own above the letters on an
+    /// iPhone, on every page but 123 (whose top row is the same digits). Off by default, where
+    /// the keys stay exactly on Apple's rows; on, the keyboard grows upward by the row and every
+    /// row below stays where it was (`KeyboardMetrics.withNumberRow`).
+    var numberRow: Bool {
+        get { defaults?.bool(forKey: Key.numberRow) ?? false }
+        nonmutating set { defaults?.set(newValue, forKey: Key.numberRow) }
+    }
+
+    /// Settings › Experiments › Join the keyboard when unfolded: on the Duo unfolded and held
+    /// upright, Hex normally splits its keyboard as Apple's does there, since an extension
+    /// can't read Apple's Split Keyboard preference. On, it draws the joined keyboard instead,
+    /// at the same row heights and unfoldedTall's side inset. Off by default. Stored as
+    /// `experiments.joinKeyboardWhenUnfolded`.
+    var joinsKeyboardWhenUnfolded: Bool {
+        get { defaults?.bool(forKey: Key.joinKeyboardWhenUnfolded) ?? false }
+        nonmutating set { defaults?.set(newValue, forKey: Key.joinKeyboardWhenUnfolded) }
     }
 
     /// Settings › Keyboard › Auto-start: when the dictation bar starts dictating by itself.
@@ -220,8 +286,9 @@ struct FullKeyboardSettings {
     /// Simulator scenes pass `--experiment-full-keyboard` or `--keyboard full|dictation-bar`
     /// to pick the keyboard, `--experiment-emoji` to turn Emoji on, `--experiment-swipe` for
     /// Swipe typing (both on by default; the arguments override a stored off),
-    /// `--experiment-emoji-letters` for ABC under the emoji key, and
-    /// `--hex-key left|right` for the Hex key's side.
+    /// `--experiment-emoji-letters` for ABC under the emoji key,
+    /// `--hex-key left|right` for the Hex key's side, `--number-row on|off` for the number row,
+    /// and `--join-unfolded-keyboard on|off` for the joined keyboard on the Duo unfolded.
     func applyLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments) {
         if arguments.contains(Self.launchArgument) {
             isEnabled = true
@@ -249,6 +316,20 @@ struct FullKeyboardSettings {
             switch arguments[index + 1] {
             case "left": hexKeyOnLeft = true
             case "right": hexKeyOnLeft = false
+            default: break
+            }
+        }
+        if let index = arguments.firstIndex(of: Self.numberRowLaunchArgument), index + 1 < arguments.count {
+            switch arguments[index + 1] {
+            case "on": numberRow = true
+            case "off": numberRow = false
+            default: break
+            }
+        }
+        if let index = arguments.firstIndex(of: Self.joinUnfoldedKeyboardLaunchArgument), index + 1 < arguments.count {
+            switch arguments[index + 1] {
+            case "on": joinsKeyboardWhenUnfolded = true
+            case "off": joinsKeyboardWhenUnfolded = false
             default: break
             }
         }

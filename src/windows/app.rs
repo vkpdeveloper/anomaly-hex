@@ -72,7 +72,7 @@ pub(crate) struct WindowsDesktopHost {
     error: Option<String>,
     settings: AppSettings,
     history: Option<History>,
-    last_dictation: Arc<Mutex<Option<String>>>,
+    last_dictation: Arc<Mutex<Option<crate::dictation::paste_last::LastDictation>>>,
     indicator: crate::rune_hud::HudSender,
     mode_runtime: Arc<RwLock<crate::dictation::modes::ModeRuntime>>,
     transformations: Arc<crate::personal_commands::TransformationClient>,
@@ -826,6 +826,10 @@ impl WindowsDesktopHost {
                 preparation_stage: preparation.stage,
                 selection: self.settings.transcription.clone(),
                 preparing: preparation.model,
+                // The listener shares its engine with this process, so its
+                // last finished command says where the model runs.
+                backend: crate::transcription::engine::TranscriptionEngine::shared()
+                    .and_then(|engine| engine.held_backend()),
             },
             update_status: self.updater.status(),
             update_notes: self.updater.notes(),

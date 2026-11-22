@@ -88,6 +88,8 @@ impl Feature {
             Self::Hinglish => "Hindi in Latin letters",
             Self::AnnotateAgentTools => "Agent tools for captures",
             Self::AnnotateAgentInstall => "Install agent skill from Annotate",
+            Self::Signature => "Signature",
+            Self::DictationStyle => "Dictation style",
         }
     }
 
@@ -321,6 +323,10 @@ impl Feature {
             }
             Self::AnnotateAgentInstall => {
                 "Adds an Agents section to the Annotate pane that writes the hex-annotate skill into Claude Code, Codex, OpenCode, or Pi, and on macOS links hex onto PATH"
+            }
+            Self::Signature => "Add a line to the end of each dictation, such as \"Sent from Hex\"",
+            Self::DictationStyle => {
+                "Format every dictation as Polished, Casual, Notes, or Verbatim, like the iPhone app, without an AI model"
             }
         }
     }

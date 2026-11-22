@@ -28,6 +28,50 @@ impl CapsLockLight {
     }
 }
 
+/// How a normal dictation's text is written (Labs › Dictation style): the
+/// iPhone app's four styles. Every choice is punctuation and case rules
+/// only, with no model.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictationStyle {
+    /// Full sentences: fillers trimmed, each sentence capitalized and
+    /// ended, and informal English contractions written out.
+    #[default]
+    Polished,
+    /// Texting: sentences may start lowercase, "I" is "i", an opening
+    /// interjection loses its comma, and a short message its final period.
+    Casual,
+    /// Concise lines, with a list when several items are said.
+    Notes,
+    /// Exactly as the speech model wrote it.
+    Verbatim,
+}
+
+impl DictationStyle {
+    /// Every choice, in the order the window shows them.
+    pub const ALL: [Self; 4] = [Self::Polished, Self::Casual, Self::Notes, Self::Verbatim];
+
+    /// The English label the window shows.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Polished => "Polished",
+            Self::Casual => "Casual",
+            Self::Notes => "Notes",
+            Self::Verbatim => "Verbatim",
+        }
+    }
+
+    /// What the choice does, in one line under the label.
+    pub const fn hint(self) -> &'static str {
+        match self {
+            Self::Polished => "Full sentences, fillers trimmed",
+            Self::Casual => "Texting: lowercase start, no final period",
+            Self::Notes => "Short lines, a list for several items",
+            Self::Verbatim => "Exact words from the model",
+        }
+    }
+}
+
 /// The main window's appearance: the OS's, or one forced on it (Labs ›
 /// Appearance).
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -261,6 +305,12 @@ pub struct LabsSettings {
     /// returns to its default.
     #[serde(deserialize_with = "deserialize_phrase")]
     pub voice_prompt_phrase: String,
+    /// Every normal dictation is written in `dictation_style_choice`'s
+    /// style, after corrections and any rewrite and before transformations.
+    pub dictation_style: bool,
+    /// Which of the four styles it is written as while `dictation_style` is
+    /// on.
+    pub dictation_style_choice: DictationStyle,
     /// A spoken phrase at the end of a hands-free dictation finishes it as if
     /// the shortcut were pressed again, and never reaches the pasted text.
     pub stop_phrase: bool,
@@ -269,6 +319,14 @@ pub struct LabsSettings {
     /// field returns to its default.
     #[serde(deserialize_with = "deserialize_phrase")]
     pub stop_phrase_text: String,
+    /// Every normal dictation is signed with `signature_text` on its own line
+    /// at the end (every OS).
+    pub signature: bool,
+    /// The line appended while `signature` is on: one line of at most 200
+    /// characters, empty appending nothing. Another value fails to load, so
+    /// the field returns to its default.
+    #[serde(deserialize_with = "deserialize_signature")]
+    pub signature_text: String,
     /// A key or click joining a held modifier-only shortcut a second or more
     /// after it went down reaches the app in front and leaves the dictation
     /// recording, which the release still finishes (macOS and Windows).
@@ -373,6 +431,21 @@ where
     }
 }
 
+/// A saved `signature_text` must pass
+/// [`crate::dictation::signature::text_problem`]; another value fails to
+/// load, so the field returns to the default with the usual launch note.
+fn deserialize_signature<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let signature = String::deserialize(deserializer)?;
+    let signature = signature.trim();
+    match crate::dictation::signature::text_problem(signature) {
+        Some(problem) => Err(serde::de::Error::custom(problem)),
+        None => Ok(signature.to_owned()),
+    }
+}
+
 impl Default for LabsSettings {
     fn default() -> Self {
         Self {
@@ -447,8 +520,12 @@ impl Default for LabsSettings {
             pause_menu: false,
             voice_prompt: false,
             voice_prompt_phrase: crate::dictation::voice_prompt::DEFAULT_PHRASE.to_owned(),
+            dictation_style: false,
+            dictation_style_choice: DictationStyle::Polished,
             stop_phrase: false,
             stop_phrase_text: crate::dictation::stop_phrase::DEFAULT_PHRASE.to_owned(),
+            signature: false,
+            signature_text: crate::dictation::signature::DEFAULT_TEXT.to_owned(),
             hold_through_keys: false,
             modes_editor: false,
             gnome_meeting_capsules: false,

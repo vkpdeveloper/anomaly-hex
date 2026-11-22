@@ -560,12 +560,14 @@ final class AutocorrectEngine {
         case .portuguese: ["eu", "o", "a"]
         case .polish: ["ja", "to", "nie"]
         case .czech: ["to", "já", "ale"]
+        case .hungarian: ["ez", "én", "a"]
         case .romanian: ["eu", "nu", "am"]
         case .norwegian: ["jeg", "det", "vi"]
         case .russian: ["я", "это", "мы"]
         case .ukrainian: ["я", "це", "ми"]
         case .greek: ["θα", "δεν", "το"]
         case .serbianLatin: ["ja", "to", "da"]
+        case .korean: []
         }
     }
 
@@ -583,12 +585,14 @@ final class AutocorrectEngine {
         case .portuguese: ["e", "mas", "que"]
         case .polish: ["a", "ale", "że"]
         case .czech: ["a", "ale", "že"]
+        case .hungarian: ["és", "de", "hogy"]
         case .romanian: ["și", "dar", "că"]
         case .norwegian: ["og", "men", "jeg"]
         case .russian: ["и", "но", "что"]
         case .ukrainian: ["і", "але", "що"]
         case .greek: ["και", "αλλά", "που"]
         case .serbianLatin: ["i", "ali", "da"]
+        case .korean: []
         }
     }
 
@@ -603,12 +607,14 @@ final class AutocorrectEngine {
         case .portuguese: ["de", "que", "e", "o", "a", "do"]
         case .polish: ["nie", "i", "w", "się", "na", "to"]
         case .czech: ["a", "se", "je", "v", "na", "to"]
+        case .hungarian: ["a", "az", "és", "hogy", "nem", "egy"]
         case .romanian: ["de", "și", "în", "nu", "să", "la"]
         case .norwegian: ["og", "i", "det", "er", "på", "som"]
         case .russian: ["и", "в", "не", "на", "я", "что"]
         case .ukrainian: ["і", "в", "не", "на", "що", "я"]
         case .greek: ["και", "να", "το", "θα", "δεν", "η"]
         case .serbianLatin: ["i", "je", "da", "u", "se", "na"]
+        case .korean: []
         }
     }
 
@@ -1031,7 +1037,7 @@ final class AutocorrectEngine {
     }
 
     /// `cautiousReplacement` in this language alone.
-    private func ownReplacement(for token: String) -> String? {
+    func ownReplacement(for token: String) -> String? {
         let lower = token.lowercased()
         // 1. Explicit iOS Text Replacement (`omw` -> `On my way!`).
         if let shortcut = shortcut(for: token) {
@@ -1114,8 +1120,10 @@ final class AutocorrectEngine {
             return accented
         }
 
-        // 5. Single-edit `UITextChecker` typo on words of 3+ characters, never rewriting valid words.
-        guard token.count >= 3, !token.contains("'") else { return nil }
+        // 5. Single-edit `UITextChecker` typo on words of 3+ characters, never rewriting valid words
+        // (a French elision's sides each as a word, `frenchElisionFix`).
+        if token.contains("'") { return frenchElisionFix(for: token) }
+        guard token.count >= 3 else { return nil }
         guard !checker.isWordValid(token) else { return nil }
 
         var bestGuess: String?

@@ -65,7 +65,9 @@ extension FullKeyboardEngine {
     /// A key's label as the keys read it: upper case on the letters page with shift on.
     func displayLabel(for key: KeyboardKey) -> String {
         guard let character = key.character else { return key.label }
-        return isUppercase && layerState.layer == .letters ? character.uppercased() : character
+        if typesFrenchApostrophe(character) { return SmartPunctuation.apostrophe }
+        guard isUppercase, layerState.layer == .letters else { return character }
+        return layout.language == .korean ? HangulComposer.shifted(character) : character.uppercased()
     }
 
     /// Whether the letter keys read as capitals: as `isUppercase`, except while a press that
@@ -75,20 +77,24 @@ extension FullKeyboardEngine {
     /// A key's label as its keycap shows it (`keycapsUppercase`); pop-ups use `displayLabel`.
     func keycapLabel(for key: KeyboardKey) -> String {
         guard let character = key.character else { return key.label }
-        return keycapsUppercase ? character.uppercased() : character
+        if typesFrenchApostrophe(character) { return SmartPunctuation.apostrophe }
+        guard keycapsUppercase else { return character }
+        return layout.language == .korean ? HangulComposer.shifted(character) : character.uppercased()
     }
 
     /// The key a touch going down at `point` presses: the one under it, or a neighbouring
     /// letter within `letterReach` points that is enough likelier to come next in the word.
+    /// The number row's digits are never letters: a digit's tap stays a digit, and no digit
+    /// claims a row-1 letter's.
     func key(at point: CGPoint) -> KeyboardKey? {
         let point = pointOnKeys(point)
         guard let key = layout.hitTest(point) else { return nil }
-        guard key.character != nil, let model = letterOdds, layerState.layer == .letters,
+        guard key.character != nil, !key.isNumberRow, let model = letterOdds, layerState.layer == .letters,
               field == .text, autocorrect.isEnabled, target.autocorrectionType != .no,
               shift.state != .locked, model.language == language.rawValue else { return key }
         let reach = letterReach
         let near = layout.keys.filter {
-            $0.character != nil && $0.kind != key.kind && Self.distance(from: point, to: $0.hitFrame) < reach
+            $0.character != nil && !$0.isNumberRow && $0.kind != key.kind && Self.distance(from: point, to: $0.hitFrame) < reach
         }
         guard !near.isEmpty, let continuations = continuationMass(model) else { return key }
         // An accented letter without a key of its own is typed from its base letter's (é from e).

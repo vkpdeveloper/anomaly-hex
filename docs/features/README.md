@@ -1043,7 +1043,7 @@ General                                  // settings
 │   │   microphone instead of Bluetooth")
 │   ├── Output -> Paste last shortcut, While dictating, Dictation HUD, Terminal paste (Linux)
 │   │   (Dictate without processing sits in the Output pane; see dictation.md)
-│   └── Application -> Enable on launch, Show Dock icon, Sound volume, Sounds,
+│   └── Application -> Enable on launch, Show Dock icon, Sounds,
 │       Interface language (System first, then alphabetical by displayed name),
 │       Update channel (self-updating installs)
 │       // Interface language System: macOS's first preferred language (zh-Hans -> 简体中文,
@@ -1095,10 +1095,10 @@ General                                  // settings
 │       ├── Turning it on without System Audio Recording -> ask now, never while dictating
 │       ├── On -> Screen & System Audio Recording row: Allow / waiting / Allowed
 │       └── Dictation -> browser_media sequence below
-├── Sound volume -> slider 0-100%; release saves and previews start unless Off; only Sounds sheet auditions play while Off
-│   └── A saved zero displays Off; enabling sounds through the CLI restores the default level
+├── Sounds -> one row ("Classic · 50%" or Off) opening a sheet: Sound volume slider in 5% steps, then each set to hear and pick
+│   ├── Slider release saves and previews start unless Off; only the sheet's previews play while Off
+│   ├── A saved zero displays Off; enabling sounds through the CLI restores the default level
 │   └── Default output changes or disappears (macOS) -> next tone reopens on the current default
-├── Sounds -> Sheet: hear each set on Hex's real HUD, pick one
 └── Linux / Windows -> listener card and desktop commands below the basics
 
 Pause media + Also pause the browser     // browser_media
@@ -1397,6 +1397,7 @@ Selected mode                            // replaces Global's rewrite and transf
   -> Labs > Rewrite by voice's phrase          // Labs off, or no phrase, processes as before
      -> one spoken instruction replaces the rewrite, with the mode's model and deadline (labs.md)
   -> OpenCode transformation             // optional provider-backed rewrite; an unset model is Hex's ranked pick, shown Automatic
+  -> Dictation style                     // Labs › Dictation style on: Polished, Casual, Notes, or Verbatim, after the rewrite and before transformations (labs.md)
   -> Transformations                     // ordered text chain
   -> Paste or Send
 
@@ -2402,9 +2403,14 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 │   Speech engine work as on Linux (#856)
 │   ├── A run that fails out of memory -> CPU for this process, said in
 │   │   Speech engine until Hex restarts (#1984; not run on Windows)
-│   └── A launch that crashed starting the GPU (gpu-start.pending left in the
-│       data folder, same version) -> CPU only, warned in process.log, until
-│       Hex updates or the file is deleted (#662; not run on Windows)
+│   ├── A launch that crashed starting the GPU (gpu-start.pending, a version
+│   │   and crashed attempts) -> the next launch retries once; a second crash
+│   │   keeps the CPU, warned in process.log, and Settings › Speech engine
+│   │   says "Choose Auto or GPU", which clears the marker and turns the GPU
+│   │   on at restart; an update deletes a marker from another build
+│   │   (#662; not run on Windows)
+│   └── hex status -> Speech names the loaded device ("Vulkan — …"), or "CPU
+│       (GPU start crashed twice)" after the marker forced the CPU
 ├── Hex app -> General, tray, HUD; Enabled = shortcut works in every app
 ├── HUD display -> the monitor under the pointer (GetCursorPos) at each capture
 │   start, inside that monitor's work area, at its own DPI (#486); while
@@ -2667,12 +2673,12 @@ records an Arch/i3 client-independent ownership check, not transcription accurac
 or physical logout, Wayland, or signed cross-version update proof.
 
 ```ts
-Linux General > Sound volume              // dictate.feedback.linux; X11 + Wayland
+Linux General > Sounds > Sound volume     // dictate.feedback.linux; X11 + Wayland
 ├── Default / older settings -> 50%
 ├── Slider at 0 -> No recording tones; the last level is kept
 └── Release above 0 -> Save and apply live; preview the start sound
-Linux General > Sounds                    // dictate.sound-theme
-└── Signature / Classic -> Save and apply live; preview the start sound
+Linux General > Sounds > a set            // dictate.sound-theme
+└── Press it -> Save and apply live; play its dictation
 
 Capture                                  // hex app and hex dictate
 ├── Shortcut starts capture -> Queue start sound immediately, before audio arrives
@@ -2890,8 +2896,10 @@ Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
 └── Not yet: custom caption
 iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 ├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary,
-│   Hinglish, Adaptive touch, German spatial autocorrect, ABC under the emoji key,
-│   Two-thumb selection, Hide word suggestions, Learn each language separately
+│   Hinglish, Two-language dictation, Adaptive touch, German spatial autocorrect,
+│   Korean keyboard (두벌식), ABC under the emoji key, Two-thumb selection, Delete
+│   swiped words letter by letter, Hide word suggestions, Join the keyboard when
+│   unfolded, Learn each language separately
 ├── Full keyboard's languages (Settings › Keyboard › Languages, with Full chosen): one or
 │   more layouts, the space bar names the current one and a slide switches letters, accents
 │   and autocorrect, and the input mode reports the language typing
@@ -2900,7 +2908,33 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   a device); Italian restores unambiguous unaccented spellings on space ("perche" →
 │   "perché", "citta" → "città", `KeyboardLanguage.accentRestorations`) and offers "è" and
 │   "c'è" in the strip for "e" and "ce", which are words of their own and are never changed
-│   by space
+│   by space. Hungarian is a normal language (no experiment): its own QWERTZ rows and QWERTY,
+│   its nine accented vowels held on a e i o u (á é í ó ö ő ú ü ű), the iPhone's `hu`
+│   dictionary behind its autocorrect (a missing accent is the cheapest fix, "koszonom" →
+│   "köszönöm", while a word of its own such as "meg" keeps its spelling), English as its
+│   bilingual partner through the Latin-script rule, and no typing (spatial) model
+├── Korean keyboard (두벌식) (off by default, `experiments.koreanKeyboard`): Settings ›
+│   Experiments adds 한국어 to Settings › Keyboard › Languages, typed on the standard two-set
+│   rows (ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔ / ㅁㄴㅇㄹㅎㅗㅓㅏㅣ / ㅋㅌㅊㅍㅠㅜㅡ, shift's ㅃㅉㄸㄲㅆ and ㅒㅖ, no
+│   qwerty or azerty choice). `HangulComposer` composes each syllable in the field (한 → 하 →
+│   ㅎ → nothing on delete, ㅗ then ㅏ → ㅘ and back, 닭 then ㅗ → 달고, 한 then ㅏ → 하나) by
+│   deleting only the part of the run that changed and inserting what it became; space,
+│   return, punctuation, a page or language switch, emoji, dictation, paste, undo, a selection
+│   action, the delete-word swipe, a cursor move or the keyboard hiding commits the run. A
+│   cursor move is recognized by the text before the run (a 32-character tail, so a host that
+│   trims the front of its window still matches if the window holds at least those 32
+│   characters plus the run), the text after the cursor, the field, and a reported selection;
+│   a host that trims more than the tail or reports no selection is best-effort, and a host
+│   that reports no text before the cursor joins syllables only while jamo come within about
+│   half a second (a cursor move followed by a jamo inside that window can't be detected). A
+│   field whose text after the cursor changes while you type (inline autocomplete) commits
+│   each jamo, so syllables don't join there. Korean has no accent holds, spelling
+│   dictionary, autocorrect, word suggestions or typing model, and while the
+│   experiment is off it is not listed, Automatic never picks it, and a stored "ko" is
+│   ignored.
+│   Unit tests only (`HangulComposerTests`, `HangulKeyboardTests`,
+│   `KoreanKeyboardGatingTests`): no CI compiles the iOS targets, and no physical iPhone run
+│   checks it
 ├── German spatial autocorrect (off by default, `experiments.germanSpatialAutocorrect`):
 │   with Spatial autocorrect on too, the Deutsch layout reads taps with the German
 │   model Android ships (`ios/HEXKeyboard/TypingModel/de.hextm`, the same v3 file
@@ -2944,6 +2978,12 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   host that removes one code point per call (some Devanagari and Thai clusters) can leave
 │   fragments. Off, a second finger is ignored exactly as before.
 │   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
+├── Delete swiped words letter by letter (off by default, `experiments.swipeDeleteLetterByLetter`):
+│   right after a swipe, delete acts as anywhere else and takes one character, instead of the
+│   whole swiped word and the space the swipe added before it (#2321). The swipe's record
+│   clears with that delete, as with any delete, so what remains types like ordinary text.
+│   Off, delete takes the whole word back as before.
+│   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
 ├── Hide word suggestions (off by default, `experiments.hideWordSuggestions`): the full
 │   keyboard's strip keeps its height, the Hex key, Undo, status, notices and the Paste chip,
 │   but stops suggesting words: no typing or next-word suggestions, swipe readings, finished
@@ -2951,6 +2991,14 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   Autocorrect still corrects on space, and after Delete the chip that puts back what it
 │   replaced (`.revert`) stays. With nothing suggested above it, holding a strip word to add it
 │   to Custom vocabulary is gone. Off, the strip suggests exactly as it did.
+│   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
+├── Join the keyboard when unfolded (off by default, `experiments.joinKeyboardWhenUnfolded`):
+│   the Duo unfolded and held upright splits as Apple's does there; on, it draws one joined
+│   keyboard instead, at unfoldedWide's own 39 pt rows and 51.7 pt row pitch, 19 pt in from
+│   the keyboard's own side as unfoldedTall's keys sit from its screen's, with the iPhone's
+│   portrait bottom row (123 and the globe to z's right edge, the emoji key on x's column
+│   when the globe shows, space after them, return from m). Apple's Split Keyboard
+│   preference can't be read by a keyboard extension. Off, the split keyboard is unchanged.
 │   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
 ├── Learn each language separately (off by default, `experiments.learnPerLanguage`):
 │   every typing correction and dictation fix is tagged with the language it was typed
@@ -2963,6 +3011,27 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   what Hex learned erases the shared list and every language's; off, everything is the
 │   one shared list and learning it was before. Unit tests only: no CI compiles the iOS
 │   targets, and no physical iPhone run checks it
+├── Two-language dictation (off by default, `experiments.twoLanguageDictation`, iOS 26+):
+│   while Apple Speech dictates with `SpeechTranscriber`, one recording is read twice, in
+│   the language dictation resolved and in the first other keyboard language
+│   (`LanguageSettings.keyboardLanguages`, mapped with `dictationLanguage(for:)`) whose
+│   `SpeechTranscriber` model is installed and not set aside as failing; nothing downloads
+│   for it. Each reading keeps its timed runs (characters, timing, transcription
+│   confidence), and `TwoLanguageMerger` cuts both at the earlier of two word ends within
+│   150 ms, scores a reading by its confidence-weighted seconds clipped to each segment, and
+│   chooses a reading per segment with a 0.35 s cost per language change (ties to the
+│   primary). A seam word is dropped only when its span overlaps the last kept word's by half
+│   the shorter one. A switch keeps the runs' own characters and adds a space only when
+│   neither side has whitespace; when the second language wins nothing, the primary's
+│   original text is used unchanged, so CJK and Thai spacing, punctuation and untimed runs
+│   stay as Apple gave them. The text runs through the same pipeline with the primary
+│   language. No installed second language, a failed second analyzer, or no timed words in
+│   either reading dictates as before; a primary reading that finished silent reports empty
+│   so the caller throws its no-speech error without transcribing again; off, the path is
+│   unchanged.
+│   The app, keyboard, widgets, and tests built on a macOS 26 GitHub runner with 33 tests
+│   passing (run 45005571072, the latest observed verification); nothing is measured on an
+│   iPhone.
 ├── Custom vocabulary (off by default): a local list of up to 100 terms; every
 │   engine spells matched words the listed way before cleanup and again after
 │   formatting

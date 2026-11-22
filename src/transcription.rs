@@ -37,6 +37,7 @@ pub(crate) mod transcript;
 
 #[cfg(target_os = "macos")]
 use color_eyre::eyre::Result;
+use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
 use crate::apple_speech::AppleSpeech;
@@ -55,6 +56,22 @@ pub use crate::transcription::transcript::{Transcript, TranscriptSegment};
 /// has the context to emit the final word and its closing punctuation
 /// (issue 657: sentences lost their full stop or question mark).
 pub(crate) const UNIFIED_ENGLISH_TRAILING_SILENCE_SAMPLES: usize = 6_400;
+
+/// Where a loaded speech model runs, for `hex status` and Settings.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpeechBackend {
+    /// The backend that runs it: `cpu`, `vulkan`, `cuda`, `rocm`, `metal`, or
+    /// another backend's name.
+    pub kind: String,
+    /// The device as the backend describes it: "AMD Radeon RX 9060 XT" on a
+    /// GPU, or ggml's CPU description (usually the processor name) on the CPU.
+    #[serde(default)]
+    pub device: String,
+    /// This launch runs on the CPU because the GPU crashed twice starting
+    /// (Windows' `gpu-start.pending`, #662).
+    #[serde(default)]
+    pub crash_fallback: bool,
+}
 
 #[cfg(target_os = "macos")]
 pub enum Transcriber {
@@ -232,6 +249,15 @@ impl WarmTranscriber {
     pub(crate) fn stream_requires_closing_mark(&self) -> bool {
         match &self.active {
             Some(Transcriber::Gguf(model)) => requires_closing_mark(model.model_id()),
+            _ => false,
+        }
+    }
+
+    /// Whether the warm model streams with Parakeet's buffered chunk menus,
+    /// whose first-word timestamp lags its audio.
+    pub(crate) fn streams_buffered_parakeet(&mut self) -> bool {
+        match &mut self.active {
+            Some(Transcriber::Gguf(model)) => model.streams_buffered_parakeet(),
             _ => false,
         }
     }

@@ -415,6 +415,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
         "lab-mouse-shortcuts",
         "lab-pause-browser",
         "lab-keep-on-clipboard",
+        "lab-signature",
         "lab-copy-only",
         "lab-return-to-app",
         "lab-spoken-formatting",
@@ -449,6 +450,9 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(!rt.state.settings.labs.keep_on_clipboard);
     tap(&mut rt, "lab-keep-on-clipboard");
     assert!(rt.state.settings.labs.keep_on_clipboard);
+    assert!(!rt.state.settings.labs.signature);
+    tap(&mut rt, "lab-signature");
+    assert!(rt.state.settings.labs.signature);
     assert!(!rt.state.settings.labs.copy_only);
     tap(&mut rt, "lab-copy-only");
     assert!(rt.state.settings.labs.copy_only);
@@ -470,6 +474,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     open_labs(&mut rt);
     assert!(rt.find("lab-mouse-shortcuts").is_none(), "macOS only");
     assert!(rt.find("lab-keep-on-clipboard").is_some(), "every OS");
+    assert!(rt.find("lab-signature").is_some(), "every OS");
     assert!(rt.find("lab-copy-only").is_some(), "macOS and Windows");
     assert!(rt.find("lab-spoken-formatting").is_some(), "every OS");
     assert!(rt.find("lab-filler-words").is_some(), "every OS");
@@ -2091,16 +2096,27 @@ fn voice_filter_sliders_set_the_filter_from_the_pointer() {
 
 #[test]
 fn sound_volume_slider_sets_the_level_and_zero_turns_tones_off() {
-    let mut rt = runtime("mac-settings-advanced", true, (980.0, 1500.0));
+    let mut rt = runtime("sound-sets", true, (980.0, 1500.0));
     let (x, y) = rt.find("sound-volume-slider/track").unwrap();
-    rt.pointer_down(x + 75.0, y);
-    rt.pointer_up(x + 75.0, y);
+    // A press between steps lands on one: the volume moves in 5% steps.
+    rt.pointer_down(x + 12.0, y);
+    rt.pointer_up(x + 12.0, y);
+    settle(&mut rt);
+    let volume = rt.state.settings.sound_effect_volume;
+    assert!(volume > 0.5 && volume < 0.7, "{volume}");
+    assert!(
+        ((volume * 20.0).round() - volume * 20.0).abs() < 1e-4,
+        "{volume}"
+    );
+
+    rt.pointer_down(x + 99.0, y);
+    rt.pointer_up(x + 99.0, y);
     settle(&mut rt);
     assert!(rt.state.settings.sound_effects);
     assert_eq!(rt.state.settings.sound_effect_volume, 1.0);
 
-    rt.pointer_down(x - 75.0, y);
-    rt.pointer_up(x - 75.0, y);
+    rt.pointer_down(x - 99.0, y);
+    rt.pointer_up(x - 99.0, y);
     settle(&mut rt);
     assert!(!rt.state.settings.sound_effects);
     assert_eq!(
@@ -2523,6 +2539,57 @@ fn stop_phrase_shows_its_phrase_on_its_card_while_on() {
 }
 
 #[test]
+fn signature_shows_its_line_on_its_card_while_on() {
+    use crate::labs::Feature;
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| ui.lab_store.group = Some(Feature::Signature.group()));
+    settle(&mut rt);
+    assert!(rt.find("signature-text").is_none(), "hidden while off");
+    tap(&mut rt, "lab-signature");
+    assert!(rt.state.settings.labs.signature);
+    assert!(rt.find("signature-text").is_some());
+    assert_eq!(
+        rt.state.lab_store.signature.text,
+        crate::dictation::signature::DEFAULT_TEXT,
+        "the field starts at the saved line"
+    );
+
+    // A draft that fails validation stays in the field, says why, and leaves
+    // the saved line working.
+    let saved = rt.state.settings.labs.signature_text.clone();
+    let too_long = "x".repeat(crate::dictation::signature::MAX_CHARS + 1);
+    rt.update(|ui, _| ui.lab_store.signature = rune::TextEdit::new(too_long));
+    rt.state.flush_drafts();
+    assert_eq!(rt.state.settings.labs.signature_text, saved);
+    refresh(&mut rt);
+    assert!(rt.find("signature-text-error").is_some());
+
+    // A valid draft saves, and an empty one saves too (it appends nothing).
+    rt.update(|ui, _| {
+        ui.lab_store.signature = rune::TextEdit::new("Dax, from Hex".to_string());
+    });
+    rt.state.flush_drafts();
+    assert_eq!(rt.state.settings.labs.signature_text, "Dax, from Hex");
+    refresh(&mut rt);
+    assert!(rt.find("signature-text-error").is_none());
+    rt.update(|ui, _| ui.lab_store.signature = rune::TextEdit::new(String::new()));
+    rt.state.flush_drafts();
+    assert!(rt.state.settings.labs.signature_text.is_empty());
+
+    // A line saved elsewhere updates the field.
+    let mut external = rt.state.settings.clone();
+    external.labs.signature_text = "Sent from Dax".to_string();
+    assert!(rt.state.adopt(external));
+    refresh(&mut rt);
+    assert_eq!(rt.state.lab_store.signature.text, "Sent from Dax");
+
+    // The field leaves with its lab.
+    tap(&mut rt, "lab-signature");
+    assert!(!rt.state.settings.labs.signature);
+    assert!(rt.find("signature-text").is_none());
+}
+
+#[test]
 fn a_labs_card_shows_its_description_and_its_switch_turns_it_on() {
     use crate::labs::Feature;
     let mut rt = runtime("mac-labs", true, (980.0, 2000.0));
@@ -2635,6 +2702,53 @@ fn caps_lock_light_shows_its_choices_on_its_card_while_on() {
     tap(&mut rt, "lab-caps-lock-dictation");
     assert!(rt.state.settings.labs.caps_lock_dictation);
     assert!(rt.find("caps-lock-light").is_some());
+}
+
+#[test]
+fn dictation_style_shows_its_choices_on_its_card_while_on() {
+    let mut rt = runtime("mac-labs", true, (980.0, 4000.0));
+    rt.update(|ui, _| {
+        ui.lab_store.group = Some(crate::labs::Feature::DictationStyle.group());
+        ui.lab_store.search = rune::TextEdit::new("Dictation style".to_owned());
+    });
+    settle(&mut rt);
+    assert!(
+        rt.find("dictation-style-choice-trigger").is_none(),
+        "hidden while off"
+    );
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Polished
+    );
+    tap(&mut rt, "lab-dictation-style");
+    assert!(rt.state.settings.labs.dictation_style);
+    assert!(rt.find("dictation-style-choice-trigger").is_some());
+    tap(&mut rt, "dictation-style-choice-trigger");
+    tap(&mut rt, "option2");
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Notes
+    );
+}
+
+#[test]
+fn output_shows_the_style_row_while_its_lab_is_on() {
+    let mut rt = runtime("output", true, (980.0, 4000.0));
+    settle(&mut rt);
+    assert!(rt.find("dictation-style-row").is_none(), "hidden while off");
+    rt.update(|ui, _| ui.settings.labs.dictation_style = true);
+    refresh(&mut rt);
+    assert!(rt.find("dictation-style-row").is_some());
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Polished
+    );
+    tap(&mut rt, "dictation-style-choice-field-trigger");
+    tap(&mut rt, "dictation-style-choice-item3");
+    assert_eq!(
+        rt.state.settings.labs.dictation_style_choice,
+        crate::app_settings::DictationStyle::Verbatim
+    );
 }
 
 #[test]

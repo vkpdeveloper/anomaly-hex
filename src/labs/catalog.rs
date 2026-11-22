@@ -90,7 +90,9 @@ impl Feature {
             | Self::Hinglish
             | Self::AnnotateAgentTools
             | Self::AnnotateAgentInstall
-            | Self::PhoneDictation => Audience::Everyone,
+            | Self::PhoneDictation
+            | Self::Signature
+            | Self::DictationStyle => Audience::Everyone,
         }
     }
 
@@ -161,10 +163,11 @@ impl Feature {
             | Self::AnnotatePointerScreen
             | Self::FasterLiveText
             | Self::VocabularyFiles => 20261120,
-            Self::LearnFromCorrections | Self::AnnotateAgentTools | Self::AnnotateAgentInstall => {
-                20261121
-            }
-            Self::Hinglish => 20261122,
+            Self::LearnFromCorrections
+            | Self::AnnotateAgentTools
+            | Self::AnnotateAgentInstall
+            | Self::Signature => 20261121,
+            Self::Hinglish | Self::DictationStyle => 20261122,
         }
     }
 
@@ -199,6 +202,12 @@ impl Feature {
         }
         if key == "labs.stop_phrase_text" {
             return Some(Self::StopPhrase);
+        }
+        if key == "labs.signature_text" {
+            return Some(Self::Signature);
+        }
+        if key == "labs.dictation_style_choice" {
+            return Some(Self::DictationStyle);
         }
         if key == "labs.caps_lock_light" {
             return Some(Self::CapsLockDictation);
@@ -319,7 +328,9 @@ impl Feature {
             | Self::VocabularyFiles
             | Self::Hinglish
             | Self::AnnotateAgentTools
-            | Self::AnnotateAgentInstall => EVERY,
+            | Self::AnnotateAgentInstall
+            | Self::Signature
+            | Self::DictationStyle => EVERY,
         }
     }
 
@@ -406,6 +417,8 @@ impl Feature {
             Self::Hinglish => "hinglish",
             Self::AnnotateAgentTools => "annotate-agent-tools",
             Self::AnnotateAgentInstall => "annotate-agent-install",
+            Self::Signature => "signature",
+            Self::DictationStyle => "dictation-style",
         }
     }
 
@@ -492,6 +505,8 @@ impl Feature {
             Self::Hinglish => "labs.hinglish",
             Self::AnnotateAgentTools => "labs.annotate_agent_tools",
             Self::AnnotateAgentInstall => "labs.annotate_agent_install",
+            Self::Signature => "labs.signature",
+            Self::DictationStyle => "labs.dictation_style",
         }
     }
 

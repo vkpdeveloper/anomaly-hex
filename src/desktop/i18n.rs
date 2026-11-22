@@ -25,7 +25,9 @@ mod phone;
 mod portuguese;
 mod russian;
 mod screenshots;
+mod signature;
 mod strings;
+mod style;
 mod text_language;
 mod traditional_chinese;
 
@@ -371,14 +373,17 @@ fn tables() -> &'static [HashMap<&'static str, &'static str>; 6] {
     })
 }
 
-/// Every translated string: the main, Meetings, Labs, failure, first-run,
-/// menu bar, History, Screenshots, and Annotate Agents rows.
+/// Every translated string: the main, Meetings, Labs, Dictation style,
+/// failure, first-run, menu bar, History, Screenshots, and Annotate Agents
+/// rows.
 pub(super) fn all_translations() -> impl Iterator<Item = &'static (&'static str, [&'static str; 6])>
 {
     TRANSLATIONS
         .iter()
         .chain(meetings::TRANSLATIONS)
         .chain(labs::TRANSLATIONS)
+        .chain(style::TRANSLATIONS)
+        .chain(signature::TRANSLATIONS)
         .chain(agents::TRANSLATIONS)
         .chain(failures::TRANSLATIONS)
         .chain(onboarding::TRANSLATIONS)
@@ -591,6 +596,7 @@ mod tests {
         include_str!("../rune_ui/labs.rs"),
         include_str!("../rune_ui/labs/group.rs"),
         include_str!("../rune_ui/labs/screenshots.rs"),
+        include_str!("../rune_ui/labs/signature.rs"),
         include_str!("../rune_ui/labs/store.rs"),
         include_str!("../rune_ui/labs/stop_phrase.rs"),
         include_str!("../rune_ui/labs/voice_prompt.rs"),
@@ -728,16 +734,15 @@ mod tests {
         assert!(checked > 300, "only {checked} translated strings found");
     }
 
-    /// The sound picker translates each set's name and character and each
-    /// cue's name, which are not literals at the call.
+    /// The sound picker translates each set's name and character, which are
+    /// not literals at the call.
     #[test]
     fn every_sound_set_string_has_every_language() {
-        use crate::feedback::{Cue, SoundSet};
+        use crate::feedback::SoundSet;
         let table: std::collections::HashMap<_, _> = all_translations().copied().collect();
         let strings = SoundSet::ALL
             .into_iter()
-            .flat_map(|set| [set.name(), set.character()])
-            .chain(Cue::ALL.into_iter().map(Cue::name));
+            .flat_map(|set| [set.name(), set.character()]);
         for english in strings {
             let translations = table
                 .get(english)
@@ -841,6 +846,28 @@ mod tests {
         use crate::app_settings::AppearanceTheme;
         let table: std::collections::HashMap<_, _> = all_translations().copied().collect();
         for english in AppearanceTheme::ALL.into_iter().map(AppearanceTheme::name) {
+            let translations = table
+                .get(english)
+                .unwrap_or_else(|| panic!("{english:?} has no translations"));
+            assert!(
+                translations
+                    .iter()
+                    .all(|translation| !translation.is_empty()),
+                "{english:?} is missing a language"
+            );
+        }
+    }
+
+    /// The Dictation style lab translates each choice's name and hint, which
+    /// are not literals at the call.
+    #[test]
+    fn every_dictation_style_string_has_every_language() {
+        use crate::app_settings::DictationStyle;
+        let table: std::collections::HashMap<_, _> = all_translations().copied().collect();
+        for english in DictationStyle::ALL
+            .into_iter()
+            .flat_map(|style| [style.name(), style.hint()])
+        {
             let translations = table
                 .get(english)
                 .unwrap_or_else(|| panic!("{english:?} has no translations"));
