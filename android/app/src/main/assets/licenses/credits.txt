@@ -6,7 +6,7 @@ Emoji list from Unicode's emoji-test.txt, © Unicode, Inc., Unicode License v3.
 
 Keyboard suggestion filter: List of Dirty, Naughty, Obscene, and Otherwise Bad Words
 (LDNOOBW), © 2012–2020 Shutterstock, Inc., and contributors. English, Spanish, German,
-Norwegian, French and Italian lists. Source: https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/tree/5faf2ba42d7b1c0977169ec3611df25a3c08eb13
+Norwegian, French, Italian and Hindi lists (Hindi's for Hinglish). Source: https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/tree/5faf2ba42d7b1c0977169ec3611df25a3c08eb13
 Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/
 Full licence: cc-by-4.0.txt. Hex lowercased and classified the entries, omitted ordinary,
 medical and search-only terms, and added common slurs, inflections and spelling variants.
@@ -33,6 +33,16 @@ Spanish spellings: RLA-ES Hunspell dictionaries (es_ES and es_MX), coordinated b
 used under Mozilla Public License 1.1. The frequency model filters by these spellings;
 the original dictionaries are unmodified. See mpl-1.1.txt, rla-LICENSE.md and rla-README_hunspell_es.txt.
 Source files: https://github.com/LibreOffice/dictionaries/tree/762abe74008b94b2ff06db6f4024b59a8254c467/es
+
+Hinglish keyboard language model (hien.hextm): the English model above, mixed with word and
+word-pair counts from PHINC: A Parallel Hinglish Social Media Code-Mixed Corpus for Machine
+Translation, Vivek Srivastava and Mayank Singh, 2020. https://doi.org/10.5281/zenodo.3605597
+Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/
+Full licence: cc-by-4.0.txt. Changes: lowercased and counted the Hinglish posts' words and word
+pairs (no text is kept), mixed them half and half with the English model's probabilities,
+selected informative pairs and quantized probabilities into HXTM v3. The Hinglish capitalization
+list (hien.capitals) is the English list without Hindi words English writes as names, plus the
+names PHINC's posts nearly always write with a capital.
 
 Norwegian Bokmål keyboard language model: N-grammer fra Nasjonalbiblioteket 2026,
 National Library of Norway (Nasjonalbiblioteket). Book unigrams and bigrams ("digibok"),
