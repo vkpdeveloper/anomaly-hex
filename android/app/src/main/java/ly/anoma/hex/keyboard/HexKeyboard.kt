@@ -5,6 +5,7 @@ import android.database.ContentObserver
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.UserDictionary
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -83,8 +84,10 @@ class HexKeyboard : InputMethodService() {
             } finally { fetching = false }
         }
     }
+    // The editor's text, read from a copy kept here while it holds: a read through the InputConnection waits on the app.
+    private val text by lazy { CachedText(InputConnectionTarget(this), SystemClock::uptimeMillis) }
     internal val engine by lazy {
-        KeyboardEngine(InputConnectionTarget(this), feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
+        KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
             readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine) }, learned = learned,
             learnedChanged = ::learnedChanged, background = words)
     }
@@ -125,6 +128,8 @@ class HexKeyboard : InputMethodService() {
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         dictation.cancel() // Even a different field in the same app must not receive an old result.
+        text.started(attribute.initialSelStart, attribute.initialSelEnd,
+            attribute.getInitialTextBeforeCursor(CachedText.INITIAL, 0), attribute.getInitialTextAfterCursor(CachedText.INITIAL, 0))
         engine.startInput(attribute)
     }
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
@@ -139,6 +144,7 @@ class HexKeyboard : InputMethodService() {
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
                                    candidatesStart: Int, candidatesEnd: Int) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        text.selectionChanged(newSelStart, newSelEnd)
         engine.updateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd)
     }
 
