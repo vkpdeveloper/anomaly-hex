@@ -137,6 +137,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         }
         spaceKey.sound = AudioManager.FX_KEYPRESS_SPACEBAR
         enterKey = caps.cap("", context.getString(R.string.keyboard_return), KeyFill.Enter, KeyboardMetrics.LABEL, pill = true) { ime.engine.enter() }
+        rolls(comma); rolls(period)
         enterKey.sound = AudioManager.FX_KEYPRESS_RETURN
         enterKey.textEntry = false
         modeKey.textEntry = false
@@ -144,6 +145,18 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         numpadKey.textEntry = false
         enterIcon.imageTintList = ColorStateList.valueOf(context.getColor(R.color.kb_enter_ink))
         enterKey.face.addView(enterIcon, FrameLayout.LayoutParams(px(27f), px(27f), Gravity.CENTER))
+    }
+
+    /** Comma and period type as they lift, in the order the fingers went down with the letters around
+     * them ([Rollover]), and a fast tap that drifts off the key still types, as a letter's does. */
+    private fun rolls(key: KeyCap) = key.setOnTouchListener { v, e ->
+        fun type() { if (v.isPressed) { v.isPressed = false; v.performClick() } }
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { roll.down(v) { type() }; v.isPressed = true }
+            MotionEvent.ACTION_UP -> if (roll.up(v)) type()
+            MotionEvent.ACTION_CANCEL -> { roll.up(v); v.isPressed = false }
+        }
+        true
     }
 
     private fun cased(c: Char) = if (current?.let { !it.symbols && it.shifted } == true) c.uppercaseChar().toString() else c.toString()

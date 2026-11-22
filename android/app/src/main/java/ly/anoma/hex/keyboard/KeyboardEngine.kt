@@ -106,6 +106,9 @@ internal class KeyboardEngine(
     private var symbols = false
     private var more = false
     private var numpad = false
+    // A symbol was typed since ?123 opened the symbol pages: the next space goes back to the letters,
+    // as on Gboard, so a "." pressed after "?" and a space isn't the symbol page's "?" again.
+    private var symbolTyped = false
     private var selStart = -1
     private var selEnd = -1
     // Spaces, each remembered with the text before the cursor it left, so anything else in between
@@ -160,7 +163,7 @@ internal class KeyboardEngine(
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
             kind == InputType.TYPE_CLASS_DATETIME
         symbols = numpad
-        more = false; shift.reset()
+        more = false; symbolTyped = false; shift.reset()
         selStart = attribute.initialSelStart; selEnd = attribute.initialSelEnd
         refreshCaps(force = true)
     }
@@ -289,7 +292,7 @@ internal class KeyboardEngine(
     /** The number pad's !?#: the first symbols page. */
     fun symbolPage() { leavePage(); symbols = true; numpad = false; showPlane() }
     private fun leavePage() {
-        resetTyping(); clearSpaces(); surface?.suggestions(emptyList()); more = false; shift.forgetTap()
+        resetTyping(); clearSpaces(); surface?.suggestions(emptyList()); more = false; shift.forgetTap(); symbolTyped = false
     }
     private fun resetTyping() {
         cancelChip(); addressOffer = null; word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
@@ -376,10 +379,11 @@ internal class KeyboardEngine(
     }
     /** The letter a touch near a key's edge types: the key it landed on, or a neighbour within
      * TypingWord.REACH dp ([near], distances in dp) that the word list makes clearly likelier next. Only
-     * while autocorrect is on in an ordinary text field on the letters page, and never with caps lock. */
+     * in an ordinary text field on the letters page, never with caps lock or Spatial autocorrect off.
+     * Autocorrect itself needn't be on: this only reads a touch that missed every keycap, as Gboard does. */
     fun likelierLetter(hit: Char, near: Map<Char, Double>, keys: Collection<Char>): Char {
         val w = word ?: return hit
-        if (near.isEmpty() || symbols || shift.locked || !feedback.autocorrect || !target.connected) return hit
+        if (near.isEmpty() || symbols || shift.locked || !w.spatial || !target.connected) return hit
         return w.likelierKey(before(), hit, near, keys)
     }
     /** Shift as the keys show it: letters type capitals while it is on or held. */
@@ -489,6 +493,13 @@ internal class KeyboardEngine(
     /** The space bar, tapped at [point] in [grid]'s coordinates (null off the letters page). */
     fun space(point: KeyPoint? = null, grid: KeyGrid? = null) {
         if (!target.connected) return
+        typeSpace(point, grid)
+        if (symbols && !numpad && symbolTyped) {
+            symbols = false; more = false; symbolTyped = false
+            showPlane(); showPredictions(before())
+        }
+    }
+    private fun typeSpace(point: KeyPoint?, grid: KeyGrid?) {
         edited()
         val now = clock()
         val b = before()
@@ -528,6 +539,7 @@ internal class KeyboardEngine(
         if (!target.connected) return
         edited(); typedHere = true
         if (value == " ") { space(); return }
+        if (symbols && !numpad) symbolTyped = true
         val b = before()
         val mark = value.length == 1 && TypingWord.endsWord(value[0])
         // A clause-ending mark takes the space a picked suggestion typed ("Hello,").

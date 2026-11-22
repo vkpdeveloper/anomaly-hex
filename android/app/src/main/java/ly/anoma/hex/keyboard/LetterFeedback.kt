@@ -32,9 +32,14 @@ internal class LetterFeedback(private val host: ViewGroup) {
     private var row = 0
     private var index = 0
     private var left = 0
-    private var bottom = 0
     private var cell = 0
     private var holding = false
+    // Where the finger was when the list opened, and the option under it then. The choice follows the
+    // finger's travel from there, so a finger resting off the key's centre, or drifting a little, keeps
+    // the option it opened on; only a slide of half an option or more picks another.
+    private var start = 0
+    private var originX = Float.NaN
+    private var originY = Float.NaN
     private val pad get() = dp(3)
     private val rowHeight get() = dp(42)
     val choosing get() = holding
@@ -63,13 +68,13 @@ internal class LetterFeedback(private val host: ViewGroup) {
         rows = if (reverse) listOf(options[0].reversed()) else options
         holding = hold; row = 0
         index = (if (reverse) rows[0].lastIndex - default else default).coerceIn(0, rows[0].lastIndex)
+        start = index; originX = Float.NaN; originY = Float.NaN
         val columns = rows.maxOf { it.size }
         val edge = dp(4)
         cell = if (hold) minOf(key.width.coerceIn(dp(28), dp(38)), (host.width - 2 * (edge + pad)) / columns) else key.width + dp(6)
         val w = cell * columns + 2 * pad; val h = rowHeight * rows.size + 2 * pad
         left = (r.centerX() - pad - cell * index - cell / 2).coerceIn(edge, host.width - w - edge)
         val y = (r.top - h - dp(2)).coerceAtLeast(0)
-        bottom = y + h
         val bar = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             background = face(R.color.kb_key, 12, true); elevation = dp(4).toFloat(); setPadding(pad, pad, pad, pad)
@@ -87,11 +92,13 @@ internal class LetterFeedback(private val host: ViewGroup) {
         if (hold) { scrim.layout(0, 0, host.width, host.height); host.overlay.add(scrim); dimmed = true }
         host.overlay.add(bar)
     }
-    /** The finger moved to ([x], [y]) in the host's coordinates: the option under it, the nearest row's below the list. */
+    /** The finger moved to ([x], [y]) in the host's coordinates: the option its travel since the list
+     * opened reaches, one per option's width across and one row per row's height up. */
     fun move(x: Float, y: Float) {
         if (!holding) return
-        val nextRow = ((bottom - pad - y) / rowHeight).toInt().coerceIn(0, rows.lastIndex)
-        val next = ((x - left - pad) / cell).toInt().coerceIn(0, rows[nextRow].lastIndex)
+        if (originX.isNaN()) { originX = x; originY = y; return }
+        val nextRow = ((originY - y) / rowHeight).roundToInt().coerceIn(0, rows.lastIndex)
+        val next = (start + ((x - originX) / cell).roundToInt()).coerceIn(0, rows[nextRow].lastIndex)
         if (row != nextRow || index != next) { row = nextRow; index = next; highlight() }
     }
     private fun highlight() {

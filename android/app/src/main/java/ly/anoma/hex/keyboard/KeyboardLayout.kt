@@ -107,8 +107,9 @@ internal object KeyboardMetrics {
     const val DELETE_REPEAT_EVERY = 50L
     const val DELETE_WORDS_AFTER = 20
     const val DELETE_WORD_EVERY = 150L
-    /** A long press shows row 1's digit and the accents after this long. */
-    const val LONG_PRESS = 300L
+    /** A long press shows row 1's digit and the accents after this long. Gboard's 300 ms caught slow taps,
+     * which then typed the digit or an accent instead of the letter. */
+    const val LONG_PRESS = 400L
 
     /** Cells across the letter rows: the longer of rows 1 and 2. */
     fun columns(lines: List<String>) = maxOf(lines[0].length, lines[1].length)
