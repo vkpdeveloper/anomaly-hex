@@ -30,9 +30,12 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private companion object {
         const val SUGGESTION = 19.5f
         const val SUGGESTION_MIN = 12f
+        /** The chip's widest: it fits its text up to this, so a short code leaves no gap. */
         const val CHIP_WIDTH = 143f
-        /** The copy's chip beside its pieces, and a piece's icon and longest text. */
+        /** The copy's chip at its widest beside its pieces, and a piece's icon and longest text. */
         const val PIECE_CHIP_WIDTH = 104f
+        /** The chip's padding and icon, which its text's width leaves room for. */
+        const val CHIP_CHROME = 12f + 14f + 20.2f + 8.2f
         const val PIECE_ICON = 16f
         const val PIECE_TEXT_WIDTH = 150f
         const val EMOJI = 21f
@@ -160,11 +163,11 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             chipText.apply {
                 text(this, 16.5f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             }
-            addView(chipText, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(chipText, LinearLayout.LayoutParams(-2, -2))
             setOnClickListener { useOffer() }
         }
         clipRow.orientation = LinearLayout.HORIZONTAL; clipRow.gravity = Gravity.CENTER_VERTICAL
-        clipRow.addView(chip, LinearLayout.LayoutParams(px(CHIP_WIDTH), pill))
+        clipRow.addView(chip, LinearLayout.LayoutParams(-2, pill))
         clipScroll.apply { isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; addView(clipRow, LayoutParams(-2, -1)) }
         addView(clipScroll, LayoutParams(-2, -1, Gravity.CENTER).apply { marginStart = px(46f); marginEnd = px(48f) })
         shot.apply {
@@ -443,11 +446,11 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         shot.layoutParams = params
     }
 
-    /** The copy's pieces beside its chip, each pasting just that part. The chip narrows to make room. */
+    /** The copy's pieces beside its chip, each pasting just that part. The chip's text narrows to make room. */
     private fun pieces(offer: ChipOffer) {
         while (clipRow.childCount > 1) clipRow.removeViewAt(1)
         val pieces = (offer as? ChipOffer.Text)?.split?.pieces.orEmpty()
-        chip.layoutParams = chip.layoutParams.apply { width = px(if (pieces.isEmpty()) CHIP_WIDTH else PIECE_CHIP_WIDTH) }
+        chipText.maxWidth = px((if (pieces.isEmpty()) CHIP_WIDTH else PIECE_CHIP_WIDTH) - CHIP_CHROME)
         for (piece in pieces) {
             val icon = ImageView(context)
             val view = LinearLayout(context).apply {
