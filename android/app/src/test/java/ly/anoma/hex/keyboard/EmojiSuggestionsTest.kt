@@ -65,6 +65,16 @@ class EmojiSuggestionsTest {
         assertEquals(listOf("🤙"), k.emoji)
     }
 
+    @Test fun aWordInProgressComesBackAfterAPanelClosesUntouched() {
+        val k = Keyboard()
+        k.tap("medicin")
+        val before = k.strip
+        k.engine.pause()
+        assertTrue(k.strip.isEmpty())
+        k.engine.configureTyping(keepWord = true)
+        assertEquals(before.map { it.text }, k.strip.map { it.text })
+    }
+
     @Test fun hinglishWordsHaveTheirOwnEmojiAndEnglishOnesToo() {
         val k = Keyboard(language = Spoken.Hinglish)
         k.chars("chai ")

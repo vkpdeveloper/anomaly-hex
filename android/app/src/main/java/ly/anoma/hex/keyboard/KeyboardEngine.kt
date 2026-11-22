@@ -414,7 +414,7 @@ internal class KeyboardEngine(
 
     /** An emoji from the emoji panel: typed as it is, and learned for the word right before it, if any. */
     fun emoji(text: String) {
-        // The panel leaves the word, so the field's kind says whether to learn.
+        // The word before the cursor, typed then or before; the field's kind says whether to learn.
         val after = if (ordinaryField && selStart == selEnd) EmojiWords.wordBefore(before()) else null
         type(text)
         if (after != null) { emojiPicks.pick(after, text); emojiPicked() }
@@ -740,6 +740,10 @@ internal class KeyboardEngine(
     fun clearForDictation() { edited(); resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
 
     /** The editor or the keyboard went away: forget the word, never carry it to the next field. */
+    /** A panel (emoji, the grid's menu, the clipboard) takes the keys' place. The word in progress stays,
+     * so closing it untouched brings back the word's suggestions ([configureTyping] with keepWord). */
+    fun pause() { cancelChip(); surface?.suggestions(emptyList()) }
+
     fun leave() {
         edited()
         if (typedHere) learnAddressBefore(before())

@@ -53,7 +53,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
 
     fun openEmoji() {
-        keys.cancelGestures(); ime.engine.leave()
+        keys.cancelGestures(); ime.engine.pause()
         toolbar.visibility = GONE; keys.visibility = GONE; emoji.visibility = VISIBLE
         setBackgroundColor(context.getColor(R.color.kb_emoji_background))
         emoji.open()
@@ -66,7 +66,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     }
     /** The menu takes the toolbar's and the keys' place at their height, so the editor doesn't move. */
     private fun openMenu() {
-        keys.cancelGestures(); toolbar.cancelGestures(); ime.engine.leave()
+        keys.cancelGestures(); toolbar.cancelGestures(); ime.engine.pause()
         menu.layoutParams = menu.layoutParams.apply { height = toolbar.height + keys.height }
         toolbar.visibility = GONE; keys.visibility = GONE; menu.visibility = VISIBLE
         menu.open()
