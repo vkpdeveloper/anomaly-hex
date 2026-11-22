@@ -2974,6 +2974,15 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Keyboard > Keyboard layout > Hinglish -> Hindi in Latin letters and English, tapped or glided
 │   (HinglishTest; unit tests only, no device run)
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
+├── Strip's clipboard button -> clipboard panel: recent photos, then clips pinned first,
+│   newest first; tap pastes or inserts, touch and hold -> Pin or Delete, Clear -> unpinned go
+│   ├── Unpinned clips go an hour after copying (20 kept, 5 images); up to 50 pins, the
+│   │   only clips saved (owner-only private files)
+│   ├── Copies marked EXTRA_IS_SENSITIVE or made in a password field -> never kept
+│   └── Image -> commitContent through FileProvider when the editor takes it, else copied
+├── Strip's chip -> the last copy (10 min) or a screenshot or photo from the last 5 min
+├── Keyboard > Recent photos (off) -> ask for photos; camera and screenshot images only
+│   (ClipHistoryTest, RecentImagesTest; unit tests only, no device run)
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip
 ├── Write one spelling of a word far more ("nhi", "colour") -> the strip, autocorrect,
 │   predictions and glides give yours; distinct words never merge ("main", "mein");

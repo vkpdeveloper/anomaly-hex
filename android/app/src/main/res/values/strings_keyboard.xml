@@ -45,4 +45,18 @@
     <string name="keyboard_back">Back</string>
     <string name="keyboard_emoticons">Emoticons</string>
     <string name="keyboard_emoji_recent">Recent emoji</string>
+    <string name="keyboard_clipboard">Clipboard</string>
+    <string name="keyboard_clear">Clear</string>
+    <string name="keyboard_clipboard_empty">Copied text and images stay here for an hour. Touch and hold one to pin it.</string>
+    <string name="keyboard_recent_photos">Recent photos</string>
+    <string name="keyboard_pinned">Pinned</string>
+    <string name="keyboard_recent">Recent</string>
+    <string name="keyboard_pin">Pin</string>
+    <string name="keyboard_unpin">Unpin</string>
+    <string name="keyboard_delete_clip">Delete</string>
+    <string name="keyboard_pinned_full">Up to %1$d pinned clips</string>
+    <string name="keyboard_image">Image</string>
+    <string name="keyboard_paste_image">Paste image</string>
+    <string name="keyboard_add_photo">Add photo</string>
+    <string name="keyboard_image_copied">Image copied. This field can\'t take images</string>
 </resources>
