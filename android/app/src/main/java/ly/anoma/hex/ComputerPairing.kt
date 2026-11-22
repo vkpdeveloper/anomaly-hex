@@ -1,5 +1,8 @@
 package ly.anoma.hex
 
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.res.colorResource
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -60,8 +63,11 @@ import ly.anoma.hex.relay.routeKind
 /** The computer the keyboard sends dictation to: pair one, or see, check and forget the one paired. */
 @Composable
 internal fun ComputerSection(store: Store, computer: Computer?, onChange: (Computer?) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (computer == null) Pairing(store, onChange) else Paired(store, computer, onChange)
+    // Settings' card is a plain background, not a Surface, so text here would default to black.
+    CompositionLocalProvider(LocalContentColor provides colorResource(R.color.ink)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (computer == null) Pairing(store, onChange) else Paired(store, computer, onChange)
+        }
     }
 }
 
