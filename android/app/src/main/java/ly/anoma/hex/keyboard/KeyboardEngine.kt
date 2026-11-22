@@ -248,6 +248,16 @@ internal class KeyboardEngine(
     }
     private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null; glided = null }
     private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
+    /** Reads the layout's typing model on [background] before the keyboard first shows, so showing it
+     * doesn't wait on the read. A field that opens first reads the model itself and this copy goes. */
+    fun preload() {
+        val language = layoutLanguage().layoutCode
+        if (language in models) return
+        background.execute {
+            val decoder = try { loadDecoder(language) } catch (_: java.io.IOException) { return@execute }
+            main.post { if (language !in models) models[language] = decoder.also { it.learned = learned; loadPersonal(it) } }
+        }
+    }
     fun configureTyping(keepWord: Boolean = false) {
         val language = layoutLanguage().layoutCode
         val active = word

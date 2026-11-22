@@ -121,6 +121,7 @@ class HexKeyboard : InputMethodService() {
             learnedLoaded = true
             main.post { engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords() }
         }
+        engine.preload()
     }
     override fun onEvaluateFullscreenMode() = false
     override fun onCreateInputView(): View = KeyboardView(this, this).also { view = it; engine.surface = it }
