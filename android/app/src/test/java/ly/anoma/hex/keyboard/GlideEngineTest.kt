@@ -180,7 +180,7 @@ class GlideEngineTest {
             engine.surface = object : KeyboardSurface {
                 override fun showPage(page: KeyboardPage) {}
                 override fun suggestions(slots: List<Suggestion>) { strip = slots }
-                override fun undoDictation(shown: Boolean) {}
+                override fun undo(offer: UndoOffer?) {}
             }
             engine.startInput(EditorInfo().apply {
                 inputType = type; initialSelStart = text.length; initialSelEnd = text.length

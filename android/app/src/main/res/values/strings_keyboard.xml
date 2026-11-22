@@ -8,6 +8,9 @@
     <string name="keyboard_cancel_dictation">Cancel dictation</string>
     <string name="keyboard_finish_dictation">Finish dictation</string>
     <string name="keyboard_undo_dictation">Undo dictation</string>
+    <string name="keyboard_fix">Fix mistakes</string>
+    <string name="keyboard_undo_fixes">Undo fixes</string>
+    <string name="keyboard_nothing_to_fix">Nothing to fix</string>
     <string name="keyboard_pane">Hex keyboard, %1$s</string>
     <string name="keyboard_more_characters">Show more characters</string>
     <string name="keyboard_transcribing">Transcribing</string>

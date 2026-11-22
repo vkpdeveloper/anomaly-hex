@@ -7,6 +7,8 @@ import android.text.InputType
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import java.util.concurrent.Executor
+import ly.anoma.hex.fix.Fix
+import ly.anoma.hex.fix.Tinyfix
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.speech.SpokenText
 import ly.anoma.hex.typing.KeyGrid
@@ -25,9 +27,14 @@ internal interface KeyboardSurface {
     /** The strip, in the typing model's order: what was typed first when it shows, then the fix or the
      * likeliest word, then the rest. Next words after a space are [Suggestion.Kind.Next]. */
     fun suggestions(slots: List<Suggestion>)
-    /** Offer Undo dictation, or stop offering it. */
-    fun undoDictation(shown: Boolean)
+    /** Offer an undo, or stop offering it. */
+    fun undo(offer: UndoOffer?)
 }
+
+internal enum class UndoOffer { Dictation, Fixes }
+
+/** The field's text around the caret for the fix button: [text] starts at [start] in the field. */
+internal data class FieldText(val text: String, val start: Int, val selStart: Int, val selEnd: Int)
 
 /** Keys in, text out: the current word, autocorrection and its undo, spaces, shift and the key pages.
  * It talks to the editor only through [KeyboardTextTarget] and to the views through [KeyboardSurface]. */
@@ -54,6 +61,9 @@ internal class KeyboardEngine(
         const val OWN_EDIT_MS = 500L
         /** Undo dictation stays this long unless something else happens first (iPhone Hex: 12 s). */
         const val UNDO_MS = 12_000L
+        /** How much text on each side of the caret the fix button reads and checks. Each word costs a
+         * model run of about 3 ms, so this keeps a long field's check near a second. */
+        const val FIX_WINDOW = 1_000
     }
     private var editedAt = Long.MIN_VALUE / 2
     // Every edit goes through here, so the selection changes that follow can be told from a tap in the text.
@@ -73,8 +83,11 @@ internal class KeyboardEngine(
     private var tapped: Tapped? = null
     // Undo dictation, as iPhone Hex's: the dictation just inserted and the text after it then, offered
     // back until the next edit, 12 s, or the cursor leaving its end, so the chip never does nothing.
-    private data class Dictated(val text: String, val after: String)
-    private var dictated: Dictated? = null
+    // Undo fixes is offered the same way, and works while the field still reads as the fixes left it.
+    private sealed interface Offer
+    private data class Dictated(val text: String, val after: String) : Offer
+    private class Fixed(val field: FieldText, val fixes: List<Fix>, val result: String) : Offer
+    private var offer: Offer? = null
     private val dropDictation = Runnable { offerUndo(null) }
     private var pendingChip: Runnable? = null
     var surface: KeyboardSurface? = null
@@ -134,7 +147,7 @@ internal class KeyboardEngine(
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
-        dictated?.let { if (!undoable(it)) offerUndo(null) }
+        (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
         val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) {
             if (expectedCaret >= 0 && (newSelStart != expectedCaret || newSelEnd != expectedCaret)) {
@@ -622,24 +635,89 @@ internal class KeyboardEngine(
         if (result.isNotEmpty() && target.commit(result) && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
     }
 
-    /** Undo dictation: the last dictation goes, if it is still right before the cursor with nothing selected. */
-    fun undoDictation() {
-        val d = dictated ?: return
+    /** The undo chip. Undo dictation: the last dictation goes, if it is still right before the cursor with
+     * nothing selected. Undo fixes: each fixed word goes back, if the field hasn't changed since. Returns
+     * the words that are back. */
+    fun undo(): List<String> {
+        val o = offer ?: return emptyList()
         offerUndo(null)
-        if (undoable(d) && replace(d.text, "")) { resetTyping(); clearSpaces(); showPredictions(before()) }
+        when (o) {
+            is Dictated -> if (undoable(o) && replace(o.text, "")) { resetTyping(); clearSpaces(); showPredictions(before()) }
+            is Fixed -> {
+                val now = fieldText()
+                if (now == null || now.start != o.field.start || now.text != o.result) return emptyList()
+                // Each fix's place in the fixed text, and the edit that takes it back.
+                var shift = 0
+                val back = o.fixes.map { fix ->
+                    val from = fix.from + shift
+                    shift += fix.replacement.length - fix.original.length
+                    Fix(from, from + fix.replacement.length, fix.replacement, fix.original)
+                }
+                edited(); resetTyping(); clearSpaces()
+                rewrite(now, back)
+                return o.fixes.map { it.original }
+            }
+        }
+        return emptyList()
+    }
+
+    /** The text the fix button checks, or null where it mustn't read: a password field or no editor. */
+    fun fieldText(): FieldText? {
+        if (secure || !target.connected || selStart < 0 || selEnd < 0) return null
+        val before = target.before(FIX_WINDOW) ?: return null
+        val selected = if (selStart == selEnd) "" else target.selected() ?: return null
+        val after = target.after(FIX_WINDOW) ?: return null
+        return FieldText(before + selected + after, minOf(selStart, selEnd) - before.length, selStart, selEnd)
+    }
+
+    /** Makes the fix button's [fixes] to [field] as it was checked, or nothing if it has changed since. */
+    fun applyFixes(field: FieldText, fixes: List<Fix>): Boolean {
+        if (fixes.isEmpty() || fieldText() != field) return false
+        edited(); resetTyping(); clearSpaces()
+        rewrite(field, fixes)
+        surface?.suggestions(emptyList())
+        offerUndo(Fixed(field, fixes, Tinyfix.apply(field.text, fixes)))
+        return true
+    }
+
+    /** Replaces each edit's span of [field] in one batch, last first so earlier places hold, and puts the
+     * selection back where it was in the changed text. */
+    private fun rewrite(field: FieldText, edits: List<Fix>) {
+        fun moved(position: Int): Int {
+            var shift = 0
+            for (e in edits) {
+                val from = field.start + e.from
+                val to = field.start + e.to
+                if (to <= position) shift += e.replacement.length - e.original.length
+                else if (from < position) return from + e.replacement.length + shift
+            }
+            return position + shift
+        }
+        target.beginBatch()
+        try {
+            for (e in edits.sortedByDescending { it.from }) {
+                target.setSelection(field.start + e.from, field.start + e.to)
+                target.commit(e.replacement)
+            }
+            target.setSelection(moved(field.selStart), moved(field.selEnd))
+        } finally { target.endBatch() }
     }
     private fun undoable(d: Dictated): Boolean {
         if (secure || !target.connected || target.selected()?.isNotEmpty() == true || !endsWith(d.text)) return false
         val after = target.after(d.after.length).orEmpty()
         return after.startsWith(d.after) || d.after.startsWith(after)
     }
-    private fun offerUndo(next: Dictated?) {
+    private fun offerUndo(next: Offer?) {
         main.removeCallbacks(dropDictation)
-        val shown = dictated != null
-        dictated = next
+        val shown = offer != null
+        offer = next
         if (next != null) main.postDelayed(dropDictation, UNDO_MS)
-        if (shown || next != null) surface?.undoDictation(next != null)
+        if (shown || next != null) surface?.undo(when (next) {
+            is Dictated -> UndoOffer.Dictation
+            is Fixed -> UndoOffer.Fixes
+            null -> null
+        })
     }
-    /** Any edit through the keys ends the Undo dictation offer. */
-    private fun edited() { if (dictated != null) offerUndo(null) }
+    /** Any edit through the keys ends the undo offer. */
+    private fun edited() { if (offer != null) offerUndo(null) }
 }

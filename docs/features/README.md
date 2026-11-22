@@ -2972,7 +2972,12 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 └── Proof limits: unit tests only; no CI compiles the iOS targets
 Android keyboard -> English, Spanish, German and Bokmål typing assistance
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
-└── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Type a listed word in full -> keep its spelling on space or tap its literal chip
+└── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)
+    ├── Tap the toolbar's spellcheck button -> fix words within 1,000 characters of the caret
+    ├── Undo fixes -> restore them while the field is unchanged; skip them until restart
+    └── Proof limits: parity with the npm package on 55 sentences (unit test, needs the
+        files); fix, undo and the download seen on a Pixel emulator, not a physical phone
 Unmerged Windows / deferred features -> Not part of this map
 ```
 

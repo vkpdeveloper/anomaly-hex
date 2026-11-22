@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.button.ButtonPreferences
+import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
 
@@ -79,6 +80,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val glide = remember(revision) { typing.glide }
     val glideTrail = remember(revision) { typing.glideTrail }
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
+    val fixState by TinyfixFiles.state.collectAsState()
+    LaunchedEffect(revision) { TinyfixFiles.refresh(context, typing) }
     var confirmForget by remember { mutableStateOf(false) }
     val button = remember { ButtonPreferences(context) }
     val hideButton = remember(revision) { button.hideWithKeyboard }
@@ -149,6 +152,15 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Toggle("Autocorrect", "Fix typos when you press space", autocorrect) { typing.autocorrect = it }
                             // Shown under Autocorrect while it is on, as on iPhone.
                             if (autocorrect) { Rule(); Toggle("Spatial autocorrect", "Use where taps land to fix typos", spatial) { typing.spatial = it } }
+                            // The fix button's files download only once it is turned on, and go when it is turned off.
+                            Rule(); Toggle("Fix button", when (val state = fixState) {
+                                is TinyfixFiles.State.Downloading -> "Downloading, ${state.percent}%"
+                                TinyfixFiles.State.Failed -> "Couldn't download. Try again"
+                                TinyfixFiles.State.Ready -> "Fixes words like \u201Cform\u201D for \u201Cfrom\u201D"
+                                TinyfixFiles.State.Off -> "Fixes words like \u201Cform\u201D for \u201Cfrom\u201D. Downloads 3.5 MB"
+                            }, fixState is TinyfixFiles.State.Ready || fixState is TinyfixFiles.State.Downloading) {
+                                if (it) TinyfixFiles.enable(context, typing) else TinyfixFiles.disable(context, typing)
+                            }
                             Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
                             // The words the keyboard keeps and suggests are Android's own personal dictionary.
                             Rule(); Entry("Personal dictionary", "Words the keyboard always knows", "↗",

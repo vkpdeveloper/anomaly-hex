@@ -24,9 +24,9 @@ import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
-/** Gboard's toolbar above the keys: the grid button on the left, the mic in its circle on the right,
- * and between them the three suggestions, the clipboard chip for something just copied, or the
- * recording's level while dictating. */
+/** Gboard's toolbar above the keys: the grid button on the left, the mic in its circle on the right
+ * (with the fix button before it, when that is on), and between them the three suggestions, the
+ * clipboard chip for something just copied, or the recording's level while dictating. */
 internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLayout(context) {
     private companion object {
         const val SUGGESTION = 19.5f
@@ -48,6 +48,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
     private val cancel = button(R.drawable.ic_cancel, 22f, R.string.keyboard_cancel_dictation) { ime.dictation.cancel() }
+    private val fix = button(R.drawable.ic_spellcheck, 24f, R.string.keyboard_fix) { ime.fix() }
     private val mic = FrameLayout(context)
     private val micFace = View(context)
     private val micIcon = ImageView(context)
@@ -62,7 +63,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     private val chipText = TextView(context)
     private val noteText = TextView(context)
     private val undo = LinearLayout(context)
-    private var undoShown = false
+    private val undoText = TextView(context)
+    private var undoOffer: UndoOffer? = null
     private val well = FrameLayout(context)
     private val scope = DotScopeView(context)
     private val wellText = TextView(context)
@@ -119,7 +121,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         }
         addView(chip, LayoutParams(px(CHIP_WIDTH), pill, Gravity.CENTER))
 
-        // Undo dictation, in place of the suggestions until the next edit (KeyboardEngine.UNDO_MS).
+        // Undo dictation or the fix button's fixes, in place of the suggestions until the next edit (KeyboardEngine.UNDO_MS).
         undo.apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             background = pressable(color(R.color.kb_key), false, pill / 2f)
@@ -128,11 +130,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
                 setImageResource(R.drawable.ic_undo); imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
                 importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
             }, LinearLayout.LayoutParams(px(20.2f), px(20.2f)).apply { marginEnd = px(8.2f) })
-            addView(TextView(context).apply {
+            addView(undoText.apply {
                 text(this, 16.5f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
-                setText(R.string.keyboard_undo_dictation)
             }, LinearLayout.LayoutParams(-2, -2))
-            setOnClickListener { ime.engine.undoDictation() }
+            setOnClickListener { ime.undo() }
         }
         addView(undo, LayoutParams(-2, pill, Gravity.CENTER))
 
@@ -166,6 +167,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
             setOnTouchListener { v, e -> micTouch(v, e) }
         }
         addView(mic, LayoutParams(px(46.2f), -1, Gravity.END))
+        addView(fix, LayoutParams(px(45.4f), -1, Gravity.END).apply { marginEnd = px(46.2f) })
         dictation(DictationPhase.Idle)
     }
 
@@ -233,15 +235,25 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         update()
     }
     fun level(peak: Float) = scope.push(peak)
-    /** A short line in the toolbar's middle, such as why dictation couldn't start. */
-    fun undo(shown: Boolean) { undoShown = shown; update() }
+    fun undo(offer: UndoOffer?) {
+        undoOffer = offer
+        undoText.setText(if (offer == UndoOffer.Fixes) R.string.keyboard_undo_fixes else R.string.keyboard_undo_dictation)
+        update()
+    }
 
+    /** A short line in the toolbar's middle, such as why dictation couldn't start. */
     fun note(text: String) {
         note = text; removeCallbacks(clearNote); postDelayed(clearNote, NOTE_MS); update()
     }
 
-    private fun update() {
+    fun update() {
         val idle = phase == DictationPhase.Idle
+        val fixShown = idle && ime.fixShown
+        fix.visibility = if (fixShown) VISIBLE else GONE
+        fix.alpha = if (ime.fixing) 0.4f else 1f
+        // The suggestions and notes make room for the fix button.
+        endMargin(slots, if (fixShown) 80f else 34.4f)
+        endMargin(noteText, if (fixShown) 94f else 48f)
         val suggesting = offered.any { it != null }
         val noting = idle && note != null
         well.visibility = if (idle) GONE else VISIBLE
@@ -249,7 +261,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         grid.visibility = if (idle) VISIBLE else GONE
         noteText.visibility = if (noting) VISIBLE else GONE
         noteText.text = note
-        val undoing = idle && !noting && undoShown
+        val undoing = idle && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
         slots.visibility = if (idle && !noting && !undoing && suggesting) VISIBLE else GONE
         val clipShown = idle && !noting && !undoing && !suggesting && clip != null &&
@@ -273,7 +285,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         update()
     }
     /** The keyboard came up: offer a recent copy, even one made while it was hidden. */
-    fun refresh() { readClip(fresh = false) }
+    fun refresh() { readClip(fresh = false); update() }
 
     override fun onAttachedToWindow() { super.onAttachedToWindow(); clipboard.addPrimaryClipChangedListener(clipChanged) }
     override fun onDetachedFromWindow() {
@@ -281,6 +293,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     }
     fun cancelGestures() { removeCallbacks(hold); held = false; mic.isPressed = false }
 
+    private fun endMargin(view: View, dp: Float) {
+        val params = view.layoutParams as LayoutParams
+        if (params.marginEnd != px(dp)) { params.marginEnd = px(dp); view.layoutParams = params }
+    }
     private fun text(view: TextView, dp: Float) = view.apply {
         setTextSize(TypedValue.COMPLEX_UNIT_DIP, dp); useSans(); includeFontPadding = false
     }

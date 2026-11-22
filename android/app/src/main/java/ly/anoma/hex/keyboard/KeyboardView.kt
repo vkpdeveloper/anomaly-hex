@@ -44,7 +44,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         if (accessibilityPaneTitle != title) accessibilityPaneTitle = title
     }
     override fun suggestions(slots: List<Suggestion>) = toolbar.suggestions(slots)
-    override fun undoDictation(shown: Boolean) = toolbar.undo(shown)
+    override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
 
     fun openEmoji() {
         keys.cancelGestures(); ime.engine.leave()
@@ -77,6 +77,8 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     }
     fun level(peak: Float) = toolbar.level(peak)
     fun note(text: String) = toolbar.note(text)
+    /** The fix button was turned on or off in Settings. */
+    fun fixChanged() = toolbar.update()
     /** The keyboard came up in a field. */
     fun shown() { closeEmoji(); toolbar.refresh() }
     fun cancelGestures() { toolbar.cancelGestures(); keys.cancelGestures() }

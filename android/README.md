@@ -33,6 +33,19 @@ swear words are enabled. The filter applies to completions, next words, autocorr
 both halves of a missed-space correction. Typing a listed word in full keeps your exact
 spelling; its literal chip accepts what you typed. The filter never changes the HXTM models.
 
+**Keyboard › Fix button** is off by default. Turning it on downloads tinyfix's model and word
+lists (3.5 MB, MIT, pinned to one Hugging Face revision and checked by size and SHA-256) into
+the app's files; the APK ships none of it, and turning it off deletes them. The toolbar then
+shows a spellcheck button beside the mic. Tapping it checks up to 1,000 characters on each
+side of the caret with a [Kotlin port](app/src/main/java/ly/anoma/hex/fix/) of tinyfix 0.1.1
+(misspellings, and real words that don't fit, such as "form" for "from") and rewrites the
+fixed words in one batch, keeping the caret. **Undo fixes** puts them back while the field is
+unchanged, and those words are left alone until the keyboard restarts. Password fields never
+show the button. `TinyfixTest.fixesAsThePackageDoes` compares the port with the npm package's
+output on 55 sentences when `HEX_TINYFIX_DIR` points at the downloaded files. Each checked word
+costs one model run (about 3 ms on a Pixel emulator), and the first tap also reads the files
+(0.7 to 1.6 s), so the button dims until the check finishes.
+
 On space, the Kotlin decoder compares each tap with the measured key centres and combines those distances with the previous word’s probability. It can recover a missing space. A known spelling requires a higher confidence margin than a nonword. Immediately press **Delete** to restore exactly what you typed, without the space. Undo the same replacement twice and Hex keeps that spelling in later sessions. Only rejection counts keyed by hashes are saved locally; there is no typing journal.
 
 **Keyboard › Glide typing** (on by default) types a word when you slide across its letters. A drag that starts on a letter key becomes a glide once it has moved about half a key (a key and a half right after a tapped letter, so a quick tap that slides stays a tap); passwords, numbers, addresses and the symbol pages take none. On lifting, [GlideDecoder](app/src/main/java/ly/anoma/hex/typing/GlideDecoder.kt) walks the same HXTM word list along the path, matching each letter in order to a point where the path passes its key and charging corners no letter explains, then adds the word-pair cost after the previous word; your personal dictionary is walked too. The likeliest word goes in, after a space when it follows a word, capitalised with shift and in capitals with caps lock; the strip shows it highlighted with two other readings, and tapping one replaces it. Delete right after a glide removes the whole word. A mark such as a comma goes against the glided word, while the next word, glided or tapped, puts its space in first. **Show gesture trail** draws a line that follows the finger and fades.

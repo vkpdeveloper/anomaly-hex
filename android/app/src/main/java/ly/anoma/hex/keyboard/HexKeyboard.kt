@@ -10,6 +10,7 @@ import android.provider.UserDictionary
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import java.io.File
+import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -21,6 +22,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ly.anoma.hex.R
+import ly.anoma.hex.fix.Tinyfix
+import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.Router
 import ly.anoma.hex.relay.Store
@@ -103,6 +106,10 @@ class HexKeyboard : InputMethodService() {
         when (key) {
             TypingPreferences.SUGGEST_SWEAR_WORDS -> engine.swearWordsChanged()
             // Settings deleted the file; this copy goes too.
+            TypingPreferences.FIX_BUTTON -> {
+                if (!feedback.fixButton) fixWork.execute { tinyfix = null }
+                view?.fixChanged()
+            }
             TypingPreferences.FORGET_LEARNED -> { main.removeCallbacks(saveLearned); learned.clear(); engine.learnedWordsChanged() }
             TypingPreferences.LEARN_FROM_HISTORY ->
                 if (feedback.learnFromHistory) fetchHistoryWords(force = true)
@@ -110,6 +117,37 @@ class HexKeyboard : InputMethodService() {
         }
     }
     internal val previewAllowed get() = !engine.secure
+
+    // The fix button: its checker is read from the downloaded files on first use, on its own thread, and
+    // dropped when the button goes off. One check at a time.
+    private val fixWork = Executors.newSingleThreadExecutor { Thread(it, "Hex fix") }
+    private var tinyfix: Tinyfix? = null // Only touched on fixWork.
+    /** A check is running; the toolbar dims the button until it's done. */
+    internal var fixing = false
+        private set(value) { field = value; view?.fixChanged() }
+    internal val fixShown get() = feedback.fixButton && !engine.secure
+    internal fun fix() {
+        if (fixing || !fixShown) return
+        val field = engine.fieldText() ?: return
+        if (field.text.isBlank()) { view?.note(getString(R.string.keyboard_nothing_to_fix)); return }
+        fixing = true
+        val dir = TinyfixFiles.dir(this)
+        fixWork.execute {
+            val fixes = try {
+                (tinyfix ?: TinyfixFiles.load(dir).also { tinyfix = it }).check(field.text)
+            } catch (_: Exception) { null } // The files are gone or damaged: Settings downloads them again.
+            main.post {
+                fixing = false
+                if (fixes != null && !engine.applyFixes(field, fixes) && fixes.isEmpty())
+                    view?.note(getString(R.string.keyboard_nothing_to_fix))
+            }
+        }
+    }
+    /** The toolbar's undo chip. Words a fix changed and you put back are left alone from then on. */
+    internal fun undo() {
+        val restored = engine.undo()
+        if (restored.isNotEmpty()) fixWork.execute { restored.forEach { tinyfix?.ignore(it) } }
+    }
 
     override fun onCreate() {
         setTheme(R.style.HexIme)
@@ -163,7 +201,7 @@ class HexKeyboard : InputMethodService() {
         // The last changes are written before the worker stops.
         main.removeCallbacks(saveLearned)
         if (learnedLoaded) learned.write().let { text -> words.execute { writeLearned(text) } }
-        words.shutdown()
+        words.shutdown(); fixWork.shutdown()
         view?.cancelGestures(); view = null; engine.surface = null; dictation.close(); super.onDestroy()
     }
     private companion object {

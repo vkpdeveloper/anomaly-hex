@@ -38,6 +38,10 @@ internal class TypingPreferences(context: Context) {
     var learnFromHistory: Boolean
         get() = prefs.getBoolean(LEARN_FROM_HISTORY, true)
         set(value) { prefs.edit().putBoolean(LEARN_FROM_HISTORY, value).apply() }
+    /** The fix button above the keys: on only once its files have downloaded ([ly.anoma.hex.fix.TinyfixFiles]). */
+    var fixButton: Boolean
+        get() = prefs.getBoolean(FIX_BUTTON, false)
+        set(value) { prefs.edit().putBoolean(FIX_BUTTON, value).apply() }
     /** When the computer's words last arrived, in wall-clock milliseconds; 0 for never. */
     var historyWordsAt: Long
         get() = prefs.getLong("historyWordsAt", 0)
@@ -64,5 +68,6 @@ internal class TypingPreferences(context: Context) {
         const val SUGGEST_SWEAR_WORDS = "suggestSwearWords"
         const val LEARN_FROM_HISTORY = "learnFromHistory"
         const val FORGET_LEARNED = "forgetLearned"
+        const val FIX_BUTTON = "fixButton"
     }
 }
