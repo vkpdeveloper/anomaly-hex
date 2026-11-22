@@ -197,6 +197,14 @@ internal class KeyboardEngine(
         }
     }
 
+    // A language's decoder with what you write and your own words, and for Hinglish English's model,
+    // read in the background, which tells its Hindi words from English ones (SpatialDecoder.english).
+    private fun prepared(decoder: SpatialDecoder) = decoder.also {
+        it.learned = learned; loadPersonal(it)
+        if (it.model.language == Spoken.Hinglish.code) background.execute {
+            it.english = try { loadDecoder(Spoken.English.code).model } catch (_: java.io.IOException) { null }
+        }
+    }
     /** Android's personal dictionary changed: every loaded language reads it again, off the main thread. */
     fun personalWordsChanged() { for (decoder in models.values) loadPersonal(decoder) }
     private fun loadPersonal(decoder: SpatialDecoder) {
@@ -268,7 +276,7 @@ internal class KeyboardEngine(
         if (language in models) return
         background.execute {
             val decoder = try { loadDecoder(language) } catch (_: java.io.IOException) { return@execute }
-            main.post { if (language !in models) models[language] = decoder.also { it.learned = learned; loadPersonal(it) } }
+            main.post { if (language !in models) models[language] = prepared(decoder) }
         }
     }
     fun configureTyping(keepWord: Boolean = false) {
@@ -282,7 +290,7 @@ internal class KeyboardEngine(
         resetTyping()
         word = if (ordinaryField) {
             try {
-                TypingWord(models.getOrPut(language) { loadDecoder(language).also { it.learned = learned; loadPersonal(it) } }, feedback.spatial)
+                TypingWord(models.getOrPut(language) { prepared(loadDecoder(language)) }, feedback.spatial)
                     .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize }
             } catch (_: java.io.IOException) { null } // The editor can still type if its assets cannot be read.
         } else null

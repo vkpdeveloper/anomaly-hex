@@ -26,6 +26,21 @@ internal class SpatialDecoder(val model: TypingModel) {
     @Volatile var personal: PersonalWords? = null
     /** What you've written (`LearnedWords`): its counts mix into the model's costs. */
     @Volatile var learned: LearnedWords? = null
+    /** For Hinglish, English's model: its words are English, never spellings of a Hindi word ("sheet" isn't
+     * "shit" as "theek" is "thik"). Read in the background; until then Hindi spellings stay apart. */
+    @Volatile var english: TypingModel? = null
+
+    /** The spelling you write of [word] when you write another spelling of it far more (`Spellings`,
+     * [LearnedWords.preferred]), lowercase, or null. English and Hinglish only. */
+    fun preferred(word: String): String? =
+        if (model.language == "en" || model.language == "hien") learned?.preferred(word, ::alike) else null
+    private fun alike(a: String, b: String): Boolean {
+        if (Spellings.english(a, b)) return true
+        val english = english ?: return false
+        // Hindi words are those English lacks and the books don't capitalise (names: "Virat" isn't "vrat").
+        fun hindi(w: String) = english.index(w) < 0 && (model.capitals?.percent(w) ?: -1) < 50
+        return model.language == "hien" && hindi(a) && hindi(b) && Spellings.hindi(a, b)
+    }
     // The model's cost for a word after the context word, mixed with what you write.
     private fun mixedCost(previous: Int, word: Int): Double {
         val base = model.languageCost(previous, word)
