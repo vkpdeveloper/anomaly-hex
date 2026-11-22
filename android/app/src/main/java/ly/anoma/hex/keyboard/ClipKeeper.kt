@@ -104,6 +104,8 @@ internal class ClipKeeper(
     private var copy: ChipOffer? = null
     private var copyAt = 0L
     private val usedPhotos = HashSet<Long>()
+    /** Site icons for copied links, shown on the chip. */
+    val favicons = Favicons()
     private val thumbnails = object : LruCache<String, Bitmap>(8 shl 20) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
@@ -180,7 +182,16 @@ internal class ClipKeeper(
             val text = (item?.text ?: if (item?.uri == null) item?.coerceToText(ime) else null)?.toString()?.trim()
             if (!text.isNullOrEmpty()) {
                 copy = ChipOffer.Text(text, sensitive, at)
-                worker.execute { if (history.add(ClipContent.Text(text), at, secret = !keep) != null) publish() }
+                worker.execute {
+                    if (history.add(ClipContent.Text(text), at, secret = !keep) != null) publish()
+                    // A secret is only ever shown masked, so it isn't read for pieces.
+                    if (sensitive) return@execute
+                    val split = ClipPieces.find(ime, text)
+                    main.post {
+                        val offered = copy as? ChipOffer.Text ?: return@post
+                        if (offered.at == at && offered.split == null) { copy = offered.copy(split = split); changed() }
+                    }
+                }
             }
         }
         changed()

@@ -11,6 +11,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -30,6 +31,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         const val SUGGESTION = 19.5f
         const val SUGGESTION_MIN = 12f
         const val CHIP_WIDTH = 143f
+        /** The copy's chip beside its pieces, and a piece's icon and longest text. */
+        const val PIECE_CHIP_WIDTH = 104f
+        const val PIECE_ICON = 16f
+        const val PIECE_TEXT_WIDTH = 150f
         const val EMOJI = 21f
         const val EMOJI_SLOT = 46f
         const val NOTE_MS = 3_000L
@@ -66,8 +71,12 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     // stay at the end by the mic.
     private val autofill = LinearLayout(context)
     private val autofillRest = LinearLayout(context)
+    private val autofillScroll = HorizontalScrollView(context)
     private val autofillPinned = LinearLayout(context)
 
+    /** The copy's chip, then its pieces ([ClipPieces]), scrolling if they don't fit. */
+    private val clipScroll = HorizontalScrollView(context)
+    private val clipRow = LinearLayout(context)
     private val chip = LinearLayout(context)
     private val chipIcon = ImageView(context)
     private val chipText = TextView(context)
@@ -129,10 +138,13 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
 
         autofill.apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            addView(HorizontalScrollView(context).apply {
+            addView(autofillScroll.apply {
                 isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER
                 addView(autofillRest.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL },
                     LayoutParams(-2, -1))
+                setOnScrollChangeListener { _, _, _, _, _ -> clipChips() }
+                // A new chip or a new width moves the chips without a scroll.
+                autofillRest.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> clipChips() }
             }, LinearLayout.LayoutParams(0, -1, 1f))
             addView(autofillPinned.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL },
                 LinearLayout.LayoutParams(-2, -1))
@@ -151,7 +163,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             addView(chipText, LinearLayout.LayoutParams(0, -2, 1f))
             setOnClickListener { useOffer() }
         }
-        addView(chip, LayoutParams(px(CHIP_WIDTH), pill, Gravity.CENTER))
+        clipRow.orientation = LinearLayout.HORIZONTAL; clipRow.gravity = Gravity.CENTER_VERTICAL
+        clipRow.addView(chip, LinearLayout.LayoutParams(px(CHIP_WIDTH), pill))
+        clipScroll.apply { isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; addView(clipRow, LayoutParams(-2, -1)) }
+        addView(clipScroll, LayoutParams(-2, -1, Gravity.CENTER).apply { marginStart = px(46f); marginEnd = px(48f) })
         shot.apply {
             scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; isFocusable = true
             background = GradientDrawable().apply { setColor(color(R.color.kb_function)); cornerRadius = px(6f).toFloat() }
@@ -291,9 +306,26 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     fun autofill(unpinned: List<View>, pinned: List<View>) {
         autofillRest.removeAllViews(); autofillPinned.removeAllViews()
         for ((row, chips) in listOf(autofillRest to unpinned, autofillPinned to pinned)) for (chip in chips) {
-            row.addView(chip, LinearLayout.LayoutParams(-2, pill).apply { marginStart = px(3f); marginEnd = px(3f) })
+            // Keep the width Android measured the service's chip at: "wrap content" inside the scroll
+            // would measure it at nothing, since the chip's own view can't size itself.
+            val width = chip.layoutParams?.width?.takeIf { it > 0 } ?: LinearLayout.LayoutParams.WRAP_CONTENT
+            row.addView(chip, LinearLayout.LayoutParams(width, pill).apply { marginStart = px(3f); marginEnd = px(3f) })
         }
         update()
+    }
+
+    /** A service's chip draws on its own surface, which the scroll doesn't clip: each is cut to the part
+     * inside the strip, so none covers the mic or the pinned chips. */
+    private fun clipChips() {
+        val shown = autofillScroll.width
+        for (i in 0 until autofillRest.childCount) {
+            val chip = autofillRest.getChildAt(i)
+            val surface = (chip as? ViewGroup)?.getChildAt(0) ?: continue
+            val left = chip.left - autofillScroll.scrollX
+            val from = (-left).coerceIn(0, chip.width)
+            val to = (shown - left).coerceIn(from, chip.width)
+            surface.clipBounds = android.graphics.Rect(from, 0, to, chip.height)
+        }
     }
 
     fun dictation(phase: DictationPhase) {
@@ -359,7 +391,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
         slots.visibility = if (idle && !noting && !undoing && !filling && suggesting && offer == null) VISIBLE else GONE
-        chip.visibility = if (offer is ChipOffer.Text) VISIBLE else GONE
+        clipScroll.visibility = if (offer is ChipOffer.Text) VISIBLE else GONE
         shot.visibility = if (offer != null && offer !is ChipOffer.Text) VISIBLE else GONE
         val fresh = offer != chipOffer
         // Set first: a cached thumbnail arrives at once and checks it is still this offer's.
@@ -372,8 +404,17 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private fun offer(offer: ChipOffer) {
         when (offer) {
             is ChipOffer.Text -> {
-                chipText.text = if (offer.sensitive) "••••••" else offer.text.replace('\n', ' ')
+                val link = if (offer.sensitive) null else Links.only(offer.text)
+                // A link reads from its site's name: the scheme says nothing.
+                chipText.text = when {
+                    offer.sensitive -> "••••••"
+                    link != null -> link.substringAfter("://").removePrefix("www.")
+                    else -> offer.text.replace('\n', ' ')
+                }
                 chip.contentDescription = context.getString(R.string.keyboard_paste_clip, if (offer.sensitive) "" else chipText.text)
+                val kind = offer.split?.kind ?: if (link != null) ClipPiece.Kind.Link else null
+                icon(chipIcon, kind?.icon ?: R.drawable.ic_clipboard, link)
+                pieces(offer)
             }
             is ChipOffer.Image -> {
                 shot.contentDescription = context.getString(R.string.keyboard_paste_image)
@@ -395,6 +436,46 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         val params = shot.layoutParams
         params.width = (shotHeight * bitmap.width / bitmap.height).coerceIn(px(16f), px(CHIP_WIDTH))
         shot.layoutParams = params
+    }
+
+    /** The copy's pieces beside its chip, each pasting just that part. The chip narrows to make room. */
+    private fun pieces(offer: ChipOffer.Text) {
+        while (clipRow.childCount > 1) clipRow.removeViewAt(1)
+        val pieces = offer.split?.pieces.orEmpty()
+        chip.layoutParams = chip.layoutParams.apply { width = px(if (pieces.isEmpty()) CHIP_WIDTH else PIECE_CHIP_WIDTH) }
+        for (piece in pieces) {
+            val icon = ImageView(context)
+            val view = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isFocusable = true
+                background = pressable(color(R.color.kb_key), false, pill / 2f)
+                setPadding(px(10f), 0, px(12f), 0)
+                contentDescription = context.getString(R.string.keyboard_paste_clip, piece.text)
+                addView(icon, LinearLayout.LayoutParams(px(PIECE_ICON), px(PIECE_ICON)).apply { marginEnd = px(6f) })
+                addView(TextView(context).apply {
+                    text(this, 15f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END; maxWidth = px(PIECE_TEXT_WIDTH); text = piece.text
+                })
+                setOnClickListener {
+                    if (chipOffer != offer) return@setOnClickListener
+                    ime.engine.paste(piece.text); ime.clips.used(offer)
+                }
+            }
+            icon(icon, piece.kind.icon, piece.text.takeIf { piece.kind == ClipPiece.Kind.Link })
+            clipRow.addView(view, LinearLayout.LayoutParams(-2, pill).apply { marginStart = px(6f) })
+        }
+    }
+
+    /** A kind's icon, in the keys' ink; for a [link], its site's own icon once it arrives, small and in colour. */
+    private fun icon(view: ImageView, drawable: Int, link: String?) {
+        view.setImageResource(drawable)
+        view.imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+        if (link == null) return
+        val offer = chipOffer
+        ime.clips.favicons.get(link) { bitmap ->
+            if (chipOffer !== offer) return@get
+            view.imageTintList = null
+            view.setImageBitmap(bitmap)
+        }
     }
 
     private fun useOffer() {

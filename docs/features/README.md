@@ -3075,11 +3075,23 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   place of the clipboard chip and next-word guesses; pinned ones last, by the mic; a tap
 │   fills the field (the service's own, no SMS permission); a word being typed takes the
 │   strip back until it is done; another field or an empty response clears them
-│   └── Proof limits: InlineChipsTest (order, late chips, when they show); unit tests only,
-│       no device run
+│   ├── Nothing to turn on in Hex; a chip keeps the width its service drew, and one that
+│   │   scrolls under the mic is cut off at its edge
+│   ├── Texted codes only from a service that offers them inline (Google's does, a password
+│   │   manager such as Bitwarden doesn't)
+│   └── Proof limits: InlineChipsTest (order, late chips, when they show); chips from a test
+│       autofill service seen on a Pixel emulator; no real password manager run
 ├── Strip's chip -> the last copy (10 min) or a screenshot from the last 5 min, in place of
 │   next-word guesses; typing a word or its age ends it, and the clipboard keeps it
 │   (an image only in a field that takes images)
+│   ├── A link -> shown without `https://`, with the site's icon fetched from the site itself
+│   ├── Phone numbers, emails, links, addresses, dates, flights in a copy -> up to two as their
+│   │   own chips with icons, found by Android's on-device classifier; a tap pastes that piece;
+│   │   a sensitive copy is never looked at
+│   └── Proof limits: ClipPiecesTest; pieces and a favicon seen on a Pixel emulator
+├── Keyboard > Remove tracking from links (off) -> links pasted from the chip or the Clipboard
+│   panel lose `utm_*`, `fbclid`, share tags (`si`, `igsh`, …) and Amazon's `ref`/`tag`; the
+│   clipboard keeps the copy (LinksTest; a cleaned YouTube link seen on a Pixel emulator)
 ├── Keyboard > Recent screenshots (off) -> ask for photos; screenshots only, never camera photos
 │   (ClipHistoryTest, RecentImagesTest; unit tests only, no device run)
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip
@@ -3092,6 +3104,8 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Paired computer -> Global's one-word text replacements as shortcuts too, fetched
 │   hourly (`GET /phone/v1/replacements`); yours win; a capitals-only one becomes your
 │   word; Forget (Computer) clears them (ReplacementsTest; unit tests only, no device run)
+├── A recording that never heard a voice (room, fan, a click) -> not sent, "No speech";
+│   hands-free gives up after 5 s without one (SpeechEndTest; unit tests only, no device run)
 ├── Dictate -> the app in front and the layout's language go with the recording; the
 │   computer applies the mode for that app, else Global (docs/phone-dictation.md;
 │   OriginTest, `phone::origin` tests; no device run)

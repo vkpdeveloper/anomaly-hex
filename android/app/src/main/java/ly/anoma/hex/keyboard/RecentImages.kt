@@ -32,8 +32,9 @@ internal object RecentImages {
 /** What the toolbar's chip offers: the last copy (text or an image) or a new photo, whichever is newer. */
 internal sealed interface ChipOffer {
     val at: Long
-    /** [sensitive] text, such as a password a password manager copied, shows masked. */
-    data class Text(val text: String, val sensitive: Boolean, override val at: Long) : ChipOffer
+    /** [sensitive] text, such as a password a password manager copied, shows masked. [split] is what
+     * [ClipPieces] found in it, once it has looked. */
+    data class Text(val text: String, val sensitive: Boolean, override val at: Long, val split: ClipPiece.Split? = null) : ChipOffer
     data class Image(val clip: Clip) : ChipOffer { override val at get() = clip.at }
     data class Photo(val photo: RecentImage) : ChipOffer { override val at get() = photo.addedAt }
 
