@@ -25,10 +25,11 @@ import ly.anoma.hex.typing.KeyRect
 import ly.anoma.hex.typing.TypingWord
 import kotlin.math.roundToInt
 
-/** The keys, laid out as Gboard's: three rows from the page's layout (or the number pad), then a
- * bottom row that changes with the page. Every point of the area types a key (KeyRowLayout); space
- * and enter stay mounted across page changes, so a held space keeps its slide. Keys that type as they
- * lift do so in the order the fingers went down ([Rollover]). */
+/** The keys, laid out as Gboard's: Keyboard > Number row's digits over the letters when it is on,
+ * three rows from the page's layout (or the number pad), then a bottom row that changes with the page.
+ * Every point of the area types a key (KeyRowLayout); space and enter stay mounted across page changes,
+ * so a held space keeps its slide. Keys that type as they lift do so in the order the fingers went down
+ * ([Rollover]). */
 internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, private val host: KeyboardView,
                             private val feedback: LetterFeedback) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
@@ -42,12 +43,16 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private val lastHeight = if (landscape) rowHeight else insetTop + px(KeyboardMetrics.LAST_KEY_HEIGHT) + px(KeyboardMetrics.LAST_BOTTOM)
     private val side = KeyboardMetrics.SIDE * density
     private val gap = KeyboardMetrics.GAP * density
+    private var plane = PlaneRows(rowHeight, lastHeight, numberRow = false)
     /** The keys' whole height, which the emoji panel's grid fills in their place. */
-    val keysHeight get() = rowHeight * 3 + lastHeight
+    val keysHeight get() = plane.height
     private val letters = LinkedHashMap<Char, KeyCap>()
     private var grid: KeyGrid? = null
     private var pendingAccents: Runnable? = null
     private val roll = Rollover()
+    // Outside [rows], so the letters' coordinates, which touches, glides and the space bar are measured
+    // in, are the same with it or without it (PlaneRows).
+    private val numberRow = KeyRowLayout(context, 10f, side, gap, insetTop, insetBottom)
     private val rows = LinearLayout(context)
     private val bottom = KeyRowLayout(context, 10f, side, gap, insetTop, lastHeight - insetTop - (if (landscape) keyHeight else px(KeyboardMetrics.LAST_KEY_HEIGHT)))
     private val modeKey = caps.cap(context.getString(R.string.keyboard_numbers_label), context.getString(R.string.keyboard_numbers),
@@ -101,6 +106,12 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         orientation = VERTICAL
         rows.orientation = VERTICAL
         setWillNotDraw(false) // The glide trail draws over the keys.
+        numberRow.visibility = View.GONE
+        addView(numberRow, LayoutParams(LayoutParams.MATCH_PARENT, 0))
+        for ((i, d) in "1234567890".withIndex()) {
+            val digit = caps.cap(d.toString(), d.toString()) { ime.engine.type(d.toString()) }
+            rolls(digit); numberRow.add(digit, i.toFloat(), 1f)
+        }
         addView(rows, LayoutParams(LayoutParams.MATCH_PARENT, rowHeight * 3))
         addView(bottom, LayoutParams(LayoutParams.MATCH_PARENT, lastHeight))
         spaceKey = caps.cap("", context.getString(R.string.keyboard_space), KeyFill.Letter) {
@@ -137,7 +148,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         }
         spaceKey.sound = AudioManager.FX_KEYPRESS_SPACEBAR
         enterKey = caps.cap("", context.getString(R.string.keyboard_return), KeyFill.Enter, KeyboardMetrics.LABEL, pill = true) { ime.engine.enter() }
-        rolls(comma); rolls(period)
+        rolls(comma); periodKey()
         enterKey.sound = AudioManager.FX_KEYPRESS_RETURN
         enterKey.textEntry = false
         modeKey.textEntry = false
@@ -159,15 +170,44 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         true
     }
 
+    /** Period types as it lifts, as comma does ([rolls]). Held on the letters page it opens Gboard's
+     * punctuation ([LetterFeedback.periodHolds]): lifting on one types it through the engine, as the
+     * symbols page's key would, and lifting on the period itself types the period. */
+    private fun periodKey() = period.setOnTouchListener { v, e ->
+        fun type() {
+            val picked = if (feedback.choosing) feedback.selected() else null
+            val pressed = v.isPressed; v.isPressed = false; clearCallout()
+            if (pressed && picked != null) ime.engine.type(picked) else if (pressed) v.performClick()
+        }
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                roll.down(v) { type() }; clearCallout(); v.isPressed = true
+                if (current?.symbols == false) {
+                    pendingAccents = Runnable { if (v.isPressed) feedback.pick(period.face, LetterFeedback.periodHolds, LetterFeedback.PERIOD_DEFAULT) }
+                    postDelayed(pendingAccents!!, KeyboardMetrics.LONG_PRESS)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (feedback.choosing) feedback.move(left + bottom.left + v.left + e.x, top + bottom.top + v.top + e.y)
+            MotionEvent.ACTION_UP -> if (roll.up(v)) type()
+            MotionEvent.ACTION_CANCEL -> { roll.up(v); v.isPressed = false; clearCallout() }
+        }
+        true
+    }
+
     private fun cased(c: Char) = if (current?.let { !it.symbols && it.shifted } == true) c.uppercaseChar().toString() else c.toString()
 
     fun showPage(page: KeyboardPage) {
         val shown = current
-        if (shown != null && !page.symbols && page.copy(shifted = shown.shifted, locked = shown.locked) == shown) {
+        val numbers = ime.feedback.numberRow
+        if (shown != null && numbers == plane.numberRow && !page.symbols && page.copy(shifted = shown.shifted, locked = shown.locked) == shown) {
             current = page; relabel(page); return
         }
         current = page
         clearCallout(); grid = null; letters.clear(); caseKeys.clear(); shiftIcon = null; deleteKeys.clear()
+        plane = PlaneRows(rowHeight, lastHeight, numbers)
+        numberRow.visibility = if (plane.numbers(page) > 0) View.VISIBLE else View.GONE
+        numberRow.layoutParams = numberRow.layoutParams.apply { height = plane.numbers(page) }
+        rows.layoutParams = rows.layoutParams.apply { height = plane.rows(page) }
         rows.removeAllViews()
         if (page.numpad) showNumpad() else showRows(page)
         showBottom(page)
@@ -186,7 +226,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         val side = KeyboardMetrics.sideWidth(page, lines)
         for ((index, line) in lines.withIndex()) {
             val row = KeyRowLayout(context, columns, this.side, gap, insetTop, insetBottom)
-            rows.addView(row, LayoutParams(LayoutParams.MATCH_PARENT, rowHeight))
+            rows.addView(row, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
             // Rows 1 and 2 centre their keys; row 3's share what shift and delete leave.
             var at = if (index < 2) (columns - line.length) / 2f else 0f
             val width = if (index < 2) 1f else (columns - 2 * side) / line.length
@@ -198,7 +238,9 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                 row.add(switch, 0f, side); at = side
             }
             for (c in line) {
-                row.add(letterKey(c, row, symbols, language.layoutCode, digit = if (index == 0 && !symbols) KeyboardLetters.digit(language.layoutCode, c) else null), at, width)
+                // With the number row on, row 1 drops its small digits and their long press, as Gboard's does.
+                val digit = if (index == 0 && !symbols && !plane.numberRow) KeyboardLetters.digit(language.layoutCode, c) else null
+                row.add(letterKey(c, row, symbols, language.layoutCode, digit), at, width)
                 at += width
             }
             if (index == 2) row.add(deleteKey(), columns - side, side)
@@ -361,7 +403,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private fun showNumpad() {
         val digitInsetBottom = rowHeight - insetTop - px(if (landscape) KeyboardMetrics.KEY_HEIGHT_LANDSCAPE else KeyboardMetrics.NUMPAD_KEY_HEIGHT)
         val pad = KeyGridLayout(context, 10f, 3, side, gap, insetTop, digitInsetBottom)
-        rows.addView(pad, LayoutParams(LayoutParams.MATCH_PARENT, rowHeight * 3))
+        rows.addView(pad, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         pad.add(operators(), 0, 0f, 1.5f, rowSpan = 3)
         val digit = 7f / 3
         for (r in 0..2) for (i in 0..2) {

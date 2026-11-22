@@ -28,6 +28,10 @@ internal class TypingPreferences(context: Context) {
     var haptics: Boolean
         get() = prefs.getBoolean("haptics", true)
         set(value) { prefs.edit().putBoolean("haptics", value).apply() }
+    /** Off by default: 1 to 0 above the letters, in place of row 1's small digits. */
+    var numberRow: Boolean
+        get() = prefs.getBoolean("numberRow", false)
+        set(value) { prefs.edit().putBoolean("numberRow", value).apply() }
     var glide: Boolean
         get() = prefs.getBoolean("glide", true)
         set(value) { prefs.edit().putBoolean("glide", value).apply() }
