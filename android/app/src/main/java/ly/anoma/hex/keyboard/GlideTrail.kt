@@ -9,7 +9,7 @@ import kotlin.math.hypot
  * has gone far enough, and the trail it leaves, drawn thick at the finger and thinning to nothing
  * [TRAIL_MS] behind it, so it shrinks away once the finger lifts. Only one drag at a time: another
  * key's touch-down starts over unless a glide is already under way. Keys are told apart by identity. */
-internal class GlideTrail(private val color: Int, density: Float) {
+internal class GlideTrail(private val ink: Int, density: Float) {
     companion object {
         /** How long a point of the trail stays drawn. */
         private const val TRAIL_MS = 260L
@@ -36,7 +36,7 @@ internal class GlideTrail(private val color: Int, density: Float) {
     }
     // Made on first draw, so the touch logic runs without Android's graphics (unit tests).
     private val paint by lazy {
-        Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ink; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     }
     private val head = HEAD_DP * density
     private val tail = TAIL_DP * density
