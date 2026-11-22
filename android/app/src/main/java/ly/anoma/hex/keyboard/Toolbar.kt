@@ -1,14 +1,11 @@
 package ly.anoma.hex.keyboard
 
-import android.content.ClipDescription
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
-import android.os.Build
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -24,15 +21,13 @@ import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
-/** Gboard's toolbar above the keys: the grid button on the left, the mic in its circle on the right
- * (with the fix button before it, when that is on), and between them the three suggestions, the
- * clipboard chip for something just copied, or the recording's level while dictating. */
-internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLayout(context) {
+/** Gboard's toolbar above the keys: the grid and clipboard buttons on the left, the mic in its circle on
+ * the right (with the fix button before it, when that is on), and between them the three suggestions,
+ * the chip for something just copied or a photo just taken, or the recording's level while dictating. */
+internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipboard: () -> Unit) : FrameLayout(context) {
     private companion object {
         const val SUGGESTION = 19.5f
         const val CHIP_WIDTH = 143f
-        /** A copy older than this no longer gets the chip. */
-        const val CLIP_FRESH_MS = 10 * 60_000L
         const val NOTE_MS = 3_000L
         const val HOLD_MS = 350L
     }
@@ -47,6 +42,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     private val grid = button(R.drawable.ic_grid, 25f, R.string.keyboard_open_hex) {
         context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
+    private val clipboardButton = button(R.drawable.ic_clipboard, 23f, R.string.keyboard_clipboard, openClipboard)
     private val cancel = button(R.drawable.ic_cancel, 22f, R.string.keyboard_cancel_dictation) { ime.dictation.cancel() }
     private val fix = button(R.drawable.ic_spellcheck, 24f, R.string.keyboard_fix) { ime.fix() }
     private val mic = FrameLayout(context)
@@ -60,7 +56,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     private var offered = arrayOfNulls<String>(3)
 
     private val chip = LinearLayout(context)
+    private val chipIcon = ImageView(context)
     private val chipText = TextView(context)
+    private val chipImage = ImageView(context)
+    private var chipOffer: ChipOffer? = null
     private val noteText = TextView(context)
     private val undo = LinearLayout(context)
     private val undoText = TextView(context)
@@ -72,10 +71,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     private var phase = DictationPhase.Idle
     private var note: String? = null
     private val clearNote = Runnable { note = null; update() }
-    private val clipboard = context.getSystemService(ClipboardManager::class.java)
-    private var clip: String? = null
-    private var clipAt = 0L
-    private val clipChanged = ClipboardManager.OnPrimaryClipChangedListener { readClip(fresh = true) }
 
     // The mic: a tap starts and a second tap finishes; a hold of 350 ms is push to talk, finishing on lift.
     private var held = false
@@ -103,21 +98,34 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
             }
             slots.addView(slotViews[i], LinearLayout.LayoutParams(0, -1, 1f))
         }
-        // Gboard's dividers sit at a third and two thirds of the span between the icons' edges.
-        addView(slots, LayoutParams(-1, -1).apply { marginStart = px(32.6f); marginEnd = px(34.4f) })
+        // Gboard's dividers sit at a third and two thirds of the span between the icons' edges; the
+        // clipboard button beside the grid moves the span's start by its width.
+        addView(slots, LayoutParams(-1, -1).apply { marginStart = px(78f); marginEnd = px(34.4f) })
 
         chip.apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             background = pressable(color(R.color.kb_key), false, pill / 2f)
             setPadding(px(12f), 0, px(14f), 0); isFocusable = true
-            addView(ImageView(context).apply {
-                setImageResource(R.drawable.ic_clipboard); imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
-            }, LinearLayout.LayoutParams(px(20.2f), px(20.2f)).apply { marginEnd = px(8.2f) })
+            chipIcon.imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+            addView(chipIcon, LinearLayout.LayoutParams(px(20.2f), px(20.2f)).apply { marginEnd = px(8.2f) })
             chipText.apply {
                 text(this, 16.5f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             }
             addView(chipText, LinearLayout.LayoutParams(0, -2, 1f))
-            setOnClickListener { clip?.let { ime.engine.paste(it) }; clip = null; update() }
+            chipImage.apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true
+                background = GradientDrawable().apply { setColor(color(R.color.kb_function)); cornerRadius = px(5f).toFloat() }
+            }
+            addView(chipImage, LinearLayout.LayoutParams(px(44f), px(26f)))
+            setOnClickListener {
+                val offer = chipOffer ?: return@setOnClickListener
+                when (offer) {
+                    is ChipOffer.Text -> ime.engine.paste(offer.text)
+                    is ChipOffer.Image -> ime.clips.insert(offer.clip)
+                    is ChipOffer.Photo -> ime.clips.insert(offer.photo)
+                }
+                ime.clips.used(offer)
+            }
         }
         addView(chip, LayoutParams(px(CHIP_WIDTH), pill, Gravity.CENTER))
 
@@ -142,7 +150,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        addView(noteText, LayoutParams(-1, -1).apply { marginStart = px(48f); marginEnd = px(48f) })
+        addView(noteText, LayoutParams(-1, -1).apply { marginStart = px(94f); marginEnd = px(48f) })
 
         well.background = GradientDrawable().apply { setColor(color(R.color.kb_key)); cornerRadius = pill / 2f }
         well.clipToOutline = true
@@ -155,6 +163,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         addView(well, LayoutParams(-1, pill, Gravity.CENTER_VERTICAL).apply { marginStart = px(48f); marginEnd = px(50f) })
 
         addView(grid, LayoutParams(px(45.4f), -1, Gravity.START))
+        addView(clipboardButton, LayoutParams(px(45.4f), -1, Gravity.START).apply { marginStart = px(45.4f) })
         addView(cancel, LayoutParams(px(45.4f), -1, Gravity.START))
 
         mic.apply {
@@ -259,38 +268,49 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         well.visibility = if (idle) GONE else VISIBLE
         cancel.visibility = if (idle) GONE else VISIBLE
         grid.visibility = if (idle) VISIBLE else GONE
+        clipboardButton.visibility = if (idle) VISIBLE else GONE
         noteText.visibility = if (noting) VISIBLE else GONE
         noteText.text = note
         val undoing = idle && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
         slots.visibility = if (idle && !noting && !undoing && suggesting) VISIBLE else GONE
-        val clipShown = idle && !noting && !undoing && !suggesting && clip != null &&
-            System.currentTimeMillis() - clipAt < CLIP_FRESH_MS
-        chip.visibility = if (clipShown) VISIBLE else GONE
+        val offer = if (idle && !noting && !undoing && !suggesting) ime.clips.offer else null
+        chip.visibility = if (offer != null) VISIBLE else GONE
+        val fresh = offer != chipOffer
+        // Set first: a cached thumbnail arrives at once and checks it is still this offer's.
+        chipOffer = offer
+        if (offer != null && fresh) offer(offer)
     }
 
-    /** What was last copied, if it is text: [fresh] when it was copied just now, else the clip's own time. */
-    private fun readClip(fresh: Boolean) {
-        val primary = runCatching { clipboard.primaryClip }.getOrNull()
-        val description = primary?.description
-        val text = primary?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()?.trim()
-        if (text.isNullOrEmpty() || description == null) { if (fresh) { clip = null; update() }; return }
-        val at = if (fresh) System.currentTimeMillis() else description.timestamp
-        if (!fresh && at == clipAt) return
-        val sensitive = Build.VERSION.SDK_INT >= 33 &&
-            description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
-        clip = text; clipAt = at
-        chipText.text = if (sensitive) "••••••" else text.replace('\n', ' ')
-        chip.contentDescription = context.getString(R.string.keyboard_paste_clip, if (sensitive) "" else chipText.text)
-        update()
+    /** The chip for a copy or a photo ([ClipKeeper.offer]): text as it reads, masked when sensitive, or a
+     * thumbnail with the clipboard's icon for a copied image and the photo icon for a new photo. */
+    private fun offer(offer: ChipOffer) {
+        chipIcon.setImageResource(if (offer is ChipOffer.Photo) R.drawable.ic_image else R.drawable.ic_clipboard)
+        val text = offer as? ChipOffer.Text
+        chipText.visibility = if (text != null) VISIBLE else GONE
+        chipImage.visibility = if (text != null) GONE else VISIBLE
+        val params = chip.layoutParams
+        params.width = if (text != null) px(CHIP_WIDTH) else LayoutParams.WRAP_CONTENT
+        chip.layoutParams = params
+        when (offer) {
+            is ChipOffer.Text -> {
+                chipText.text = if (offer.sensitive) "••••••" else offer.text.replace('\n', ' ')
+                chip.contentDescription = context.getString(R.string.keyboard_paste_clip, if (offer.sensitive) "" else chipText.text)
+            }
+            is ChipOffer.Image -> {
+                chip.contentDescription = context.getString(R.string.keyboard_paste_image)
+                chipImage.setImageDrawable(null)
+                ime.clips.thumbnail(offer.clip) { if (chipOffer == offer) chipImage.setImageBitmap(it) }
+            }
+            is ChipOffer.Photo -> {
+                chip.contentDescription = context.getString(R.string.keyboard_add_photo)
+                chipImage.setImageDrawable(null)
+                ime.clips.thumbnail(offer.photo) { if (chipOffer == offer) chipImage.setImageBitmap(it) }
+            }
+        }
     }
-    /** The keyboard came up: offer a recent copy, even one made while it was hidden. */
-    fun refresh() { readClip(fresh = false); update() }
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); clipboard.addPrimaryClipChangedListener(clipChanged) }
-    override fun onDetachedFromWindow() {
-        clipboard.removePrimaryClipChangedListener(clipChanged); cancelGestures(); super.onDetachedFromWindow()
-    }
+    override fun onDetachedFromWindow() { cancelGestures(); super.onDetachedFromWindow() }
     fun cancelGestures() { removeCallbacks(hold); held = false; mic.isPressed = false }
 
     private fun endMargin(view: View, dp: Float) {

@@ -10,12 +10,13 @@ import ly.anoma.hex.R
 import ly.anoma.hex.typing.Suggestion
 import kotlin.math.roundToInt
 
-/** The keyboard's root view: the toolbar and the keys, or the emoji panel in their place. */
+/** The keyboard's root view: the toolbar and the keys, or the emoji panel or the clipboard in their place. */
 internal class KeyboardView(context: Context, private val ime: HexKeyboard) : LinearLayout(context), KeyboardSurface {
     private val feedback = LetterFeedback(this)
-    private val toolbar = Toolbar(context, ime)
+    private val toolbar = Toolbar(context, ime, ::openClipboard)
     private val keys = KeyPlaneView(context, ime, this, feedback)
     private val emoji = EmojiPanel(context, ime, ::closeEmoji)
+    private val clipboard = ClipboardPanel(context, ime, ::closeClipboard)
     private var phase = DictationPhase.Idle
 
     init {
@@ -35,6 +36,8 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         addView(keys, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         emoji.visibility = GONE
         addView(emoji, LayoutParams(LayoutParams.MATCH_PARENT, (EmojiPanel.HEIGHT * resources.displayMetrics.density).roundToInt()))
+        clipboard.visibility = GONE
+        addView(clipboard, LayoutParams(LayoutParams.MATCH_PARENT, 0))
     }
 
     override fun showPage(page: KeyboardPage) {
@@ -58,9 +61,23 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         setBackgroundColor(context.getColor(R.color.kb_background))
         ime.engine.configureTyping(keepWord = true)
     }
+    /** The clipboard takes the toolbar's and the keys' place at their height, so the editor doesn't move. */
+    fun openClipboard() {
+        keys.cancelGestures(); ime.engine.leave()
+        clipboard.layoutParams = clipboard.layoutParams.apply { height = toolbar.height + keys.height }
+        toolbar.visibility = GONE; keys.visibility = GONE; clipboard.visibility = VISIBLE
+        clipboard.open()
+    }
+    fun closeClipboard() {
+        if (clipboard.visibility != VISIBLE) return
+        clipboard.visibility = GONE; toolbar.visibility = VISIBLE; keys.visibility = VISIBLE
+        ime.engine.configureTyping(keepWord = true)
+    }
+    /** The clips, the photos or the chip's offer changed ([ClipKeeper]). */
+    fun clipsChanged() { toolbar.update(); if (clipboard.visibility == VISIBLE) clipboard.show() }
     fun dictation(phase: DictationPhase) {
         cue(this.phase, phase); this.phase = phase
-        if (phase != DictationPhase.Idle) closeEmoji()
+        if (phase != DictationPhase.Idle) { closeEmoji(); closeClipboard() }
         toolbar.dictation(phase)
     }
     /** A light tap as the microphone opens and a lighter tick as it closes, so someone using TalkBack,
@@ -80,6 +97,6 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     /** The fix button was turned on or off in Settings. */
     fun fixChanged() = toolbar.update()
     /** The keyboard came up in a field. */
-    fun shown() { closeEmoji(); toolbar.refresh() }
+    fun shown() { closeEmoji(); closeClipboard(); toolbar.update() }
     fun cancelGestures() { toolbar.cancelGestures(); keys.cancelGestures() }
 }

@@ -102,6 +102,10 @@ class HexKeyboard : InputMethodService() {
             insert = ::commitSpeech,
             blocked = { if (engine.secure) getString(R.string.keyboard_hint_password) else null })
     }
+    internal val clips by lazy { ClipKeeper(this, changed = { view?.clipsChanged() }, note = { view?.note(it) }) }
+    private val clipsChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == ClipKeeper.RECENT_PHOTOS) clips.syncPhotos()
+    }
     private val typingChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
             TypingPreferences.SUGGEST_SWEAR_WORDS -> engine.swearWordsChanged()
@@ -165,7 +169,9 @@ class HexKeyboard : InputMethodService() {
         setTheme(R.style.HexIme)
         super.onCreate()
         getSharedPreferences("typing", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(typingChanged)
+        getSharedPreferences(ClipKeeper.PREFS, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(clipsChanged)
         contentResolver.registerContentObserver(UserDictionary.Words.CONTENT_URI, true, dictionaryChanged)
+        clips.start()
         words.execute {
             runCatching { if (learnedFile.exists()) learned.read(learnedFile.readText()) }
             learnedLoaded = true
@@ -186,6 +192,7 @@ class HexKeyboard : InputMethodService() {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         view?.cancelGestures()
+        clips.shown()
         view?.shown()
         engine.opened()
         engine.configureTyping()
@@ -209,7 +216,8 @@ class HexKeyboard : InputMethodService() {
     override fun onWindowHidden() { leaveEditor(); super.onWindowHidden() }
     override fun onDestroy() {
         getSharedPreferences("typing", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(typingChanged)
-        contentResolver.unregisterContentObserver(dictionaryChanged); io.cancel()
+        getSharedPreferences(ClipKeeper.PREFS, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(clipsChanged)
+        contentResolver.unregisterContentObserver(dictionaryChanged); io.cancel(); clips.close()
         // The last changes are written before the worker stops.
         main.removeCallbacks(saveLearned)
         if (learnedLoaded) learned.write().let { text -> words.execute { writeLearned(text) } }

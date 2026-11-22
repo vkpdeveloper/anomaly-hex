@@ -10,6 +10,11 @@
     <permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
     <uses-permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Keyboard › Recent photos, off until turned on: the keyboard offers a screenshot or photo just
+         taken. Android 14 can grant only the photos the person picks; Android 12 has storage alone. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- The keyboard reads Android's personal dictionary (UserDictionary.Words), which only the enabled
          input method may read; declared so package visibility never hides the provider. -->
     <queries>
@@ -32,6 +37,12 @@
             </intent-filter>
             <meta-data android:name="android.view.im" android:resource="@xml/input_method" />
         </service>
+        <!-- The keyboard's images (clipboard copies and photos it inserts), shared read-only with the
+             editor that receives one, for that one grant. -->
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.clips"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/clip_paths" />
+        </provider>
         <!-- The floating button, for dictating without the keyboard; off until turned on. -->
         <service android:name=".button.ButtonService" android:label="@string/button_label"
             android:exported="true" android:foregroundServiceType="specialUse"

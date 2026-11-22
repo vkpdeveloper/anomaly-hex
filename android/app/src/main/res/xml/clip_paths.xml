@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the keyboard's FileProvider can share: its clipboard images and the copies of photos it inserts. -->
+<paths>
+    <files-path name="clips" path="clipboard/" />
+    <cache-path name="photos" path="photos/" />
+</paths>

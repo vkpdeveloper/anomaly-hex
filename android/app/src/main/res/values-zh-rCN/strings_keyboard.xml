@@ -30,4 +30,18 @@
     <string name="keyboard_action_next">下一项</string>
     <string name="keyboard_action_search">搜索</string>
     <string name="keyboard_action_send">发送</string>
+    <string name="keyboard_clipboard">剪贴板</string>
+    <string name="keyboard_clear">清除</string>
+    <string name="keyboard_clipboard_empty">复制的文字和图片会在这里保留一小时。按住一项即可固定。</string>
+    <string name="keyboard_recent_photos">最近的照片</string>
+    <string name="keyboard_pinned">已固定</string>
+    <string name="keyboard_recent">最近</string>
+    <string name="keyboard_pin">固定</string>
+    <string name="keyboard_unpin">取消固定</string>
+    <string name="keyboard_delete_clip">删除</string>
+    <string name="keyboard_pinned_full">最多固定 %1$d 项</string>
+    <string name="keyboard_image">图片</string>
+    <string name="keyboard_paste_image">粘贴图片</string>
+    <string name="keyboard_add_photo">添加照片</string>
+    <string name="keyboard_image_copied">已复制图片。此输入框不能添加图片</string>
 </resources>
