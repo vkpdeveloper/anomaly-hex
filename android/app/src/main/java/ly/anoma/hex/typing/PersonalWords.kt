@@ -102,9 +102,11 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         private const val LIMIT = 5_000
 
         /** Whether a personal dictionary entry's locale ("en_US", "nb_NO", none for every language)
-         * applies to the model's language; Bokmål also takes "no". */
+         * applies to the model's language; Bokmål also takes "no", and Hinglish English's and Hindi's. */
         fun applies(locale: String?, language: String) = locale.isNullOrEmpty() ||
-            locale.substringBefore('_').lowercase().let { it == language || (language == "nb" && it == "no") }
+            locale.substringBefore('_').lowercase().let {
+                it == language || (language == "nb" && it == "no") || (language == "hien" && (it == "en" || it == "hi"))
+            }
 
         /** The personal dictionary's words and shortcuts for the model's language (or every language),
          * with the words you've written that the model lacks ([learned], `LearnedWords.words`).

@@ -5,10 +5,12 @@ import android.content.res.Resources
 
 internal enum class Style { Polished, Casual, Notes, Verbatim }
 /** A keyboard layout's language: its keys, accents and typing model. Dictation languages are
- * [DictationLanguage]; a language can be dictated without a layout of its own. */
+ * [DictationLanguage]; a language can be dictated without a layout of its own. Hinglish ("hien"),
+ * Hindi in Latin letters mixed with English, types on English's keys with both languages' words;
+ * no phone language matches it, so only choosing it in Settings gives it. */
 internal enum class Spoken(val code: String, val label: String) {
     English("en", "English"), Spanish("es", "Español"), German("de", "Deutsch"), Norwegian("no", "Norsk"),
-    French("fr", "Français"), Italian("it", "Italiano");
+    French("fr", "Français"), Italian("it", "Italiano"), Hinglish("hien", "Hinglish");
 
     // Whisper calls Bokmål "no"; the keyboard and its model use BCP 47 "nb".
     val layoutCode get() = if (this == Norwegian) "nb" else code
