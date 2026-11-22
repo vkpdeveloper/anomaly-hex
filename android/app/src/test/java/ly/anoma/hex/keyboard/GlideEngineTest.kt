@@ -111,6 +111,27 @@ class GlideEngineTest {
         assertEquals("th really", k.field.text)
     }
 
+    @Test fun heldDeleteTakesWholeWordsWithTheSpacesAfterThem() {
+        val k = Keyboard("Say hello there  ")
+        k.engine.deleteWord()
+        assertEquals("Say hello ", k.field.text)
+        k.engine.deleteWord()
+        assertEquals("Say ", k.field.text)
+        val emoji = Keyboard("hi 👍🏽")
+        emoji.engine.deleteWord()
+        assertEquals("hi ", emoji.field.text)
+    }
+
+    @Test fun heldDeleteKeepsTheWordInProgressRight() {
+        val k = Keyboard("Say ")
+        k.tap("w"); k.tap("o"); k.tap("r")
+        k.engine.deleteWord()
+        assertEquals("Say ", k.field.text)
+        assertTrue(k.strip.isEmpty())
+        k.tap("a")
+        assertEquals("Say a", k.field.text)
+    }
+
     @Test fun passwordAndNumberFieldsTakeNoGlides() {
         assertTrue(Keyboard().engine.glides)
         assertFalse(Keyboard(type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).engine.glides)

@@ -66,7 +66,6 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private val enterKey: KeyCap
     private val enterIcon = ImageView(context)
     private var deleting = false
-    private var repeated = false
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private val spaceGesture = SpaceGesture(KeyboardMetrics.CURSOR_START * density, KeyboardMetrics.CURSOR_STEP * density, slop.toFloat())
     private var cursorSlide: CursorSlide? = null
@@ -86,11 +85,15 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         }
     }
     private val deleteGesture = DeleteGesture(KeyboardMetrics.DELETE_START * density, KeyboardMetrics.DELETE_STEP * density,
-        KeyboardMetrics.DELETE_CANCEL * density, slop.toFloat())
+        KeyboardMetrics.DELETE_CANCEL * density, KeyboardMetrics.DELETE_STILL * density)
     private var deleteSlide: DeleteSlide? = null
+    private val deleteRepeat = DeleteRepeat()
+    // Every repeat goes through the engine's delete, so its undos and the word in progress stay right.
     private val repeatDelete = object : Runnable {
         override fun run() {
-            if (deleting) { repeated = true; ime.engine.delete(); postDelayed(this, KeyboardMetrics.DELETE_REPEAT_EVERY) }
+            if (!deleting) return
+            if (deleteRepeat.next()) ime.engine.deleteWord() else ime.engine.delete()
+            postDelayed(this, deleteRepeat.delay)
         }
     }
 
@@ -264,12 +267,14 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                         glide.add(v, KeyPoint((v.left + e.getHistoricalX(i)).toDouble(), (row.top + e.getHistoricalY(i)).toDouble()), e.getHistoricalEventTime(i))
                     val p = KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble())
                     // A glide is no longer a held key: the next key down mustn't type its first letter.
-                    if (glide.move(v, p, e.eventTime, feedback.choosing)) { clearCallout(); v.isPressed = false; roll.clear() }
+                    // A key a later one already typed (Rollover) can't become one, and only its own
+                    // hold is released, never a space or delete held since.
+                    if ((v.isPressed || glide.active) && glide.move(v, p, e.eventTime, feedback.choosing)) { clearCallout(); v.isPressed = false; roll.up(k) }
                     if (glide.active) { if (ime.feedback.glideTrail) postInvalidateOnAnimation() }
                     else if (feedback.choosing) feedback.move(xInHost(row, v, e.x), yInHost(row, v, e.y))
-                    else if (e.x < -slop || e.x > v.width + slop || e.y < -slop || e.y > v.height + slop) {
-                        clearCallout(); v.isPressed = false
-                    }
+                    // A fast tap drifts off its key as the finger lifts or moves on: it still types,
+                    // only its pop-up and long press go. Drifting far enough is a glide, above.
+                    else if (e.x < -slop || e.x > v.width + slop || e.y < -slop || e.y > v.height + slop) clearCallout()
                 }
                 MotionEvent.ACTION_UP -> {
                     glide.add(v, KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble()), e.eventTime)
@@ -306,7 +311,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             val slide = deleteSlide
             when {
                 slide != null -> if (slide.words > 0) ime.engine.deleteSelection()
-                deleting && !repeated && deleteGesture.tap -> key.performClick()
+                deleting && !deleteRepeat.repeating && deleteGesture.tap -> key.performClick()
             }
             deleting = false; deleteSlide = null
         }
@@ -314,17 +319,18 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     roll.down(v) { lift() }
-                    repeated = false; deleting = true; v.isPressed = true; deleteSlide = null
+                    deleting = true; v.isPressed = true; deleteSlide = null
                     deleteGesture.down(e.x)
-                    postDelayed(repeatDelete, KeyboardMetrics.DELETE_REPEAT_DELAY)
+                    postDelayed(repeatDelete, deleteRepeat.start())
                 }
                 MotionEvent.ACTION_MOVE -> if (deleting) {
                     val words = deleteGesture.move(e.x)
-                    if (words > 0 && deleteSlide == null && !repeated) {
-                        removeCallbacks(repeatDelete)
-                        deleteSlide = ime.engine.deleteSlide()
+                    // Before it repeats, a slide sideways stops the repeat and a slide left selects
+                    // words. Once it repeats it keeps on until the finger lifts, however the thumb rolls.
+                    if (!deleteRepeat.repeating) {
+                        if (!deleteGesture.still) removeCallbacks(repeatDelete)
+                        if (words > 0 && deleteSlide == null) deleteSlide = ime.engine.deleteSlide()
                     }
-                    if (!deleteGesture.still) removeCallbacks(repeatDelete)
                     deleteSlide?.select(words)
                 }
                 MotionEvent.ACTION_UP -> if (roll.up(v)) lift()
@@ -430,17 +436,20 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     }?.let(context::getString)
 
     /** The letter a touch types: its own key's, or a neighbour's the word list makes likelier when the
-     * touch is within TypingWord.REACH dp of that neighbour's touch area (never from a key's centre). */
+     * touch fell in the gap beside its keycap, within TypingWord.REACH dp of that neighbour's touch
+     * area ([nearKeys]). A touch on the keycap itself always types its key. */
     private fun likelier(c: Char, text: String, touch: KeyPoint): String {
-        val near = HashMap<Char, Double>()
-        for ((other, cap) in letters) {
-            if (other == c) continue
+        val own = letters[c] ?: return text
+        val areas = HashMap<Char, KeyRect>()
+        for ((other, cap) in letters) if (other != c) {
             val row = cap.parent as View
-            val dx = maxOf(cap.left - touch.x, 0.0, touch.x - cap.right)
-            val dy = maxOf(row.top - touch.y, 0.0, touch.y - row.bottom)
-            val dp = Math.hypot(dx, dy) / density
-            if (dp < TypingWord.REACH) near[if (text.single().isUpperCase()) other.uppercaseChar() else other] = dp
+            areas[if (text.single().isUpperCase()) other.uppercaseChar() else other] =
+                KeyRect(cap.left.toDouble(), row.top.toDouble(), cap.right.toDouble(), row.bottom.toDouble())
         }
+        val row = own.parent as View
+        val face = KeyRect((own.left + own.paddingLeft).toDouble(), (row.top + own.paddingTop).toDouble(),
+            (own.right - own.paddingRight).toDouble(), (row.top + own.height - own.paddingBottom).toDouble())
+        val near = nearKeys(touch, face, areas, TypingWord.REACH * density).mapValues { it.value / density }
         if (near.isEmpty()) return text
         return ime.engine.likelierLetter(text.single(), near, letters.keys).toString()
     }
