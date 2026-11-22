@@ -41,8 +41,9 @@ internal class SpatialDecoder(val model: TypingModel) {
               val spaceCost: Double = Double.POSITIVE_INFINITY)
     data class Reading(val text: String, val cost: Double, val frequency: Int)
     data class Decision(val replace: String?, val readings: List<Reading>)
-    // Google Books English has richer word pairs; these are the shared iOS R1 weights.
-    private val lmWeight = if (model.language == "en") 1.5 else 1.25
+    // Google Books English has richer word pairs; these are the shared iOS R1 weights. Hinglish keeps
+    // English's pairs and reads noisy taps of both languages' words best with its weight too.
+    private val lmWeight = if (model.spelling == "en") 1.5 else 1.25
     // Spanish's many one- and two-letter words ("a", "es", "va") make a letter read as a space too
     // cheap a split ("vaxes" -> "va es"): there, only a tap below the letters is one.
     private val spaceTapCost = if (model.language == "es") Double.POSITIVE_INFINITY else 5.0

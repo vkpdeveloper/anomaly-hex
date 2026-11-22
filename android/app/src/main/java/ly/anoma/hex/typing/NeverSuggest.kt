@@ -19,7 +19,8 @@ internal class NeverSuggest(model: TypingModel, source: Reader) {
             for (line in lines) {
                 if (line.isBlank() || line.startsWith('#')) continue
                 val (language, kind, spelling) = line.split('\t')
-                if (language != "*" && language != model.language) continue
+                // Hinglish also takes English's rows.
+                if (language != "*" && language != model.language && language != model.spelling) continue
                 val flag: Byte = when (kind) {
                     "swear" -> SWEAR
                     "slur" -> SLUR

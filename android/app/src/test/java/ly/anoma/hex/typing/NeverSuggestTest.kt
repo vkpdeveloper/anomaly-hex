@@ -46,7 +46,7 @@ class NeverSuggestTest {
         for ((lang, swear, slur) in listOf(
             Triple("en", "fuck", "nigger"), Triple("es", "mierda", "maricón"),
             Triple("de", "scheiße", "neger"), Triple("nb", "faen", "neger"),
-            Triple("fr", "merde", "nègre"), Triple("it", "cazzo", "frocio")
+            Triple("fr", "merde", "nègre"), Triple("it", "cazzo", "frocio"), Triple("hien", "chutiya", "nigger")
         )) {
             val w = word(lang, spatial = false)
             assertTrue("$lang still knows the slur", w.decoder.model.index(slur) >= 0)
@@ -116,10 +116,11 @@ class NeverSuggestTest {
     @Test fun everyListedLiteralIsKeptSeparatelyFromRankedSuggestions() {
         val rows = File("src/main/assets/typing/never-suggest.tsv").readLines()
             .filterNot { it.isBlank() || it.startsWith('#') }.map { it.split('\t') }
-        for (lang in listOf("en", "es", "de", "nb", "fr", "it")) {
+        for (lang in listOf("en", "es", "de", "nb", "fr", "it", "hien")) {
             val w = word(lang)
             for ((layout, kind, entry) in rows) {
-                if (layout != "*" && layout != lang) continue
+                // Hinglish also takes English's rows.
+                if (layout != "*" && layout != lang && !(lang == "hien" && layout == "en")) continue
                 val before = entry.substringBefore(' ', "")
                 val token = entry.substringAfter(' ').replaceFirstChar { it.uppercase() }
                 for (on in listOf(false, true)) {
@@ -574,11 +575,12 @@ class NeverSuggestTest {
     // Every language has words for the strip between words: at a sentence's start, after a comma and
     // after a word the pairs don't know (0.2.0's French and Italian showed nothing there).
     @Test fun everyLanguageOffersWordsBetweenWords() {
-        for (lang in listOf("en", "es", "de", "nb", "fr", "it")) {
+        for (lang in listOf("en", "es", "de", "nb", "fr", "it", "hien")) {
             val w = word(lang)
             for (before in listOf("", "zzqx, ", "zzqx ")) assertEquals("$lang [$before]", 3, w.predictions(before).size)
         }
         assertEquals(listOf("Je", "Le", "La"), word("fr").predictions(""))
+        assertEquals(listOf("Ye", "Bhai", "I"), word("hien").predictions(""))
         assertEquals(listOf("e", "ma", "che"), word("it").predictions("ciao, "))
     }
 }

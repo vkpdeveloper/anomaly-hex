@@ -93,7 +93,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // A model word as the strip shows it: English "i" and its contractions with their capital, and
     // a name the books nearly always capitalise ("monday" -> "Monday").
     private fun displayed(word: String): String {
-        if (model.language == "en" && (word == "i" || word.startsWith("i'"))) return "I" + word.drop(1)
+        if (model.spelling == "en" && (word == "i" || word.startsWith("i'"))) return "I" + word.drop(1)
         return capitalisedName(word) ?: word
     }
 
@@ -122,7 +122,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
                 !blocked(s)) pool.add(s)
         }
         fix?.let { pool.add(it) }
-        if (autocorrect && fix == null && model.language == "en") suggestOnly[lower]?.let { add(matchCase(token, it)) }
+        if (autocorrect && fix == null && model.spelling == "en") suggestOnly[lower]?.let { add(matchCase(token, it)) }
         // Your own word, completed once two letters match, before the dictionary's: a word you added is
         // likelier what you mean than a reading's runner-up ("zor" offers "Zorbex" beside the fix "or").
         if (token.length >= 2) decoder.personal?.completions(token)?.firstOrNull()?.let { add(yours(it)) }
@@ -226,7 +226,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         else matchCase(token, word)
     fun literalChip(suggestions: List<String>) = token.takeIf { it.isNotEmpty() && (suggestions.isEmpty() || blocked(it)) }
     private fun protected() = token.drop(1).any { it.isUpperCase() } ||
-        (model.language == "en" && token.lowercase() in shorthand)
+        (model.spelling == "en" && token.lowercase() in shorthand)
     private fun cased(s: String) = if (token.firstOrNull()?.isUpperCase() == true) s.replaceFirstChar { it.uppercase() } else s
     /** What space puts in place of the word alone, or null. */
     fun replacement(): String? {
@@ -244,12 +244,12 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         val lower = token.lowercase()
         val allCaps = token.length >= 2 && token.all { it.isUpperCase() }
         if (token.drop(1).any { it.isUpperCase() } && !allCaps) return null
-        if (model.language == "en" && lower in shorthand) return null
+        if (model.spelling == "en" && lower in shorthand) return null
         // A word the same letters spell with an apostrophe or an accent, or one that sounds alike,
         // chosen by the word before when it says so clearly ("yes id" -> "yes I'd", "the id" stays).
         if (!allCaps && '\'' !in token) ContextWords.choice(model, token, previousText, null, sentenceStart)
             ?.takeUnless(::blocked)?.let { return it }
-        if (model.language == "en") {
+        if (model.spelling == "en") {
             englishFixes[lower]?.takeUnless(::blocked)?.let { return if (allCaps) {
                 if (token.length >= 3) it.uppercase() else null
             } else cased(it) }
@@ -259,7 +259,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         // German noun ("haus" -> "Haus"), as the capitals list beside the model says.
         val fix = decision().replace?.let { if (decoder.personal?.owns(it) == true) yours(it) else cased(it) } ?: return capitalised(token)
         // A missed space after English "i" ("iwant") gives "I want", as "i" alone does.
-        if (model.language == "en" && ' ' in fix) return fix.split(' ').joinToString(" ") { if (it == "i") "I" else it }
+        if (model.spelling == "en" && ' ' in fix) return fix.split(' ').joinToString(" ") { if (it == "i") "I" else it }
         // German's model is lowercase: a noun it corrects to takes its capital ("hsus" -> "Haus").
         return if (model.language == "de" && ' ' !in fix) capitalised(fix) ?: fix else fix
     }
@@ -312,7 +312,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // The word before, revised now that `next` follows it, or null: words the context decides
     // (`ContextWords`); a word typed with its own apostrophe never gets here.
     private fun revision(text: String, next: String): String? {
-        if (!ContextWords.decides(model.language) || text.isEmpty() || (model.language == "en" && text.length < 2)) return null
+        if (!ContextWords.decides(model.spelling) || text.isEmpty() || (model.spelling == "en" && text.length < 2)) return null
         // Typed in capitals, left alone; one capital letter is a sentence's start ("E andato" -> "È andato").
         if (text.length >= 2 && text == text.uppercase() && text != text.lowercase() && !text.startsWith("I'")) return null
         val rest = before.dropLast(text.length + 1)
@@ -358,17 +358,18 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         private val suggestOnly = mapOf("ill" to "I'll", "id" to "I'd", "were" to "we're", "wed" to "we'd",
             "well" to "we'll", "its" to "it's", "lets" to "let's", "hell" to "he'll", "shell" to "she'll")
         // Hex's own short lists, as iOS: a sentence's common first words, a clause's after a comma, and
-        // the commonest words for next-word slots the model can't fill.
+        // the commonest words for next-word slots the model can't fill. Hinglish's are its corpus's
+        // commonest, with English's.
         private val sentenceStarters = mapOf("en" to listOf("I", "the", "I'm"), "es" to listOf("yo", "el", "la"),
             "de" to listOf("ich", "das", "die"), "nb" to listOf("jeg", "det", "vi"), "fr" to listOf("je", "le", "la"),
-            "it" to listOf("io", "il", "la"))
+            "it" to listOf("io", "il", "la"), "hien" to listOf("ye", "bhai", "I"))
         private val clauseStarters = mapOf("en" to listOf("I", "but", "and"), "es" to listOf("que", "pero", "y"),
             "de" to listOf("und", "aber", "ich"), "nb" to listOf("og", "men", "jeg"), "fr" to listOf("et", "mais", "je"),
-            "it" to listOf("e", "ma", "che"))
+            "it" to listOf("e", "ma", "che"), "hien" to listOf("aur", "I", "ye"))
         private val commonWords = mapOf("en" to listOf("the", "to", "and", "a", "I", "of"),
             "es" to listOf("de", "que", "y", "la", "el", "en"), "de" to listOf("und", "die", "der", "ich", "ist", "das"),
             "nb" to listOf("og", "i", "det", "er", "på", "som"), "fr" to listOf("de", "la", "et", "le", "je", "à"),
-            "it" to listOf("di", "e", "che", "la", "il", "a"))
+            "it" to listOf("di", "e", "che", "la", "il", "a"), "hien" to listOf("hai", "to", "ke", "the", "nahi", "and"))
         private val midSentenceMarks = ",;:)\"'\u201D\u2019\u2014"
         /** The word right before the cursor, or null inside a handle, path, address or number. */
         fun currentToken(before: CharSequence): String? {

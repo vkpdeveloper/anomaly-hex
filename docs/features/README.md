@@ -2970,7 +2970,9 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   Apple documents them only for DictationTranscriber, and Parakeet's batch
 │   path receives none
 └── Proof limits: unit tests only; no CI compiles the iOS targets
-Android keyboard -> English, Spanish, German and Bokmål typing assistance
+Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hinglish typing assistance
+├── Keyboard > Keyboard layout > Hinglish -> Hindi in Latin letters and English, tapped or glided
+│   (HinglishTest; unit tests only, no device run)
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip
 └── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)

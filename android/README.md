@@ -23,9 +23,9 @@ Welcome explains that the internet is used only to fetch the 190 MB speech model
 
 ## Typing assistance
 
-All four layouts have a bundled, memory-mapped **HXTM v3** word and word-pair model. English and Spanish keep the original iOS Google Books files. German uses Google Books; Bokmål uses the National Library of Norway’s book counts filtered by Norsk ordbank. Start typing to see ranked suggestions; tap one to insert it. A space brings up next-word predictions. Passwords, addresses and editors that disable suggestions use literal typing.
+Every layout has a bundled, memory-mapped **HXTM v3** word and word-pair model. English and Spanish keep the original iOS Google Books files. German uses Google Books; Bokmål uses the National Library of Norway’s book counts filtered by Norsk ordbank. Hinglish is English’s model with Hindi written in Latin letters mixed in from the PHINC corpus, so “kya”, “nahi” and “yaar” tap and glide as English words do. Start typing to see ranked suggestions; tap one to insert it. A space brings up next-word predictions. Passwords, addresses and editors that disable suggestions use literal typing.
 
-**Keyboard › Keyboard layout** follows dictation by default; an explicit layout can differ from the space bar’s spoken language. Spanish has a dedicated ñ and ¿/¡ on the second symbols page. German is QWERTZ with ü, ö and ä; hold s for ß. Bokmål has å, ø and æ.
+**Keyboard › Keyboard layout** follows dictation by default; an explicit layout can differ from the space bar’s spoken language. Spanish has a dedicated ñ and ¿/¡ on the second symbols page. German is QWERTZ with ü, ö and ä; hold s for ß. Bokmål has å, ø and æ. Hinglish uses English’s keys and spelling rules; no phone language picks it, so choose it here. Dictation then follows the phone’s languages.
 
 **Keyboard › Suggest swear words** is off by default on every layout. Slurs on the
 [curated list](app/src/main/assets/typing/never-suggest.tsv) are never offered, even when

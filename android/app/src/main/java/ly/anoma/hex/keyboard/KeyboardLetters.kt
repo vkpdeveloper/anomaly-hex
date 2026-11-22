@@ -12,6 +12,7 @@ internal object KeyboardLetters {
         // apostrophe key after n on row 3, between shift and delete.
         "fr" to listOf("azertyuiop", "qsdfghjklm", "wxcvbn'"),
         "it" to listOf("qwertyuiop", "asdfghjkl", "zxcvbnm"),
+        "hien" to listOf("qwertyuiop", "asdfghjkl", "zxcvbnm"),
     )
 
     fun rows(layoutCode: String) = rows[layoutCode] ?: rows.getValue("en")

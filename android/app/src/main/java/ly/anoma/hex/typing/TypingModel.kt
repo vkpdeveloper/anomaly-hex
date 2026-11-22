@@ -28,6 +28,9 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
     private val seconds = rows + 4 * (words + 1)
     private val bi = seconds + 4 * pairs
     private val blob = bi + pairs
+    /** Whose spelling rules and lists the words follow: English's for Hinglish, whose words are
+     * English's with Hindi written in Latin letters added; else the model's own language. */
+    val spelling = spelling(language)
     val apostrophe get() = code('\'')
     fun code(c: Char) = codes[c] ?: 0
     fun character(code: Int) = chars[code]
@@ -268,6 +271,7 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
     }
     companion object {
         private const val UNCOUNTED = 256
+        private fun spelling(language: String) = if (language == "hien") "en" else language
         private fun mapped(channel: FileChannel, offset: Long, size: Long): ByteBuffer {
             require(size in 1L..32_000_000L)
             return channel.map(FileChannel.MapMode.READ_ONLY, offset, size).order(ByteOrder.LITTLE_ENDIAN)
@@ -284,14 +288,14 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
             }
             val names = assets.list("typing").orEmpty()
             val capitals = if (language + ".capitals" in names) read(language + ".capitals") else null
-            val valid = if (language + ".valid" in names) read(language + ".valid") else null
+            val valid = listOf(language, spelling(language)).firstOrNull { "$it.valid" in names }?.let { read("$it.valid") }
             return assets.open("typing/never-suggest.tsv").bufferedReader().use { list ->
                 open(read(language + ".hextm"), language, valid, list, capitals)
             }
         }
         fun file(file: File, language: String): TypingModel {
             fun read(f: File) = FileInputStream(f).use { mapped(it.channel, 0, f.length()) }
-            val valid = File(file.parentFile, language + ".valid").takeIf { it.isFile }?.let(::read)
+            val valid = listOf(language, spelling(language)).map { File(file.parentFile, "$it.valid") }.firstOrNull { it.isFile }?.let(::read)
             val capitals = File(file.parentFile, language + ".capitals").takeIf { it.isFile }?.let(::read)
             return File(file.parentFile, "never-suggest.tsv").bufferedReader().use { list ->
                 open(read(file), language, valid, list, capitals)
