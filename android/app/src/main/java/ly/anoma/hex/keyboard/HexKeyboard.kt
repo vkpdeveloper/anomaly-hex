@@ -1,11 +1,14 @@
 package ly.anoma.hex.keyboard
 
+import android.Manifest
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.ContactsContract
 import android.provider.UserDictionary
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -28,6 +31,7 @@ import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.Router
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.speech.Spoken
+import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
@@ -62,6 +66,29 @@ class HexKeyboard : InputMethodService() {
         val partial = File(filesDir, LearnedWords.FILE + ".partial")
         runCatching { partial.writeText(text); partial.renameTo(learnedFile) }
     }
+    // The email addresses the strip offers: the phone's accounts, read once, and your contacts' while
+    // Settings › Keyboard's switch and the Contacts permission are both on, read again a little after
+    // they change (a sync changes many at once).
+    private val emails = EmailAddresses()
+    private val readContacts = Runnable {
+        words.execute { emails.contacts = if (contactsAllowed()) EmailAddresses.contacts(contentResolver) else emptyList() }
+    }
+    private val contactsChanged = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) { main.removeCallbacks(readContacts); main.postDelayed(readContacts, CONTACTS_DELAY_MS) }
+    }
+    private var watchingContacts = false
+    private fun contactsAllowed() = feedback.contactEmails && checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+    private fun contactsSettingChanged() {
+        val wanted = contactsAllowed()
+        if (wanted != watchingContacts) {
+            watchingContacts = wanted
+            try {
+                if (wanted) contentResolver.registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, contactsChanged)
+                else contentResolver.unregisterContentObserver(contactsChanged)
+            } catch (_: SecurityException) { watchingContacts = false }
+        }
+        main.removeCallbacks(readContacts); readContacts.run()
+    }
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val router by lazy { Router(this, Store(this)) }
     private var fetching = false
@@ -92,7 +119,7 @@ class HexKeyboard : InputMethodService() {
     internal val engine by lazy {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
             readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine) }, learned = learned,
-            learnedChanged = ::learnedChanged, background = words)
+            learnedChanged = ::learnedChanged, emails = emails, background = words)
     }
     internal val dictation by lazy {
         Dictation(this,
@@ -114,6 +141,7 @@ class HexKeyboard : InputMethodService() {
             TypingPreferences.LEARN_FROM_HISTORY ->
                 if (feedback.learnFromHistory) fetchHistoryWords(force = true)
                 else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
+            TypingPreferences.CONTACT_EMAILS -> contactsSettingChanged()
         }
     }
     internal val previewAllowed get() = !engine.secure
@@ -171,6 +199,8 @@ class HexKeyboard : InputMethodService() {
             learnedLoaded = true
             main.post { engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords() }
         }
+        words.execute { emails.accounts = EmailAddresses.accounts(this) }
+        contactsSettingChanged()
         engine.preload()
     }
     override fun onEvaluateFullscreenMode() = false
@@ -210,6 +240,8 @@ class HexKeyboard : InputMethodService() {
     override fun onDestroy() {
         getSharedPreferences("typing", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(typingChanged)
         contentResolver.unregisterContentObserver(dictionaryChanged); io.cancel()
+        if (watchingContacts) contentResolver.unregisterContentObserver(contactsChanged)
+        main.removeCallbacks(readContacts)
         // The last changes are written before the worker stops.
         main.removeCallbacks(saveLearned)
         if (learnedLoaded) learned.write().let { text -> words.execute { writeLearned(text) } }
@@ -218,6 +250,7 @@ class HexKeyboard : InputMethodService() {
     }
     private companion object {
         const val SAVE_DELAY_MS = 3_000L
+        const val CONTACTS_DELAY_MS = 2_000L
         const val HISTORY_WORDS_MS = 6 * 60 * 60_000L
     }
 }

@@ -1,10 +1,15 @@
 package ly.anoma.hex
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
@@ -80,6 +85,17 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val glide = remember(revision) { typing.glide }
     val glideTrail = remember(revision) { typing.glideTrail }
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
+    // On only with the Contacts permission too. Once Android stops asking (a second no), the switch opens
+    // Hex's app info instead.
+    var contactsAllowed by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
+    var contactsRefused by rememberSaveable { mutableStateOf(false) }
+    val contactEmails = remember(revision, contactsAllowed) { typing.contactEmails && contactsAllowed }
+    val askContacts = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        contactsAllowed = granted
+        contactsRefused = !granted && (context as? android.app.Activity)
+            ?.shouldShowRequestPermissionRationale(Manifest.permission.READ_CONTACTS) != true
+        if (granted) typing.contactEmails = true
+    }
     val fixState by TinyfixFiles.state.collectAsState()
     LaunchedEffect(revision) { TinyfixFiles.refresh(context, typing) }
     var confirmForget by remember { mutableStateOf(false) }
@@ -162,6 +178,16 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 if (it) TinyfixFiles.enable(context, typing) else TinyfixFiles.disable(context, typing)
                             }
                             Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
+                            Rule(); Toggle("Suggest contacts' emails",
+                                if (contactsRefused) "Allow Contacts in Hex's app info" else "Needs access to your contacts", contactEmails) {
+                                contactsAllowed = context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                                when {
+                                    !it || contactsAllowed -> typing.contactEmails = it
+                                    contactsRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)))
+                                    else -> askContacts.launch(Manifest.permission.READ_CONTACTS)
+                                }
+                            }
                             // The words the keyboard keeps and suggests are Android's own personal dictionary.
                             Rule(); Entry("Personal dictionary", "Words the keyboard always knows", "↗",
                                 { context.startActivity(Intent(Settings.ACTION_USER_DICTIONARY_SETTINGS)) })

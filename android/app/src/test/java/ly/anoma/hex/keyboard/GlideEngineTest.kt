@@ -203,7 +203,7 @@ class GlideEngineTest {
 }
 
 /** An editor with the caret at the end of [text]'s edits. */
-private class Field(var text: String) : KeyboardTextTarget {
+internal class Field(var text: String) : KeyboardTextTarget {
     private var caret = text.length
     override val connected = true
     override fun before(length: Int) = text.substring(maxOf(0, caret - length), caret)
@@ -230,7 +230,7 @@ private class Field(var text: String) : KeyboardTextTarget {
 }
 
 /** In-memory preferences behind a context, for the classes that keep their settings in SharedPreferences. */
-private object Prefs {
+internal object Prefs {
     fun context(): Context = object : ContextWrapper(null) {
         val prefs = Memory()
         override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences = prefs

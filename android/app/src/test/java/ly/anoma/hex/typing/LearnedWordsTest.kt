@@ -77,4 +77,20 @@ class LearnedWordsTest {
         copy.clear()
         assertNull(copy.preferred("nahi", alike))
     }
+
+    @Test fun typedAddressesAreOfferedMostUsedFirstAndSurviveASave() {
+        val learned = LearnedWords()
+        learned.learnAddress("Asha@example.com")
+        repeat(2) { learned.learnAddress("ashok@example.org") }
+        learned.learnAddress("bob@example.com")
+        assertEquals(listOf("ashok@example.org", "Asha@example.com"), learned.addresses("as"))
+        assertEquals(listOf("Asha@example.com"), learned.addresses("ASHA@"))
+        assertTrue(learned.addresses("bob@example.com").isEmpty())
+        val copy = LearnedWords().apply { read(learned.write() + "e\tnot an address\t3\n") }
+        assertEquals(learned.addresses("a"), copy.addresses("a"))
+        assertEquals(listOf("bob@example.com"), copy.addresses("b"))
+        assertTrue(copy.addresses("n").isEmpty())
+        copy.clear()
+        assertTrue(copy.addresses("a").isEmpty())
+    }
 }

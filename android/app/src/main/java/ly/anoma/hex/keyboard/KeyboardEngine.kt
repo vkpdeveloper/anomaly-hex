@@ -11,6 +11,7 @@ import ly.anoma.hex.fix.Fix
 import ly.anoma.hex.fix.Tinyfix
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.speech.SpokenText
+import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
 import ly.anoma.hex.typing.LearnedWords
@@ -49,6 +50,8 @@ internal class KeyboardEngine(
     private val learned: LearnedWords = LearnedWords(),
     /** [learned] changed and should be saved. */
     private val learnedChanged: () -> Unit = {},
+    /** The addresses the strip offers as one is typed, with those in [learned]. */
+    private val emails: EmailAddresses = EmailAddresses(),
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
@@ -119,6 +122,16 @@ internal class KeyboardEngine(
     private var glided: Glided? = null
     var secure = true
         private set
+    // Email addresses are offered and learned in text fields that allow suggestions and learning; an
+    // address field offers them from the first letter, first in the strip.
+    private var addressesHere = false
+    private var addressField = false
+    /** The addresses the strip offers and the text they complete, which a pick replaces. */
+    private class AddressOffer(val typed: String, val addresses: List<String>)
+    private var addressOffer: AddressOffer? = null
+    // Each address is learned once per field, and leaving it teaches only after something was typed there.
+    private val addressesLearned = HashSet<String>()
+    private var typedHere = false
 
     fun startInput(attribute: EditorInfo) {
         edited()
@@ -136,6 +149,13 @@ internal class KeyboardEngine(
             variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
                 InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_FILTER) &&
             attribute.inputType and (InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_FLAG_AUTO_COMPLETE) == 0
+        addressesHere = kind == InputType.TYPE_CLASS_TEXT && !secure &&
+            attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0 &&
+            variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_FILTER) &&
+            attribute.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS == 0
+        addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
+        addressesLearned.clear(); typedHere = false
         resetTyping(); word = null; clearSpaces()
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
             kind == InputType.TYPE_CLASS_DATETIME
@@ -221,6 +241,13 @@ internal class KeyboardEngine(
         if (learned.learn(f.word, f.previous, f.sentenceStart)) personalWordsChanged()
         learnedChanged()
     }
+    // The address that ends [b], the text before the cursor, once a space, comma, semicolon or line break
+    // follows it or the field is left. A period may still be the address's own ("a@b.co" of "a@b.co.uk").
+    private fun learnAddressBefore(b: String) { if (addressesHere) EmailAddresses.finished(b)?.let(::learnAddress) }
+    private fun learnAddress(address: String) {
+        if (!addressesHere || !addressesLearned.add(address.lowercase())) return
+        learned.learnAddress(address); learnedChanged()
+    }
     /** The paired computer's words changed what [learned] holds: every language reads its words again. */
     fun learnedWordsChanged() = personalWordsChanged()
 
@@ -265,7 +292,7 @@ internal class KeyboardEngine(
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList()); more = false; shift.forgetTap()
     }
     private fun resetTyping() {
-        cancelChip(); word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
+        cancelChip(); addressOffer = null; word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
     }
     private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null; glided = null }
     private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
@@ -303,12 +330,12 @@ internal class KeyboardEngine(
     private fun showSuggestions(w: TypingWord?) {
         cancelChip()
         if (w != null && w.token.isNotEmpty()) {
-            surface?.suggestions(w.strip(autocorrect = false))
+            showStrip(w.strip(autocorrect = false))
             if (!feedback.autocorrect || !canEndWord()) return
             val token = w.token
             pendingChip = Runnable {
                 pendingChip = null
-                if (word === w && w.token == token) surface?.suggestions(w.strip(autocorrect = true).map {
+                if (word === w && w.token == token) showStrip(w.strip(autocorrect = true).map {
                     if (it.kind == Suggestion.Kind.Fix && feedback.blocked(w.decoder.model.language, token, it.text))
                         Suggestion(it.text, Suggestion.Kind.Word) else it
                 })
@@ -321,8 +348,21 @@ internal class KeyboardEngine(
     /** Next words for the text before the cursor, capitalised as shift would be. */
     private fun showPredictions(before: String?) {
         val w = word
-        surface?.suggestions(if (w != null && before != null && !symbols && canEndWord())
+        showStrip(if (w != null && before != null && !symbols && canEndWord())
             w.predictions(before, capitalize = capsWanted()).map { Suggestion(it, Suggestion.Kind.Next) } else emptyList())
+    }
+    /** The strip, with the email addresses that complete the one being typed ([EmailAddresses]): up to
+     * three, first, in an address field; elsewhere one in the last slot once three characters match,
+     * and your contacts' only once an @ is typed, so they don't crowd out words. */
+    private fun showStrip(slots: List<Suggestion>) {
+        addressOffer = null
+        val typed = if (addressesHere && selStart == selEnd) EmailAddresses.typed(before()) else null
+        val found = if (typed == null || typed.length < (if (addressField) 1 else 3)) emptyList()
+            else emails.matching(typed, learned, withContacts = addressField || '@' in typed, limit = if (addressField) 3 else 1)
+        if (found.isEmpty()) { surface?.suggestions(slots); return }
+        addressOffer = AddressOffer(typed!!, found)
+        val offered = found.map { Suggestion(it, Suggestion.Kind.Word) }
+        surface?.suggestions(if (addressField) (offered + slots).take(3) else slots.take(2) + offered)
     }
     private fun before() = if (secure) "" else target.before(96).orEmpty()
     private fun endsWith(suffix: String) = !secure && target.before(suffix.length) == suffix
@@ -347,7 +387,7 @@ internal class KeyboardEngine(
 
     fun letter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) {
         if (!target.connected) return
-        edited()
+        edited(); typedHere = true
         val w = word
         if (w == null || symbols || !text.single().isLetter()) { type(text); return }
         undo = null
@@ -392,6 +432,7 @@ internal class KeyboardEngine(
      * double-space), and a closing mark takes its place. */
     fun pickSuggestion(text: String) {
         edited()
+        addressOffer?.takeIf { text in it.addresses }?.let { pickAddress(it.typed, text); return }
         tapped?.let { pickForTapped(it, text); return }
         glided?.takeIf { it.anchor == before() }?.let { pickForGlided(it, text); return }
         val w = word ?: return
@@ -409,6 +450,19 @@ internal class KeyboardEngine(
             showPredictions(b)
             inputDone()
         }
+    }
+
+    // An offered address takes the place of what was typed of it; in an address field nothing follows
+    // it, elsewhere a space does, as after a picked word.
+    private fun pickAddress(typed: String, address: String) {
+        resetTyping(); clearSpaces()
+        val holds = addressField || SpaceRules.separates(target.after(1))
+        if (!replace(typed, if (holds) address else "$address ")) { surface?.suggestions(emptyList()); return }
+        learnAddress(address)
+        val b = before()
+        if (addressField) surface?.suggestions(emptyList())
+        else { if (holds) heldAnchor = b else pickedAnchor = b; showPredictions(b) }
+        inputDone()
     }
 
     // Another reading takes the glided word's place, and the next word still puts its space in first.
@@ -465,14 +519,14 @@ internal class KeyboardEngine(
     }
     private fun afterSpace(now: Long) {
         val b = before()
-        learn(b, 1)
+        learn(b, 1); learnAddressBefore(b)
         spaceAnchor = b; spaceAt = now
         showPredictions(b); inputDone()
     }
 
     fun type(value: String) {
         if (!target.connected) return
-        edited()
+        edited(); typedHere = true
         if (value == " ") { space(); return }
         val b = before()
         val mark = value.length == 1 && TypingWord.endsWord(value[0])
@@ -499,7 +553,9 @@ internal class KeyboardEngine(
     }
     private fun afterMark(mark: String) {
         val b = before()
-        learn(b, mark.length); showPredictions(b); inputDone()
+        learn(b, mark.length)
+        if (mark == "," || mark == ";") learnAddressBefore(b)
+        showPredictions(b); inputDone()
     }
     fun delete() {
         if (!target.connected) return
@@ -532,7 +588,7 @@ internal class KeyboardEngine(
             if (!(if (cluster > 1) target.deleteBefore(cluster) else target.deleteCodePointsBefore(1))) target.sendKey(KeyEvent.KEYCODE_DEL)
             if (track) { w!!.pop(); if (expectedCaret >= 0) expectedCaret-- } else resetTyping()
         }
-        if (w != null && w.token.isNotEmpty()) showSuggestions(w) else surface?.suggestions(emptyList())
+        if (w != null && w.token.isNotEmpty()) showSuggestions(w) else showStrip(emptyList())
     }
     /** Held delete once it speeds up ([DeleteRepeat]): the word before the cursor with the spaces
      * after it, as a delete slide counts words, taken one character at a time through [delete]. */
@@ -546,7 +602,7 @@ internal class KeyboardEngine(
     }
     fun enter() {
         edited()
-        learn(before(), 0)
+        learn(before(), 0); learnAddressBefore(before())
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
         val info = editor
         if (info?.actionLabel != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) == 0 &&
@@ -619,7 +675,11 @@ internal class KeyboardEngine(
     fun clearForDictation() { edited(); resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
 
     /** The editor or the keyboard went away: forget the word, never carry it to the next field. */
-    fun leave() { edited(); resetTyping(); clearSpaces(); word = null; surface?.suggestions(emptyList()) }
+    fun leave() {
+        edited()
+        if (typedHere) learnAddressBefore(before())
+        resetTyping(); clearSpaces(); word = null; surface?.suggestions(emptyList())
+    }
 
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
      * the capital Whisper gave it ([SpokenText.continuing], [language] as dictated or "en" translated). */
