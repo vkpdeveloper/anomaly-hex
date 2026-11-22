@@ -29,6 +29,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import ly.anoma.hex.R
+import ly.anoma.hex.typing.TypingPreferences
 
 internal enum class PhotoAccess { None, Chosen, All }
 
@@ -61,6 +62,8 @@ internal class ClipKeeper(
         /** A burst of MediaStore changes (a screenshot writes, then renames) reads once. */
         private const val PHOTO_QUERY_DELAY_MS = 500L
         private val EXTENSION = Regex("[a-z0-9]{1,5}")
+        /** How fresh a copy must be for links in it to be cleaned or expanded on the clipboard. */
+        private const val REWRITE_WITHIN_MS = 5_000L
 
         /** Android 14 lets the person allow only photos they choose; before 13 it is storage. */
         fun photoPermissions() = when {
@@ -86,6 +89,9 @@ internal class ClipKeeper(
         { Thread(it, name) }, ThreadPoolExecutor.DiscardPolicy())
     private val worker = thread("Hex clipboard")
     private val decoder = thread("Hex thumbnails")
+    /** Asks shorteners where links go, off the clipboard's own thread. */
+    private val links = thread("Hex short links")
+    private val typing = TypingPreferences(ime)
     private val dir = File(ime.filesDir, DIR)
     private val photoDir = File(ime.cacheDir, PHOTOS)
     private val authority = ime.packageName + ".clips"
@@ -104,26 +110,46 @@ internal class ClipKeeper(
     private var copy: ChipOffer? = null
     private var copyAt = 0L
     private val usedPhotos = HashSet<Long>()
-    /** Site icons for copied links, shown on the chip. */
+    /** Site icons for copied links, shown on the chip and in the panel. */
     val favicons = Favicons()
+    /** Codes from texts, for the chip. */
+    private val codes = TextedCodes(ime, changed)
+    /** What [ClipPieces] found in each text clip the panel showed, by clip id; looked for once. */
+    private val splits = HashMap<Long, ClipPiece.Split>()
+    private val splitting = HashSet<Long>()
     private val thumbnails = object : LruCache<String, Bitmap>(8 shl 20) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
 
-    /** What the toolbar's chip offers now: the last copy while fresh, or a newer photo. */
+    /** What the toolbar's chip offers now: the last copy while fresh, or a newer photo or texted code. */
     val offer: ChipOffer?
         get() {
             val now = System.currentTimeMillis()
             val types = ime.currentInputEditorInfo?.contentMimeTypes.orEmpty()
-            return ChipOffer.pick(copy, RecentImages.chip(photos, now, usedPhotos), now) { mime ->
+            return ChipOffer.pick(copy, RecentImages.chip(photos, now, usedPhotos), now, codes.latest) { mime ->
                 types.any { ClipDescription.compareMimeTypes(mime, it) }
             }
         }
-    /** The chip was tapped, or typing passed over it: it offers that copy or screenshot no more; the
-     * clipboard keeps it. */
+    /** The chip was tapped, or typing passed over it: it offers that copy, screenshot or code no more;
+     * the clipboard keeps a copy. */
     fun used(offer: ChipOffer) {
-        if (offer is ChipOffer.Photo) usedPhotos += offer.photo.id else copy = null
+        when {
+            offer is ChipOffer.Photo -> usedPhotos += offer.photo.id
+            offer is ChipOffer.Code -> { if (offer == copy) copy = null; codes.used(offer) }
+            else -> copy = null
+        }
         changed()
+    }
+
+    /** What a text clip holds, for the panel: null until [ClipPieces] has looked, which this starts. */
+    fun split(clip: Clip): ClipPiece.Split? {
+        splits[clip.id]?.let { return it }
+        val text = (clip.content as? ClipContent.Text)?.text ?: return null
+        if (splitting.add(clip.id)) worker.execute {
+            val split = ClipPieces.find(ime, text)
+            main.post { splitting -= clip.id; splits[clip.id] = split; changed() }
+        }
+        return null
     }
 
     private val clipChanged = ClipboardManager.OnPrimaryClipChangedListener { read() }
@@ -145,15 +171,16 @@ internal class ClipKeeper(
             publish()
         }
         syncPhotos()
+        codes.sync()
     }
-    /** The keyboard came up: a copy made while it was away, expiry, and new photos. */
-    fun shown() { read(); worker.execute(::publish); syncPhotos() }
+    /** The keyboard came up: a copy made while it was away, expiry, new photos and texted codes. */
+    fun shown() { read(); worker.execute(::publish); syncPhotos(); codes.sync() }
     fun close() {
         clipboard.removePrimaryClipChangedListener(clipChanged)
         if (observing) ime.contentResolver.unregisterContentObserver(photosChanged)
         observing = false
         main.removeCallbacks(expire); main.removeCallbacks(query)
-        worker.shutdown(); decoder.shutdown()
+        worker.shutdown(); decoder.shutdown(); links.shutdown(); codes.close()
     }
 
     /** Reads the primary clip when it changed. It joins the history unless it is marked sensitive (a
@@ -181,6 +208,10 @@ internal class ClipKeeper(
             // A URI that isn't an image (a file, a contact) would paste as its address.
             val text = (item?.text ?: if (item?.uri == null) item?.coerceToText(ime) else null)?.toString()?.trim()
             if (!text.isNullOrEmpty()) {
+                // Only a copy just made: one read again when the keyboard starts would come back as new.
+                if (!sensitive && System.currentTimeMillis() - at < REWRITE_WITHIN_MS && rewrite(text, description.label, at)) return
+                // A texted code copied from its message is offered as that code, and never kept.
+                if (codes.isCode(text)) { copy = ChipOffer.Code(text.filter(Char::isDigit), at, -1); changed(); return }
                 copy = ChipOffer.Text(text, sensitive, at)
                 worker.execute {
                     if (history.add(ClipContent.Text(text), at, secret = !keep) != null) publish()
@@ -196,6 +227,33 @@ internal class ClipKeeper(
         }
         changed()
     }
+
+    /** With Remove tracking from links on, a copy whose links track is copied again without it; with
+     * Expand short links on, a copied short link is copied again as the link it stands for, once the
+     * shortener says (until then, and if it doesn't, the short link is kept as copied). True when the
+     * copy will come back changed. */
+    private fun rewrite(text: String, label: CharSequence?, at: Long): Boolean {
+        val clean = typing.cleanLinks
+        val cleaned = if (clean) Links.clean(text) else text
+        if (cleaned != text) return copyAgain(label, cleaned)
+        val short = Links.only(text)?.takeIf { typing.expandLinks && ShortLinks.isShort(it) } ?: return false
+        copy = ChipOffer.Text(text, false, at)
+        links.execute {
+            val full = ShortLinks.expand(short)?.let { if (clean) Links.cleanLink(it) else it }
+            main.post {
+                when {
+                    // Another copy came meanwhile: the history still gets this one, as it ended up.
+                    copyAt != at -> worker.execute { if (history.add(ClipContent.Text(full ?: text), at) != null) publish() }
+                    full == null || !copyAgain(label, full) ->
+                        worker.execute { if (history.add(ClipContent.Text(text), at) != null) publish() }
+                }
+            }
+        }
+        changed()
+        return true
+    }
+    private fun copyAgain(label: CharSequence?, text: String) =
+        runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, text)) }.isSuccess
 
     private fun keepImage(uri: Uri, described: String?, at: Long, offered: Boolean) {
         val resolver = ime.contentResolver

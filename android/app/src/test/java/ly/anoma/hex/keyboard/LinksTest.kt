@@ -9,6 +9,9 @@ class LinksTest {
         assertEquals("https://shop.example/p?id=7&size=m#reviews",
             Links.cleanLink("https://shop.example/p?utm_source=x&id=7&fbclid=abc&size=m&utm_medium=y#reviews"))
         assertEquals("https://example.com/a", Links.cleanLink("https://example.com/a?gclid=1&utm_campaign=z"))
+        // The keyboard copies a cleaned link again, and reads that copy too: a second pass changes nothing.
+        val once = Links.clean("See https://shop.example/p?utm_source=x&id=7, https://x.com/a?s=1")
+        assertEquals(once, Links.clean(once))
     }
 
     @Test fun siteTagsGoOnlyOnTheirSite() {

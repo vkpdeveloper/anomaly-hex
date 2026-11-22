@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.button.ButtonPreferences
 import ly.anoma.hex.fix.TinyfixFiles
+import ly.anoma.hex.keyboard.TextedCodes
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
 
@@ -90,6 +91,17 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
     val sayToSend = remember(revision) { typing.sayToSend }
     val cleanLinks = remember(revision) { typing.cleanLinks }
+    val expandLinks = remember(revision) { typing.expandLinks }
+    // Codes from texts is on only with the SMS permission too, asked as Contacts is.
+    var smsAllowed by remember { mutableStateOf(TextedCodes.allowed(context)) }
+    var smsRefused by rememberSaveable { mutableStateOf(false) }
+    val textedCodes = remember(revision, smsAllowed) { typing.textedCodes && smsAllowed }
+    val askSms = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        smsAllowed = granted
+        smsRefused = !granted && (context as? android.app.Activity)
+            ?.shouldShowRequestPermissionRationale(TextedCodes.PERMISSION) != true
+        if (granted) typing.textedCodes = true
+    }
     // On only with the Contacts permission too. Once Android stops asking (a second no), the switch opens
     // Hex's app info instead.
     var contactsAllowed by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
@@ -215,8 +227,21 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 glideTrail, enabled = glide) { typing.glideTrail = it }
                             Rule(); Toggle("Recent screenshots", if (photos.partial) "Only the photos you chose" else "Offer a screenshot you just took",
                                 photos.on) { photos.change(it) }
-                            Rule(); Toggle("Remove tracking from links", "When you paste a link from the keyboard", cleanLinks) {
+                            Rule(); Toggle("Codes from texts",
+                                if (smsRefused) "Allow SMS in Hex's app info" else "Offer a code a text message brings", textedCodes) {
+                                smsAllowed = TextedCodes.allowed(context)
+                                when {
+                                    !it || smsAllowed -> typing.textedCodes = it
+                                    smsRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)))
+                                    else -> askSms.launch(TextedCodes.PERMISSION)
+                                }
+                            }
+                            Rule(); Toggle("Remove tracking from links", "When you copy a link", cleanLinks) {
                                 typing.cleanLinks = it
+                            }
+                            Rule(); Toggle("Expand short links", "Show where bit.ly and amzn.to links go", expandLinks) {
+                                typing.expandLinks = it
                             }
                             Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
                                 typing.learnFromHistory = it

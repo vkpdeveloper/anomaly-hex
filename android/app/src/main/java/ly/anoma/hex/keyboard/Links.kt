@@ -39,6 +39,9 @@ internal object Links {
     /** The single link [text] is, besides spaces around it; null when it is anything else. */
     fun only(text: String): String? = text.trim().takeIf { LINK.matchEntire(it) != null }?.let(::find)?.singleOrNull()
 
+    /** How a link reads on a chip or card: from its site's name, since the scheme says nothing. */
+    fun display(link: String) = link.substringAfter("://").removePrefix("www.")
+
     /** The link's host, lowercased and without `www.`, or null when it has none. */
     fun host(link: String): String? {
         val rest = link.substringAfter("://", "")

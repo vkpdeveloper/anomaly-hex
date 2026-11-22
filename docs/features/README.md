@@ -3084,14 +3084,26 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Strip's chip -> the last copy (10 min) or a screenshot from the last 5 min, in place of
 │   next-word guesses; typing a word or its age ends it, and the clipboard keeps it
 │   (an image only in a field that takes images)
-│   ├── A link -> shown without `https://`, with the site's icon fetched from the site itself
+│   ├── A link -> shown without `https://`, with the site's icon fetched from the site itself,
+│   │   in the chip and on its Clipboard panel card
 │   ├── Phone numbers, emails, links, addresses, dates, flights in a copy -> up to two as their
-│   │   own chips with icons, found by Android's on-device classifier; a tap pastes that piece;
-│   │   a sensitive copy is never looked at
-│   └── Proof limits: ClipPiecesTest; pieces and a favicon seen on a Pixel emulator
-├── Keyboard > Remove tracking from links (off) -> links pasted from the chip or the Clipboard
-│   panel lose `utm_*`, `fbclid`, share tags (`si`, `igsh`, …) and Amazon's `ref`/`tag`; the
-│   clipboard keeps the copy (LinksTest; a cleaned YouTube link seen on a Pixel emulator)
+│   │   own chips with icons, found by Android's on-device classifier, and in a row on the
+│   │   copy's panel card; a tap pastes that piece; a sensitive copy is never looked at
+│   └── Proof limits: ClipPiecesTest; pieces and favicons seen in the strip and the panel on a
+│       Pixel emulator
+├── Keyboard > Remove tracking from links (off) -> a link copied while the keyboard runs (under
+│   5 s old) loses `utm_*`, `fbclid`, share tags (`si`, `igsh`, …) and Amazon's `ref`/`tag`, and
+│   the clean link goes back on the clipboard; pastes from the chip or panel are cleaned too
+│   (LinksTest; a cleaned copy read back by the system paste on a Pixel emulator)
+├── Keyboard > Expand short links (off) -> a copied bit.ly, amzn.to, tinyurl.com, … link becomes
+│   its target (cleaned when the above is on) on the clipboard; only the shortener is asked,
+│   over HTTPS, up to 5 hops; no answer leaves the copy (OneTimeCodeTest's short-link case; a
+│   tinyurl link expanded to Wikipedia with its icon on a Pixel emulator)
+├── Keyboard > Codes from texts (off) -> ask for SMS; a code a text brought in the last 10 min
+│   is the strip's chip; a tap types it and it goes; a copy of it is offered the same way and
+│   never kept in the clipboard history; only codes are kept, in memory
+│   └── Proof limits: OneTimeCodeTest, RecentImagesTest; emulator texts seen as the chip, typed
+│       and gone; no real phone run; a Play build couldn't ask for SMS
 ├── Keyboard > Recent screenshots (off) -> ask for photos; screenshots only, never camera photos
 │   (ClipHistoryTest, RecentImagesTest; unit tests only, no device run)
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip

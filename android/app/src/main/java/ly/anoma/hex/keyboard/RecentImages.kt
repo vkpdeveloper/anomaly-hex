@@ -29,7 +29,8 @@ internal object RecentImages {
         photos.maxByOrNull { it.addedAt }?.takeIf { now - it.addedAt in -SKEW_MS until CHIP_MS && it.id !in used }
 }
 
-/** What the toolbar's chip offers: the last copy (text or an image) or a new photo, whichever is newer. */
+/** What the toolbar's chip offers: the last copy (text or an image), a new photo or a texted code,
+ * whichever is newer. */
 internal sealed interface ChipOffer {
     val at: Long
     /** [sensitive] text, such as a password a password manager copied, shows masked. [split] is what
@@ -37,6 +38,8 @@ internal sealed interface ChipOffer {
     data class Text(val text: String, val sensitive: Boolean, override val at: Long, val split: ClipPiece.Split? = null) : ChipOffer
     data class Image(val clip: Clip) : ChipOffer { override val at get() = clip.at }
     data class Photo(val photo: RecentImage) : ChipOffer { override val at get() = photo.addedAt }
+    /** A one-time [code] from a text ([TextedCodes]), or a copy of one ([message] -1); [at] is when it came. */
+    data class Code(val code: String, override val at: Long, val message: Long) : ChipOffer
 
     /** How long until this offer is too old for the chip. */
     fun staleIn(now: Long) = (if (this is Photo) RecentImages.CHIP_MS else COPY_FRESH_MS) - (now - at)
@@ -44,13 +47,14 @@ internal sealed interface ChipOffer {
     companion object {
         /** A copy older than this no longer gets the chip. */
         const val COPY_FRESH_MS = 10 * 60_000L
-        /** [copy] while it is fresh, or [photo] (already chosen by [RecentImages.chip]) when it is newer.
-         * An image is offered only where the editor [takes] its type, as Gboard's is: a field that can't
-         * take a picture would only get it on the clipboard, where a copy already is. */
-        fun pick(copy: ChipOffer?, photo: RecentImage?, now: Long, takes: (mime: String) -> Boolean): ChipOffer? =
+        /** [copy] while it is fresh, or [photo] (already chosen by [RecentImages.chip]) or a fresh texted
+         * [code] when it is newer. An image is offered only where the editor [takes] its type, as Gboard's
+         * is: a field that can't take a picture would only get it on the clipboard, where a copy already is. */
+        fun pick(copy: ChipOffer?, photo: RecentImage?, now: Long, code: Code? = null, takes: (mime: String) -> Boolean): ChipOffer? =
             listOfNotNull(
                 copy?.takeIf { now - it.at < COPY_FRESH_MS && (it !is Image || (it.clip.content as? ClipContent.Image)?.mime?.let(takes) == true) },
                 photo?.takeIf { takes(it.mime) }?.let(::Photo),
+                code?.takeIf { now - it.at < COPY_FRESH_MS },
             ).maxByOrNull { it.at }
     }
 }

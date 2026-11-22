@@ -29,6 +29,10 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
         /** Enough of a long clip to fill a card; the rest would only cost layout. */
         const val PREVIEW_CHARS = 300
         const val NOTE_MS = 3_000L
+        /** A card's kind or site icon, and its pieces' row. */
+        const val ICON = 14f
+        const val PIECES = 24f
+        const val PIECE_TEXT_WIDTH = 96f
     }
     private val density = resources.displayMetrics.density
     private fun px(value: Float) = (value * density).roundToInt()
@@ -129,11 +133,7 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
         val pinnedLabel = if (clip.pinned) context.getString(R.string.keyboard_pinned) + ", " else ""
         when (val c = clip.content) {
             is ClipContent.Text -> {
-                card.addView(TextView(context).apply {
-                    text(this, 14f); setTextColor(color(R.color.kb_ink)); text = c.text.take(PREVIEW_CHARS)
-                    maxLines = 3; ellipsize = TextUtils.TruncateAt.END; setPadding(px(12f), px(10f), px(12f), px(10f))
-                    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-                }, FrameLayout.LayoutParams(-1, -1))
+                card.addView(textCard(clip, c.text), FrameLayout.LayoutParams(-1, -1))
                 card.contentDescription = pinnedLabel + c.text.take(PREVIEW_CHARS)
             }
             is ClipContent.Image -> {
@@ -165,6 +165,61 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
         ViewCompat.addAccessibilityAction(card, pinLabel) { _, _ -> pin(clip); true }
         ViewCompat.addAccessibilityAction(card, context.getString(R.string.keyboard_delete_clip)) { _, _ -> ime.clips.delete(clip); true }
         return card
+    }
+
+    /** A text clip as it reads, a link from its site's name with the site's icon, and below it the
+     * phone numbers, dates and the like [ClipKeeper.split] found in it, each pasting just that part. */
+    private fun textCard(clip: Clip, text: String): View {
+        val link = Links.only(text)
+        val split = ime.clips.split(clip)
+        val pieces = split?.pieces.orEmpty()
+        val kind = split?.kind ?: if (link != null) ClipPiece.Kind.Link else null
+        val box = LinearLayout(context).apply { orientation = VERTICAL; setPadding(px(12f), px(10f), px(12f), px(8f)) }
+        val line = LinearLayout(context)
+        if (kind != null) line.addView(ImageView(context).also { icon(it, kind.icon, link) },
+            LayoutParams(px(ICON), px(ICON)).apply { marginEnd = px(6f); topMargin = px(1.5f) })
+        line.addView(TextView(context).apply {
+            text(this, 14f); setTextColor(color(R.color.kb_ink)); this.text = link?.let(Links::display) ?: text.take(PREVIEW_CHARS)
+            maxLines = if (pieces.isEmpty()) 3 else 2; ellipsize = TextUtils.TruncateAt.END
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LayoutParams(0, -2, 1f))
+        box.addView(line, LayoutParams(-1, 0, 1f))
+        if (pieces.isNotEmpty()) {
+            val row = LinearLayout(context)
+            for (piece in pieces) row.addView(piece(piece), LayoutParams(-2, -1).apply { marginEnd = px(4f) })
+            box.addView(HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; addView(row, LayoutParams(-2, -1))
+            }, LayoutParams(-1, px(PIECES)))
+        }
+        return box
+    }
+
+    private fun piece(piece: ClipPiece) = LinearLayout(context).apply {
+        gravity = Gravity.CENTER_VERTICAL; isFocusable = true
+        background = pressable(color(R.color.kb_function), px(PIECES / 2).toFloat())
+        setPadding(px(8f), 0, px(9f), 0)
+        contentDescription = context.getString(R.string.keyboard_paste_clip, piece.text)
+        val icon = ImageView(context)
+        addView(icon, LayoutParams(px(12f), px(12f)).apply { marginEnd = px(4f) })
+        icon(icon, piece.kind.icon, piece.text.takeIf { piece.kind == ClipPiece.Kind.Link })
+        addView(TextView(context).apply {
+            text(this, 12f); setTextColor(color(R.color.kb_ink)); maxLines = 1; this.text = piece.text
+            ellipsize = TextUtils.TruncateAt.END; maxWidth = px(PIECE_TEXT_WIDTH)
+        })
+        setOnClickListener { ime.engine.paste(piece.text); close() }
+    }
+
+    /** A kind's icon in the keys' ink; for a [link], its site's own icon once it arrives, in colour. */
+    private fun icon(view: ImageView, drawable: Int, link: String?) {
+        view.setImageResource(drawable)
+        view.imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+        if (link == null) return
+        view.tag = link
+        ime.clips.favicons.get(link) { bitmap ->
+            if (view.tag != link) return@get
+            view.imageTintList = null
+            view.setImageBitmap(bitmap)
+        }
     }
 
     /** Pin and Delete over a clip after a touch and hold. */

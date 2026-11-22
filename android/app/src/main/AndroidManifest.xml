@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Only once Settings › Keyboard's switch asks: the strip offers contacts' email addresses. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Keyboard › Codes from texts, off until turned on: only codes from the last 10 minutes, kept in memory. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
     <!-- A silent notification keeps the floating button's service in the foreground. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

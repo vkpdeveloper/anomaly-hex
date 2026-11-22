@@ -391,29 +391,34 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
         slots.visibility = if (idle && !noting && !undoing && !filling && suggesting && offer == null) VISIBLE else GONE
-        clipScroll.visibility = if (offer is ChipOffer.Text) VISIBLE else GONE
-        shot.visibility = if (offer != null && offer !is ChipOffer.Text) VISIBLE else GONE
+        clipScroll.visibility = if (offer is ChipOffer.Text || offer is ChipOffer.Code) VISIBLE else GONE
+        shot.visibility = if (offer is ChipOffer.Image || offer is ChipOffer.Photo) VISIBLE else GONE
         val fresh = offer != chipOffer
         // Set first: a cached thumbnail arrives at once and checks it is still this offer's.
         chipOffer = offer
         if (offer != null && fresh) offer(offer)
     }
 
-    /** The chip for a copy, as it reads and masked when sensitive, or the image itself for a copied
-     * picture or a new screenshot ([ClipKeeper.offer]). */
+    /** The chip for a copy, as it reads and masked when sensitive, a texted code, or the image itself for
+     * a copied picture or a new screenshot ([ClipKeeper.offer]). */
     private fun offer(offer: ChipOffer) {
         when (offer) {
             is ChipOffer.Text -> {
                 val link = if (offer.sensitive) null else Links.only(offer.text)
-                // A link reads from its site's name: the scheme says nothing.
                 chipText.text = when {
                     offer.sensitive -> "••••••"
-                    link != null -> link.substringAfter("://").removePrefix("www.")
+                    link != null -> Links.display(link)
                     else -> offer.text.replace('\n', ' ')
                 }
                 chip.contentDescription = context.getString(R.string.keyboard_paste_clip, if (offer.sensitive) "" else chipText.text)
                 val kind = offer.split?.kind ?: if (link != null) ClipPiece.Kind.Link else null
                 icon(chipIcon, kind?.icon ?: R.drawable.ic_clipboard, link)
+                pieces(offer)
+            }
+            is ChipOffer.Code -> {
+                chipText.text = offer.code
+                chip.contentDescription = context.getString(R.string.keyboard_paste_code, offer.code.toList().joinToString(" "))
+                icon(chipIcon, R.drawable.ic_sms, null)
                 pieces(offer)
             }
             is ChipOffer.Image -> {
@@ -439,9 +444,9 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     }
 
     /** The copy's pieces beside its chip, each pasting just that part. The chip narrows to make room. */
-    private fun pieces(offer: ChipOffer.Text) {
+    private fun pieces(offer: ChipOffer) {
         while (clipRow.childCount > 1) clipRow.removeViewAt(1)
-        val pieces = offer.split?.pieces.orEmpty()
+        val pieces = (offer as? ChipOffer.Text)?.split?.pieces.orEmpty()
         chip.layoutParams = chip.layoutParams.apply { width = px(if (pieces.isEmpty()) CHIP_WIDTH else PIECE_CHIP_WIDTH) }
         for (piece in pieces) {
             val icon = ImageView(context)
@@ -482,6 +487,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         val offer = chipOffer ?: return
         when (offer) {
             is ChipOffer.Text -> ime.engine.paste(offer.text)
+            is ChipOffer.Code -> ime.engine.paste(offer.code)
             is ChipOffer.Image -> ime.clips.insert(offer.clip)
             is ChipOffer.Photo -> ime.clips.insert(offer.photo)
         }

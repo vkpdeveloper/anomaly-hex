@@ -55,6 +55,14 @@ class RecentImagesTest {
         assertNull(ChipOffer.pick(older, null, now + ChipOffer.COPY_FRESH_MS) { true })
     }
 
+    @Test fun aTextedCodeTakesTheChipWhileNewerAndFresh() {
+        val copied = ChipOffer.Text("copied", sensitive = false, at = now - 120_000)
+        val code = ChipOffer.Code("482913", at = now - 30_000, message = 7)
+        assertEquals(code, ChipOffer.pick(copied, null, now, code) { true })
+        assertEquals(copied, ChipOffer.pick(copied, null, now, code.copy(at = now - 300_000)) { true })
+        assertNull(ChipOffer.pick(null, null, now + ChipOffer.COPY_FRESH_MS, code) { true })
+    }
+
     @Test fun anUnusedOfferKnowsWhenItGoes() {
         assertEquals(CHIP_MS - 60_000, ChipOffer.Photo(shot(1, 60_000)).staleIn(now))
         assertEquals(ChipOffer.COPY_FRESH_MS - 1_000, ChipOffer.Text("copied", sensitive = false, at = now - 1_000).staleIn(now))
