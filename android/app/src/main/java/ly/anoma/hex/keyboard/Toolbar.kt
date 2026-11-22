@@ -27,6 +27,7 @@ import kotlin.math.roundToInt
 internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipboard: () -> Unit) : FrameLayout(context) {
     private companion object {
         const val SUGGESTION = 19.5f
+        const val SUGGESTION_MIN = 12f
         const val CHIP_WIDTH = 143f
         const val NOTE_MS = 3_000L
         const val HOLD_MS = 350L
@@ -86,6 +87,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
             words[i].apply {
                 text(this, SUGGESTION); gravity = Gravity.CENTER; setTextColor(color(R.color.kb_ink))
                 maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                // A long word shrinks to fit its slot, as Gboard's do; only one too long even then is cut.
+                setAutoSizeTextTypeUniformWithConfiguration(px(SUGGESTION_MIN), px(SUGGESTION), 1, TypedValue.COMPLEX_UNIT_PX)
                 setPadding(px(6f), 0, px(6f), 0); importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
             }
             slotViews[i].apply {
