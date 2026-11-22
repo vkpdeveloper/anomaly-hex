@@ -155,6 +155,12 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (taps.size == token.length) taps.removeAt(taps.lastIndex)
         token = token.dropLast(1); decision = null
     }
+    private val glider by lazy { GlideDecoder(model) }
+    /** The words a glide spells after `before` (the text before the cursor), likeliest first, spelled as
+     * the strip shows them: a name with its capital, your own word your way. */
+    fun glide(path: List<KeyPoint>, grid: KeyGrid, before: String): List<String> =
+        glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal)
+            .map { if (it.personal) it.text else displayed(it.text) }
     private fun decision() = decision ?: decoder.decide(token.lowercase(), taps, previous, suggestSwearWords).also { decision = it }
     // Your own words are always yours to offer, as iOS offers UILexicon terms.
     private fun blocked(spelling: String) = model.neverSuggest.blocks(spelling.lowercase(), suggestSwearWords, previous) &&

@@ -3,8 +3,10 @@ package ly.anoma.hex.keyboard
 import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Canvas
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -68,6 +70,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private val spaceGesture = SpaceGesture(KeyboardMetrics.CURSOR_START * density, KeyboardMetrics.CURSOR_STEP * density, slop.toFloat())
     private var cursorSlide: CursorSlide? = null
+    private val glide = GlideTrail(context.getColor(R.color.kb_enter), density)
     private var spacePoint: KeyPoint? = null
     // The page the keys show; a change of shift alone relabels them in place, so a held shift key
     // stays mounted and its own finger-up ends a chord.
@@ -94,6 +97,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     init {
         orientation = VERTICAL
         rows.orientation = VERTICAL
+        setWillNotDraw(false) // The glide trail draws over the keys.
         addView(rows, LayoutParams(LayoutParams.MATCH_PARENT, rowHeight * 3))
         addView(bottom, LayoutParams(LayoutParams.MATCH_PARENT, lastHeight))
         spaceKey = caps.cap("", context.getString(R.string.keyboard_space), KeyFill.Letter) {
@@ -238,13 +242,16 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         }
         k.setOnTouchListener { v, e ->
             when (e.actionMasked) {
-                // A second finger on the same key is a second press: the first types now.
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    // A second finger during a glide types nothing.
+                    if (glide.active) return@setOnTouchListener true
+                    // A second finger on the same key is a second press: the first types now.
                     if (e.actionMasked == MotionEvent.ACTION_POINTER_DOWN && roll.up(k)) finish()
                     roll.down(k) { finish() }
                     clearCallout(); v.isPressed = true
                     downText = cased(c)
                     touch = KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble())
+                    glide.down(v, touch!!, e.eventTime, !symbols && ime.engine.glides, geometry()?.pitchX ?: 0.0)
                     if (ime.feedback.popups && ime.previewAllowed) feedback.present(k.face, listOf(cased(c)))
                     val options = options()
                     if (options.isNotEmpty()) {
@@ -253,17 +260,40 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                     }
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (feedback.choosing) feedback.move(xInHost(row, v, e.x), yInHost(row, v, e.y))
+                    for (i in 0 until e.historySize)
+                        glide.add(v, KeyPoint((v.left + e.getHistoricalX(i)).toDouble(), (row.top + e.getHistoricalY(i)).toDouble()), e.getHistoricalEventTime(i))
+                    val p = KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble())
+                    // A glide is no longer a held key: the next key down mustn't type its first letter.
+                    if (glide.move(v, p, e.eventTime, feedback.choosing)) { clearCallout(); v.isPressed = false; roll.clear() }
+                    if (glide.active) { if (ime.feedback.glideTrail) postInvalidateOnAnimation() }
+                    else if (feedback.choosing) feedback.move(xInHost(row, v, e.x), yInHost(row, v, e.y))
                     else if (e.x < -slop || e.x > v.width + slop || e.y < -slop || e.y > v.height + slop) {
                         clearCallout(); v.isPressed = false
                     }
                 }
-                MotionEvent.ACTION_UP -> if (roll.up(k)) finish()
-                MotionEvent.ACTION_CANCEL -> if (roll.up(k)) { v.isPressed = false; clearCallout(); touch = null; downText = null }
+                MotionEvent.ACTION_UP -> {
+                    glide.add(v, KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble()), e.eventTime)
+                    val path = glide.up(v, e.eventTime)
+                    if (path != null) {
+                        touch = null; downText = null
+                        geometry()?.let { ime.engine.glide(path, it) }
+                        if (ime.feedback.glideTrail) postInvalidateOnAnimation()
+                    } else if (roll.up(k)) finish()
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    glide.cancel(v)
+                    if (roll.up(k)) { v.isPressed = false; clearCallout(); touch = null; downText = null }
+                }
             }
             true
         }
         return k
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (ime.feedback.glideTrail && glide.draw(canvas, rows.left.toFloat(), rows.top.toFloat(), SystemClock.uptimeMillis()))
+            postInvalidateOnAnimation()
     }
 
     private fun deleteKey(): KeyCap {
@@ -447,6 +477,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     }
     fun cancelGestures() {
         clearCallout(); roll.clear()
+        glide.cancel(); invalidate()
         removeCallbacks(repeatDelete); removeCallbacks(pickKeyboard)
         spaceKey.isPressed = false
         deleting = false

@@ -94,6 +94,11 @@ internal class KeyboardEngine(
     private var spaceAt = 0L
     private var pickedAnchor: String? = null
     private var heldAnchor: String? = null
+    /** The word a glide put in and its other readings, while [anchor], the text before the cursor right
+     * after it, is still there: delete takes the word back, a pick replaces it, and the next word,
+     * tapped or glided, puts a space in first while a mark goes against it (Gboard's phantom space). */
+    private class Glided(val word: String, val readings: List<String>, val anchor: String)
+    private var glided: Glided? = null
     var secure = true
         private set
 
@@ -224,7 +229,7 @@ internal class KeyboardEngine(
     private fun resetTyping() {
         cancelChip(); word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
     }
-    private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null }
+    private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null; glided = null }
     private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
     fun configureTyping(keepWord: Boolean = false) {
         val language = layoutLanguage().layoutCode
@@ -313,10 +318,11 @@ internal class KeyboardEngine(
         } else resetTyping()
         inputDone()
     }
-    // A space a pick held goes in before the next word starts; returns the text before the cursor.
+    // A space a pick held, or the one after a glided word, goes in before the next word starts;
+    // returns the text before the cursor.
     private fun takeHeldSpace(before: String): String {
-        if (heldAnchor == null || heldAnchor != before) return before
-        heldAnchor = null
+        if (before != heldAnchor && before != glided?.anchor) return before
+        heldAnchor = null; glided = null
         if (!target.commit(" ")) return before
         if (expectedCaret >= 0) expectedCaret++
         return "$before "
@@ -338,6 +344,7 @@ internal class KeyboardEngine(
     fun pickSuggestion(text: String) {
         edited()
         tapped?.let { pickForTapped(it, text); return }
+        glided?.takeIf { it.anchor == before() }?.let { pickForGlided(it, text); return }
         val w = word ?: return
         if (symbols || !canEndWord()) return
         val old = w.token
@@ -352,6 +359,12 @@ internal class KeyboardEngine(
             showPredictions(b)
             inputDone()
         }
+    }
+
+    // Another reading takes the glided word's place, and the next word still puts its space in first.
+    private fun pickForGlided(g: Glided, text: String) {
+        if (text == g.word || !replace(g.word, text)) return
+        showGlided(Glided(text, g.readings, before()))
     }
 
     // The tapped word goes whole, both sides of the caret, and the pick takes its place with no space.
@@ -435,6 +448,11 @@ internal class KeyboardEngine(
     fun delete() {
         if (!target.connected) return
         edited()
+        // Right after a glide, delete takes the whole word back; the space before it stays.
+        glided?.takeIf { it.anchor == before() }?.let { g ->
+            clearSpaces()
+            if (replace(g.word, "")) { showSuggestions(word); return }
+        }
         // Right after a pick held its space, delete takes that space back and deletes nothing.
         if (heldAnchor != null && heldAnchor == before()) { clearSpaces(); surface?.suggestions(emptyList()); return }
         clearSpaces()
@@ -472,6 +490,39 @@ internal class KeyboardEngine(
             if (editor?.inputType == InputType.TYPE_NULL) target.sendKey(KeyEvent.KEYCODE_ENTER)
             else type("\n")
         }
+    }
+
+    /** Whether a drag across the letters glides a word: Glide typing on, an ordinary text field (never a
+     * password, number or address field) and the letters page. */
+    val glides get() = feedback.glide && word != null && !symbols && target.connected
+
+    /** A glide lifted, its [path] in [grid]'s coordinates. Its likeliest word goes in, after a space
+     * when it follows a word, capitalised while shift is on and in capitals with caps lock; the strip
+     * offers the other readings beside it. A word in progress stays as typed. */
+    fun glide(path: List<KeyPoint>, grid: KeyGrid) {
+        val w = word
+        if (w == null || !glides) return
+        edited()
+        resetTyping()
+        val b = takeHeldSpace(before())
+        clearSpaces()
+        val found = w.glide(path, grid, b)
+        if (found.isEmpty()) { showSuggestions(w); return }
+        // "l'" + "homme" joins in French and Italian, as a typed word would.
+        val elided = (b.endsWith("'") || b.endsWith("\u2019")) && w.startsWord(b)
+        var upper = shift.uppercase
+        // The space can start a sentence the editor didn't capitalise for yet ("Done.").
+        if (SpaceRules.followsWord(b) && !elided && target.commit(" ")) upper = upper || capsWanted()
+        val readings = found.map { if (shift.locked) it.uppercase() else if (upper) it.replaceFirstChar { c -> c.uppercase() } else it }.distinct()
+        if (!target.commit(readings[0])) return
+        showGlided(Glided(readings[0], readings, before()))
+        inputDone()
+    }
+    // The strip after a glide: the word that went in, highlighted in the middle, then the rest.
+    private fun showGlided(g: Glided) {
+        glided = g
+        surface?.suggestions(listOf(Suggestion(g.word, Suggestion.Kind.Fix)) +
+            g.readings.filter { it != g.word }.map { Suggestion(it, Suggestion.Kind.Word) })
     }
 
     /** A space-bar slide starts moving the cursor: the word in progress stays as typed. */

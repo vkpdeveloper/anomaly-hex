@@ -52,6 +52,8 @@ android {
     }
     packaging.resources.excludes += "DebugProbesKt.bin"
     buildFeatures { compose = true }
+    // The keyboard engine's tests build EditorInfo and a Handler; Android's stubs return defaults.
+    testOptions { unitTests.isReturnDefaultValues = true }
     androidResources { noCompress += listOf("hextm", "valid", "capitals") }
     // The same plain-text Android policy ships in Settings and in the Play listing drafts.
     sourceSets["main"].assets.srcDir(rootProject.file("play/policy"))

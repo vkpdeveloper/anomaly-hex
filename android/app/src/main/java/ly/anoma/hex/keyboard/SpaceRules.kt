@@ -12,6 +12,17 @@ internal object SpaceRules {
     /** What goes against the word before rather than after a space a pick held (iPhone Hex's joiners). */
     const val JOINERS = ",.!?;:)]}'-/\"»…"
 
+    /** Whether a glided word after [before] takes a space first: it follows a word, a number or a closing
+     * mark. A quote closes when something other than a space comes before it. */
+    fun followsWord(before: String): Boolean {
+        val last = before.lastOrNull() ?: return false
+        return when {
+            last.isLetterOrDigit() -> true
+            last in "\"'\u2019\u201D" -> before.length >= 2 && !before[before.length - 2].isWhitespace()
+            else -> last in ".,!?;:)]}»…%"
+        }
+    }
+
     /** Whether ". " may replace the space that ends [before]: it follows a letter or a digit. */
     fun periodFits(before: String) = before.length >= 2 && before.last() == ' ' &&
         before[before.length - 2].let { it.isLetterOrDigit() }

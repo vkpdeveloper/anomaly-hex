@@ -76,6 +76,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val spatial = remember(revision) { typing.spatial }
     val popups = remember(revision) { typing.popups }
     val haptics = remember(revision) { typing.haptics }
+    val glide = remember(revision) { typing.glide }
+    val glideTrail = remember(revision) { typing.glideTrail }
     val button = remember { ButtonPreferences(context) }
     val hideButton = remember(revision) { button.hideWithKeyboard }
     fun open(next: Page) { page = next }
@@ -151,6 +153,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 { context.startActivity(Intent(Settings.ACTION_USER_DICTIONARY_SETTINGS)) })
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
                             Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
+                            Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }
+                            Rule(); Toggle("Show gesture trail", if (glide) "A line follows your finger" else "Turn on Glide typing",
+                                glideTrail, enabled = glide) { typing.glideTrail = it }
                         }
                         val ink = colorResource(R.color.ink)
                         Card {
