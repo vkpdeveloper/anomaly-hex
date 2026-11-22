@@ -30,8 +30,8 @@ internal class TypingPreferences(context: Context) {
         set(value) { prefs.edit().putBoolean("haptics", value).apply() }
     /** Off by default: 1 to 0 above the letters, in place of row 1's small digits. */
     var numberRow: Boolean
-        get() = prefs.getBoolean("numberRow", false)
-        set(value) { prefs.edit().putBoolean("numberRow", value).apply() }
+        get() = prefs.getBoolean(NUMBER_ROW, false)
+        set(value) { prefs.edit().putBoolean(NUMBER_ROW, value).apply() }
     var glide: Boolean
         get() = prefs.getBoolean("glide", true)
         set(value) { prefs.edit().putBoolean("glide", value).apply() }
@@ -95,5 +95,6 @@ internal class TypingPreferences(context: Context) {
         const val CONTACT_EMAILS = "contactEmails"
         const val SAY_TO_SEND = "sayToSend"
         const val REPLACEMENTS = "replacements"
+        const val NUMBER_ROW = "numberRow"
     }
 }

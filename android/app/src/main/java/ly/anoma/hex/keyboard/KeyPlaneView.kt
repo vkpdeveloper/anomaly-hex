@@ -196,6 +196,9 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
 
     private fun cased(c: Char) = if (current?.let { !it.symbols && it.shifted } == true) c.uppercaseChar().toString() else c.toString()
 
+    /** Rebuilds the page on screen, so turning the number row on or off shows at once. */
+    fun numberRowChanged() { current?.let(::showPage) }
+
     fun showPage(page: KeyboardPage) {
         val shown = current
         val numbers = ime.feedback.numberRow

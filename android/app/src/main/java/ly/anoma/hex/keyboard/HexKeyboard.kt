@@ -189,6 +189,7 @@ class HexKeyboard : InputMethodService() {
                 else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
             TypingPreferences.CONTACT_EMAILS -> contactsSettingChanged()
             TypingPreferences.REPLACEMENTS -> engine.personalWordsChanged()
+            TypingPreferences.NUMBER_ROW -> view?.numberRowChanged()
         }
     }
     internal val previewAllowed get() = !engine.secure

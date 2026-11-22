@@ -114,7 +114,7 @@ On space, the Kotlin decoder compares each tap with the measured key centres and
 
 Hold the period on the letters page for Gboard's punctuation (`; / ( ) # ! , ?` with `& % + " - : ' @` above), slide to one and release; release on the period to type the period. A mark from the list goes through the same spacing and autocorrect as one typed on the symbols page.
 
-**Keyboard › Number row** (off by default) puts 1 to 0 above the letters. Row 1 then drops its small digits and their long press; the accents stay. The keyboard is one row taller on every page (the symbol pages and number pad stretch their rows to fill it), so changing pages never moves the editor. Taps and glides are measured from the letter rows, so the number row changes nothing autocorrect or glide typing sees.
+**Keyboard › Number row** (off by default) puts 1 to 0 above the letters, at once, even with the keyboard open. Row 1 then drops its small digits and their long press; the accents stay. The keyboard is one row taller on every page (the symbol pages and number pad stretch their rows to fill it), so changing pages never moves the editor. Taps and glides are measured from the letter rows, so the number row changes nothing autocorrect or glide typing sees.
 
 [English/Spanish typing benchmark, model sources and licences](benchmark/typing/README.md)
 

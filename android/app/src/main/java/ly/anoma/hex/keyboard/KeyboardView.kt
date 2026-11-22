@@ -111,6 +111,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     fun note(text: String) = toolbar.note(text)
     /** The fix button was turned on or off in Settings. */
     fun fixChanged() = toolbar.update()
+    fun numberRowChanged() = keys.numberRowChanged()
     /** The keyboard came up in a field. */
     fun shown() { closeEmoji(); closeMenu(); closeClipboard(); toolbar.update() }
     fun cancelGestures() { toolbar.cancelGestures(); keys.cancelGestures() }
