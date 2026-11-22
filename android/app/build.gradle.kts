@@ -54,7 +54,8 @@ android {
     buildFeatures { compose = true }
     // The keyboard engine's tests build EditorInfo and a Handler; Android's stubs return defaults.
     testOptions { unitTests.isReturnDefaultValues = true }
-    androidResources { noCompress += listOf("hextm", "valid", "capitals") }
+    // Stored as they are, so reading them costs no unzip: the typing models and the keys' font.
+    androidResources { noCompress += listOf("hextm", "valid", "capitals", "ttf") }
     // The same plain-text Android policy ships in Settings and in the Play listing drafts.
     sourceSets["main"].assets.srcDir(rootProject.file("play/policy"))
     compileOptions {

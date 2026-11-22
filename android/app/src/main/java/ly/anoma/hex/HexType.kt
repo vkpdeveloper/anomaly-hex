@@ -44,10 +44,13 @@ internal val hexTypography = Typography().run {
 // One typeface per weight: fontVariationSettings on each label made a new native typeface every time the keys
 // were drawn, and the keyboard's native memory grew with each field it opened in.
 private val sansWeights = HashMap<Int, Typeface>()
+// The 5 MB font file is read once and every weight shares it: each read from the resource took most of the
+// keyboard's first appearance and kept another copy in memory.
+private var sansFile: NativeFont? = null
 internal fun TextView.useSans(weight: Int = 400) {
     typeface = sansWeights.getOrPut(weight) {
-        val font = NativeFont.Builder(resources, R.font.google_sans).setWeight(weight)
-            .setFontVariationSettings("'wght' $weight").build()
+        val file = sansFile ?: NativeFont.Builder(resources, R.font.google_sans).build().also { sansFile = it }
+        val font = NativeFont.Builder(file).setWeight(weight).setFontVariationSettings("'wght' $weight").build()
         Typeface.CustomFallbackBuilder(NativeFontFamily.Builder(font).build()).setSystemFallback("sans-serif").build()
     }
 }
