@@ -6,7 +6,7 @@ A keyboard and a floating button that dictate with Hex on your computer. The pho
 
 Pair once under **Computer**: Hex finds the computer on the local network, or takes an address (Tailscale works anywhere), then its pairing code. The protocol, routes and limits are in [docs/phone-dictation.md](../docs/phone-dictation.md). The computer turns on **Labs › Phone dictation** and answers only private and Tailscale addresses.
 
-What leaves the phone: each recording, to the paired computer only; with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
+What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
 
 A transcript goes back to the field it was spoken in. If that field went away while the computer was transcribing (another field, or the keyboard closed), it's copied instead and the strip's chip offers it; an app that restarts the same field (chat apps do) still gets it. The keyboard shapes it with the language the computer says it heard: mid-sentence, a capital the model gave an ordinary first word goes. When the computer chooses the language itself, the text stays as it came.
 
@@ -63,7 +63,13 @@ apps that ask for no personalised learning, and **Forget learned words** clears 
 **Clipboard**, **Fix mistakes** (only where the Fix button works) and **Settings**.
 
 **Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
-tap it to replace the shortcut. Space, marks and return leave the shortcut as typed.
+tap it to replace the shortcut. Space, marks and return leave the shortcut as typed. The paired
+computer's one-word text replacements work the same way (fetched hourly; yours win), and go when
+the computer is forgotten.
+
+**Say "send it" to send** (Keyboard settings, off by default): end a dictation with "send it" (or
+"bhej do") after a pause or a sentence's end, and Hex types the rest and presses the field's send
+key. Only where the enter key sends or goes, never in a password field.
 
 **Email addresses.** While you type one, the strip offers addresses that complete it: the phone's
 accounts that Android shows Hex without a permission, addresses you've typed before, and, with
@@ -112,7 +118,7 @@ A copied image is copied into that folder under its SHA-256 (16 MB at most), sin
 
 ## Settings
 
-After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, key pop-ups, haptics, glide typing, recent screenshots, Learn from Hex history and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
+After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, key pop-ups, haptics, glide typing, recent screenshots, Learn from Hex history, Say "send it" to send and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
 
 **Privacy › Privacy policy** opens the [Android policy text](play/policy/privacy-policy.txt) even in airplane mode.
 

@@ -3068,6 +3068,16 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   SpellingPreferenceTest; unit tests only, no device run)
 ├── Type a personal-dictionary shortcut -> its phrase in the strip; a tap puts it in,
 │   space leaves the shortcut as typed
+├── Paired computer -> Global's one-word text replacements as shortcuts too, fetched
+│   hourly (`GET /phone/v1/replacements`); yours win; a capitals-only one becomes your
+│   word; Forget (Computer) clears them (ReplacementsTest; unit tests only, no device run)
+├── Dictate -> the app in front and the layout's language go with the recording; the
+│   computer applies the mode for that app, else Global (docs/phone-dictation.md;
+│   OriginTest, `phone_origin` tests; no device run)
+├── Keyboard > Say "send it" to send (off) -> a dictation ending "send it" or "bhej do"
+│   after a pause or a sentence's end types the rest, then presses the field's send or
+│   go action; never mid-sentence or in a password field, no undo (SpokenSendTest;
+│   unit tests only, no device run)
 ├── Type an email address -> addresses that complete it in the strip: the phone's
 │   accounts, ones typed before (never learned in password or incognito fields) and,
 │   with Keyboard > Suggest contacts' emails (off) and the Contacts permission,

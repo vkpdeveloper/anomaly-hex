@@ -46,11 +46,20 @@ accept.
 
 `POST /phone/v1/transcriptions` with `Content-Type: audio/wav` and a
 `Content-Length` up to 16 MiB. The phone sends 16 kHz mono PCM16, the
-model's own rate; other WAVs are converted.
+model's own rate; other WAVs are converted. Optional query parameters say
+where it was spoken (`phone_origin`), each URL-encoded, at most 200
+characters, and ignored when missing, repeated, or malformed:
+
+```ts
+?app=Slack                 the app in front on the phone, as its launcher names it
+&package=com.Slack         its Android package, used when the name was unreadable
+&language=en               the keyboard layout's language (Hinglish sends "hi");
+                           ignored unless this computer lists it
+```
 
 ```ts
 200 {"transcript": "…", "durationMs": 4048, "language": "en"}
-                     trimmed transcript after Global's Output steps; no History or paste;
+                     trimmed transcript after the app's mode's Output steps; no History or paste;
                      language is this computer's setting ("auto" when the model chooses)
 401 wrong-code       411 length-required        413 resource-exhausted
 415 unsupported-audio 400 invalid-audio          408 upload-timeout
@@ -63,13 +72,22 @@ selected one; otherwise the transcription service loads its own.
 The transcript then goes through the same Output steps as a desktop
 dictation, in the same order on each OS (`phone::process`): Labs' Hindi in
 Latin letters, spoken formatting, spoken symbols, and filler words, then
-replacements, the OpenCode rewrite, and transformations. No desktop app or
-page is behind the phone's text field, so the Global mode applies, never an
-app or website mode. A step that fails or misses its deadline keeps the text
-before it, as on the desktop.
+replacements, the OpenCode rewrite, and transformations. The phone's `app`
+(else its `package`) is read as the application name, by the same rule a
+desktop app picks a mode: on macOS a mode's application matches the whole
+name, ignoring case and `.app`; on Linux and Windows it matches part of the
+name. So a mode set up for "Slack" here applies to Slack on the phone. No
+app, or none a mode names, applies Global; no website mode ever applies. A
+step that fails or misses its deadline keeps the text before it, as on the
+desktop.
 
-The phone sends no language, so the computer's model and language decide
-what is heard. The keyboard shapes the text (a capital the model gave the
+The phone's `language` never changes what is heard: the computer's model
+and language decide that, as for every dictation here (a phone's guess
+could force the wrong language, and would load a second copy of the
+model). While this computer's language is "auto", the Output steps run with
+the phone's language instead of "auto" (English drops filler words); a
+language set here always wins. The reply's `language` is still this
+computer's setting. The keyboard shapes the text (a capital the model gave the
 first word mid-sentence) with the language the reply names, and leaves the
 text as it came when that is "auto" or missing. For Hindi typed in Latin letters, set this computer's
 language to Hindi (a model that writes Hindi, such as Qwen3-ASR 0.6B) and
@@ -89,6 +107,39 @@ never cross a sentence or clause mark, and are sent only when seen twice.
 At most 5,000 words and 10,000 pairs, commonest first. The keyboard keeps
 them on the phone, beside the words you type there (`LearnedWords`), and
 Forget learned words clears both.
+
+`GET /phone/v1/replacements`: Global's text replacements (Settings ›
+Output), as the keyboard's text shortcuts, fetched at most hourly whenever
+a computer is paired (`phone_replacements`). Phrases and outputs are
+trimmed; one that writes nothing is left out. At most 2,000, in Settings'
+order.
+
+```json
+{"replacements": [["brb", "be right back"], ["github", "GitHub"]]}
+```
+
+The strip reads one word at a time, so the keyboard keeps one-word phrases:
+typing "brb" offers "be right back", as an Android personal-dictionary
+shortcut does, and only a tap puts it in; your own shortcut wins one the
+computer also has. A replacement that only changes capitals becomes your
+word, so "github" takes "GitHub". Nothing is offered in password fields or
+fields that ask for no personalised learning. They stay on the phone until
+the computer is forgotten or another paired; Forget learned words leaves
+them.
+
+## Say "send it" to send
+
+Hex for Android › Keyboard › Say "send it" to send (off by default): a
+keyboard dictation whose last words are "send it" (or "bhej do", "भेज दो")
+drops them and presses the field's send key. The phone decides
+(`SpokenSend`), from the text the computer sent back, so any computer works
+and a rewrite that changes the words sends nothing. The phrase must be the
+whole dictation or follow a sentence's end or a marked pause ("See you at
+six. Send it.", "On my way, send it"); "I'll send it" and "can you send
+it" stay text, and "send" alone never sends. Only a field whose enter key
+sends or goes (`IME_ACTION_SEND`, `IME_ACTION_GO`), never a password field;
+the rest of the dictation goes in first, nothing is sent if it didn't, and
+there is no undo. The floating button never sends.
 
 ## Security
 
