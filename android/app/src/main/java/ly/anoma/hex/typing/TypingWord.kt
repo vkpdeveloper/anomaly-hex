@@ -51,6 +51,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         pending = null
     }
     fun restored(text: String, before: String) { reset(before); explicit(text) } // No taps: space keeps the undone spelling.
+    /** A word already in the text, read for the strip: unlike [restored] it may be fixed, by its letters alone. */
+    fun reread(text: String, before: String) { reset(before); token = text }
     /** Up to three words for the strip between words (iOS #2125): at a sentence's start three common
      * first words, after a comma or other mid-sentence mark words that start a clause, after a word
      * the likeliest next words from the word pairs with the language's commonest words filling the

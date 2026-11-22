@@ -1,3 +1,7 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:pathData="M3,12 L12,3 L21,12 L16,12 L16,20 L8,20 L8,12 Z" android:fillColor="#FFFFFF" android:strokeColor="#FFFFFF" android:strokeWidth="1.7" android:strokeLineJoin="round" android:strokeLineCap="round" />
+<!-- Material Symbols Rounded, shift_fill1 (Apache 2.0). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp"
+    android:viewportWidth="960" android:viewportHeight="960">
+    <group android:translateY="960">
+        <path android:pathData="M320-160v-280H204q-26 0-36.5-22.5T173-505l276-337q12-15 31-15t31 15l276 337q16 20 5.5 42.5T756-440H640v280q0 17-11.5 28.5T600-120H360q-17 0-28.5-11.5T320-160Z" android:fillColor="#FFFFFF" />
+    </group>
 </vector>

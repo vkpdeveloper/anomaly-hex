@@ -38,11 +38,12 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
-import ly.anoma.hex.speech.*
+import ly.anoma.hex.button.ButtonPreferences
+import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
 
 internal data class Setup(val mic: Boolean = false, val enabled: Boolean = false, val chosen: Boolean = false,
-                         val micNeedsSettings: Boolean = false) {
+                         val micNeedsSettings: Boolean = false, val button: Boolean = false) {
     val ready get() = mic && enabled && chosen
 }
 
@@ -51,12 +52,8 @@ class MainActivity : ComponentActivity() {
     private val imm by lazy { getSystemService(InputMethodManager::class.java) }
     private var setup by mutableStateOf(Setup())
     private var page by mutableIntStateOf(0)
-    private val speech by lazy { SpeechPreferences(this) }
     private val typing by lazy { TypingPreferences(this) }
-    private var phase by mutableStateOf(SpeechPhase.Idle)
-    private var transcript by mutableStateOf("")
-    private var notice by mutableStateOf<String?>(null)
-    private lateinit var capture: MicCapture
+    private val store by lazy { Store(this) }
     private val changed = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = refresh()
     }
@@ -65,40 +62,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        capture = MicCapture(LocalSpeech(applicationContext),
-            update = { next, reason -> phase = next; notice = reason },
-            meter = {}, insert = { transcript = it })
         page = prefs.getInt("page", 0).coerceIn(0, 3)
-        for (name in listOf(Settings.Secure.DEFAULT_INPUT_METHOD, Settings.Secure.ENABLED_INPUT_METHODS))
+        for (name in listOf(Settings.Secure.DEFAULT_INPUT_METHOD, Settings.Secure.ENABLED_INPUT_METHODS,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES))
             contentResolver.registerContentObserver(Settings.Secure.getUriFor(name), false, changed)
         refresh()
-        ModelStore.refresh(this)
         setContent {
             HexTheme {
                 BackHandler(page in 1..2) { go(page - 1) }
-                val model = ModelStore.state.collectAsState().value
-                if (page == 3) HexSettings(setup, speech, typing, model, { ModelStore.download(this) },
-                    phase, transcript, notice, ::dictate, capture::cancel, { go(it) },
+                if (page == 3) HexSettings(setup, typing, store, { go(it) },
                     { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) })
-                else SetupScreen(page, setup, ::go, ::askForMic,
+                else SetupScreen(page, setup, store, ::go, ::askForMic,
                     enable = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
-                    choose = { imm.showInputMethodPicker() }, model = model,
-                    download = { ModelStore.download(this) })
+                    choose = { imm.showInputMethodPicker() })
             }
         }
     }
 
-    private fun dictate() {
-        when (phase) {
-            SpeechPhase.Idle -> if (setup.mic) {
-                transcript = ""; capture.start(speech.options(null))
-            } else askForMic()
-            SpeechPhase.Opening, SpeechPhase.Listening -> capture.finish()
-            SpeechPhase.Transcribing -> Unit
-        }
-    }
     private fun go(next: Int) {
-        if (page == 3 && next != 3) { capture.cancel(); transcript = "" }
         page = next
         prefs.edit().putInt("page", next).apply()
     }
@@ -107,7 +88,8 @@ class MainActivity : ComponentActivity() {
         val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
         val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         setup = Setup(granted, id != null, id != null && id == selected,
-            prefs.getBoolean("asked", false) && !granted && !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO))
+            prefs.getBoolean("asked", false) && !granted && !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO),
+            ButtonPreferences.running(this))
     }
 
     private fun askForMic() {
@@ -119,8 +101,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onResume() { super.onResume(); refresh() }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) refresh() }
-    override fun onStop() { capture.cancel(); super.onStop() }
-    override fun onDestroy() { capture.close(); contentResolver.unregisterContentObserver(changed); super.onDestroy() }
+    override fun onDestroy() { contentResolver.unregisterContentObserver(changed); super.onDestroy() }
 }
 
 @Composable
@@ -134,8 +115,9 @@ private fun HexTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun SetupScreen(page: Int, setup: Setup, go: (Int) -> Unit, ask: () -> Unit,
-                        enable: () -> Unit, choose: () -> Unit, model: ModelStore.State, download: () -> Unit) {
+private fun SetupScreen(page: Int, setup: Setup, store: Store, go: (Int) -> Unit, ask: () -> Unit,
+                        enable: () -> Unit, choose: () -> Unit) {
+    var computer by remember { mutableStateOf(store.computer) }
     val colors = MaterialTheme.colorScheme
     var text by remember(page) { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -163,7 +145,7 @@ private fun SetupScreen(page: Int, setup: Setup, go: (Int) -> Unit, ask: () -> U
                         1 -> {
                             Spacer(Modifier.height(26.dp))
                             Heading("Set up Hex")
-                            Detail("Allow the microphone, then choose Hex as your keyboard.")
+                            Detail("Allow the microphone, choose Hex as your keyboard, then connect the computer that transcribes.")
                             Spacer(Modifier.height(24.dp))
                             Column(Modifier.fillMaxWidth().background(colors.surfaceVariant, RoundedCornerShape(16.dp))
                                 .padding(horizontal = 16.dp)) {
@@ -176,14 +158,19 @@ private fun SetupScreen(page: Int, setup: Setup, go: (Int) -> Unit, ask: () -> U
                                     else -> "Turn on Hex in Settings"
                                 }, setup.chosen, if (setup.enabled) "Choose" else "Enable",
                                     if (setup.enabled) choose else enable)
-                                HorizontalDivider(color = colors.outline)
-                                ModelRow(model, download)
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            Column(Modifier.fillMaxWidth().background(colors.surfaceVariant, RoundedCornerShape(16.dp))
+                                .padding(16.dp)) {
+                                Text("Computer", fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height(8.dp))
+                                ComputerSection(store, computer) { computer = it }
                             }
                         }
                         2 -> {
                             Spacer(Modifier.height(16.dp))
                             Heading("Try the keyboard")
-                            Detail("Hold the Hex key, say a few words, then release.")
+                            Detail("Tap the mic, say a few words, then tap it again.")
                             Spacer(Modifier.height(20.dp))
                             val focus = remember { FocusRequester() }
                             OutlinedTextField(value = text, onValueChange = { text = it },
@@ -206,11 +193,11 @@ private fun SetupScreen(page: Int, setup: Setup, go: (Int) -> Unit, ask: () -> U
                 } else {
                     Button(onClick = {
                         when (page) {
-                            0 -> { download(); go(1) }
+                            0 -> go(1)
                             1 -> go(2)
                             2 -> { keyboard?.hide(); go(3) }
                         }
-                    }, enabled = page != 1 || setup.ready, shape = RoundedCornerShape(14.dp),
+                    }, enabled = page != 1 || (setup.ready && computer != null), shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth().height(52.dp)) {
                         Text(listOf("Get started", "Continue", "Done")[page],
                             style = MaterialTheme.typography.titleMedium)
@@ -252,35 +239,14 @@ private fun SetupRow(title: String, note: String, ready: Boolean, action: String
             .padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(painterResource(R.drawable.ic_lock), null, Modifier.size(13.dp))
             Spacer(Modifier.width(6.dp))
-            Text("100% on device", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Transcribed on your computer", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(16.dp))
         Text("Talk instead of type,\nin any app.", fontSize = 28.sp, lineHeight = 32.sp,
             letterSpacing = (-0.4).sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(12.dp))
-        Text("Hex uses the internet only to download its speech model (190 MB). Your voice and words stay on this device.",
+        Text("The keyboard sends your voice to Hex on your own computer, over Wi-Fi or Tailscale. No cloud service hears it.",
             modifier = Modifier.widthIn(max = 320.dp), color = colors.onSurfaceVariant,
             textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-@Composable private fun ModelRow(state: ModelStore.State, download: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 54.dp)) {
-            Column(Modifier.weight(1f)) {
-                Text("Speech model", fontWeight = FontWeight.Medium)
-                Text(when (state) {
-                    ModelStore.State.Ready -> "Whisper small is ready"
-                    ModelStore.State.Available -> "Tiny works offline"
-                    ModelStore.State.Retry -> "Download interrupted. Tiny works offline."
-                    is ModelStore.State.Loading -> "Downloading · " + state.percent + "%"
-                }, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-            }
-            if (state == ModelStore.State.Retry || state == ModelStore.State.Available) {
-                TextButton(onClick = download) { Text(if (state == ModelStore.State.Retry) "Retry" else "Download") }
-            }
-        }
-        if (state is ModelStore.State.Loading) LinearProgressIndicator(progress = { state.percent / 100f },
-            modifier = Modifier.fillMaxWidth(), trackColor = MaterialTheme.colorScheme.outline)
     }
 }

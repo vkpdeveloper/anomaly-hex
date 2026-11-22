@@ -6,6 +6,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.provider.Settings
 import android.text.TextUtils
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -15,11 +16,18 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import ly.anoma.hex.R
-import ly.anoma.hex.useInter
+import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
+/** A keycap's colours: Gboard's letter keys, its darker function keys, and the blue enter key. */
+internal enum class KeyFill(val fill: Int, val pressed: Int, val ink: Int) {
+    Letter(R.color.kb_key, R.color.kb_key_pressed, R.color.kb_ink),
+    Function(R.color.kb_function, R.color.kb_function_pressed, R.color.kb_ink),
+    Enter(R.color.kb_enter, R.color.kb_enter_pressed, R.color.kb_enter_ink),
+}
+
 /** One key. The whole view is its touch target; its padding places the drawn keycap (KeyRowLayout sets it). */
-internal class KeyCap(context: Context, fill: Int, description: String, private val haptics: () -> Boolean,
+internal class KeyCap(context: Context, fill: KeyFill, description: String, pill: Boolean, private val haptics: () -> Boolean,
                       click: () -> Unit) : FrameLayout(context) {
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     var label: TextView? = null
@@ -27,13 +35,15 @@ internal class KeyCap(context: Context, fill: Int, description: String, private 
     init {
         contentDescription = description
         isFocusable = true; setOnClickListener { click() }
-        val paints = StateListDrawable()
-        fun shape(c: Int) = GradientDrawable().apply { cornerRadius = KeyboardMetrics.CORNER * resources.displayMetrics.density; setColor(c) }
-        paints.addState(intArrayOf(android.R.attr.state_pressed), shape(context.getColor(R.color.pressed)))
-        paints.addState(intArrayOf(), shape(fill))
+        val corner = KeyboardMetrics.CORNER * resources.displayMetrics.density
+        // A pill's radius is half its height; GradientDrawable clamps a large radius to that.
+        fun shape(c: Int) = GradientDrawable().apply { cornerRadius = if (pill) 1e4f else corner; setColor(context.getColor(c)) }
+        face.background = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), shape(fill.pressed))
+            addState(intArrayOf(), shape(fill.fill))
+        }
         face.isDuplicateParentStateEnabled = true
         face.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        face.background = paints
         addView(face, LayoutParams(-1, -1))
     }
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -58,30 +68,43 @@ internal class KeyCap(context: Context, fill: Int, description: String, private 
     override fun getAccessibilityClassName() = "android.widget.Button"
 }
 
-/** Builds keys with the keyboard's colours and haptics setting. */
+/** Builds keys with the keyboard's colours, font and haptics setting. Sizes are in dp, not sp:
+ * Gboard's keys keep their size whatever the system's font scale. */
 internal class KeyCaps(private val context: Context, private val haptics: () -> Boolean) {
-    private fun dp(value: Int) = (value * context.resources.displayMetrics.density).roundToInt()
-    val ink = context.getColor(R.color.ink)
-    val key = context.getColor(R.color.key)
-    val modifier = context.getColor(R.color.modifier)
+    private val density = context.resources.displayMetrics.density
+    private fun px(value: Float) = (value * density).roundToInt()
 
-    /** Letters are Gboard's size (19.4 dp capitals); labels such as ?123 are smaller. */
-    fun cap(s: String, desc: String, fill: Int = key, sp: Float = 26f, click: () -> Unit): KeyCap {
-        val c = KeyCap(context, fill, desc, haptics, click)
-        c.label = TextView(context).apply {
-            text = s; textSize = sp; useInter(if (sp >= 20f) 400 else 500)
-            gravity = Gravity.CENTER; includeFontPadding = false
-            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setTextColor(ink)
+    fun text(view: TextView, dp: Float, weight: Int = 400) = view.apply {
+        setTextSize(TypedValue.COMPLEX_UNIT_DIP, dp); useSans(weight)
+        includeFontPadding = false
+    }
+
+    fun cap(s: String, desc: String, fill: KeyFill = KeyFill.Letter, size: Float = KeyboardMetrics.LETTER,
+            pill: Boolean = false, weight: Int = 400, click: () -> Unit): KeyCap {
+        val c = KeyCap(context, fill, desc, pill, haptics, click)
+        c.label = text(TextView(context), size, weight).apply {
+            text = s; gravity = Gravity.CENTER
+            maxLines = 2; ellipsize = TextUtils.TruncateAt.END; setTextColor(context.getColor(fill.ink))
             c.face.addView(this, FrameLayout.LayoutParams(-1, -1))
         }
         return c
     }
-    fun icon(res: Int, desc: String, fill: Int, click: () -> Unit, tint: Int = ink, size: Int = 24): KeyCap {
-        val c = KeyCap(context, fill, desc, haptics, click)
+    fun icon(res: Int, desc: String, fill: KeyFill, click: () -> Unit, pill: Boolean = false, size: Float = 24f): KeyCap {
+        val c = KeyCap(context, fill, desc, pill, haptics, click)
         val image = ImageView(context).apply {
-            setImageResource(res); imageTintList = ColorStateList.valueOf(tint)
+            setImageResource(res); imageTintList = ColorStateList.valueOf(context.getColor(fill.ink))
         }
-        c.face.addView(image, FrameLayout.LayoutParams(dp(size), dp(size), Gravity.CENTER))
+        c.face.addView(image, FrameLayout.LayoutParams(px(size), px(size), Gravity.CENTER))
         return c
+    }
+    /** Row 1's digit in the keycap's top-right corner, as Gboard draws it. */
+    fun hint(cap: KeyCap, digit: Char) {
+        val view = text(TextView(context), KeyboardMetrics.HINT, 500).apply {
+            text = digit.toString(); setTextColor(context.getColor(R.color.kb_hint))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        cap.face.addView(view, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+            topMargin = px(0.8f); rightMargin = px(2.2f)
+        })
     }
 }

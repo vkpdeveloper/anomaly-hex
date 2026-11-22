@@ -8,7 +8,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import ly.anoma.hex.R
-import ly.anoma.hex.useInter
+import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
 /** Both callouts live inside the input window. No popup takes focus away from the editor. */
@@ -17,7 +17,7 @@ internal class LetterFeedback(private val host: ViewGroup) {
     private fun dp(n: Int) = (context.resources.displayMetrics.density * n).roundToInt()
     private fun face(id: Int, radius: Int, border: Boolean = false) = GradientDrawable().apply {
         setColor(context.getColor(id)); cornerRadius = dp(radius).toFloat()
-        if (border) setStroke(dp(1), context.getColor(R.color.modifier))
+        if (border) setStroke(dp(1), context.getColor(R.color.kb_function))
     }
     private var panel: LinearLayout? = null
     private var choices: List<String> = emptyList()
@@ -36,16 +36,16 @@ internal class LetterFeedback(private val host: ViewGroup) {
         index = if (reverse) choices.lastIndex else 0
         val pad = dp(3); val edge = dp(4)
         cell = if (choosing) minOf(key.width.coerceIn(dp(28), dp(38)), (host.width - 2 * (edge + pad)) / choices.size) else key.width + dp(6)
-        val w = cell * choices.size + 2 * pad; val h = dp(42)
+        val w = cell * choices.size + 2 * pad; val h = dp(48)
         left = (r.centerX() - pad - cell * index - cell / 2).coerceIn(edge, host.width - w - edge)
         val y = (r.top - h - dp(2)).coerceAtLeast(0)
         val bar = LinearLayout(context).apply {
-            background = face(R.color.sheet, 10, true); setPadding(pad, pad, pad, pad)
+            background = face(R.color.kb_key, 12, true); elevation = dp(4).toFloat(); setPadding(pad, pad, pad, pad)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         }
         for (s in choices) bar.addView(TextView(context).apply {
-            text = s; gravity = Gravity.CENTER; setTextColor(context.getColor(R.color.ink))
-            useInter(500); textSize = if (choosing) 21f else 27f; includeFontPadding = false
+            text = s; gravity = Gravity.CENTER; setTextColor(context.getColor(R.color.kb_ink))
+            useSans(); setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, if (choosing) 22f else 27f); includeFontPadding = false
         }, LinearLayout.LayoutParams(cell, -1))
         panel = bar; highlight()
         bar.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
@@ -60,8 +60,8 @@ internal class LetterFeedback(private val host: ViewGroup) {
         val bar = panel ?: return
         for (i in choices.indices) {
             val label = bar.getChildAt(i) as TextView
-            label.background = if (choosing && i == index) face(R.color.ink, 7) else null
-            label.setTextColor(context.getColor(if (choosing && i == index) R.color.page else R.color.ink))
+            label.background = if (choosing && i == index) face(R.color.kb_enter, 9) else null
+            label.setTextColor(context.getColor(if (choosing && i == index) R.color.kb_enter_ink else R.color.kb_ink))
         }
     }
     companion object {

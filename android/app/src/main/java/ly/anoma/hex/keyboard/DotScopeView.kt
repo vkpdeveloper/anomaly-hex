@@ -12,7 +12,7 @@ import kotlin.math.sqrt
 internal class DotScopeView(context: Context) : View(context) {
     private val levels = FloatArray(66)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val ink = context.getColor(R.color.ink)
+    private val ink = context.getColor(R.color.kb_ink)
     private var tick = 0
     fun clear() { tick = 0; levels.fill(0f); invalidate() }
     fun push(rms: Float) {

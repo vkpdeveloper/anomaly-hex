@@ -17,6 +17,10 @@ internal enum class Spoken(val code: String, val label: String) {
             "no", "nb", "nn" -> Norwegian
             else -> entries.firstOrNull { it.code == code }
         }
+        /** The keyboard's layout when none is chosen: the first of the phone's languages it has, else English. */
+        fun system(): Spoken = Resources.getSystem().configuration.locales.let { locales ->
+            (0 until locales.size()).firstNotNullOfOrNull { matching(locales[it].language) }
+        } ?: English
     }
 }
 

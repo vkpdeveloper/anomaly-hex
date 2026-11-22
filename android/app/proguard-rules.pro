@@ -1,8 +1,3 @@
-# libhexspeech resolves this class and method by their JNI names.
--keep class ly.anoma.hex.speech.Whisper {
-    native <methods>;
-}
-
 # Drop diagnostic calls from managed release code, including dependencies.
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int) return false;

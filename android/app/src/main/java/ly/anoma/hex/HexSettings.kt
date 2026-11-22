@@ -21,7 +21,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -31,14 +30,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ly.anoma.hex.speech.*
+import ly.anoma.hex.button.ButtonPreferences
+import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
 
 private enum class Page(val title: String) {
-    Home("Hex"), Dictation("Dictation"), Keyboard("Keyboard"), Privacy("Privacy"), Experiments("Experiments"),
-    Language("Dictation language"), Layout("Keyboard layout"), Styles("Style"),
-    Policy("Privacy policy"), Licences("Open-source licences");
+    Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"), Experiments("Experiments"),
+    Layout("Keyboard layout"), Policy("Privacy policy"), Licences("Open-source licences");
     val parent get() = when (this) {
-        Language, Styles -> Dictation
         Layout -> Keyboard
         Policy, Licences -> Privacy
         else -> Home
@@ -46,40 +45,32 @@ private enum class Page(val title: String) {
 }
 
 @Composable
-internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: TypingPreferences,
-                         model: ModelStore.State, download: () -> Unit, phase: SpeechPhase, transcript: String,
-                         notice: String?, dictate: () -> Unit, cancel: () -> Unit, setupPage: (Int) -> Unit,
-                         systemSettings: () -> Unit) {
+internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
+                         setupPage: (Int) -> Unit, systemSettings: () -> Unit) {
     var page by rememberSaveable { mutableStateOf(Page.Home) }
     var practice by remember { mutableStateOf("") }
+    var computer by remember { mutableStateOf(store.computer) }
     val context = LocalContext.current
     // The activity and the IME write the same preferences.
     // Observe them even while trying the keyboard inside this page.
     var revision by remember { mutableIntStateOf(0) }
     DisposableEffect(context) {
-        val stores = listOf("speech", "typing").map { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
+        val stores = listOf("typing", "button").map { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
         val changed = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> revision++ }
         stores.forEach { it.registerOnSharedPreferenceChangeListener(changed) }
         onDispose { stores.forEach { it.unregisterOnSharedPreferenceChangeListener(changed) } }
     }
-    val automatic = remember(revision, LocalConfiguration.current) { speech.spoken }
-    val selectedLanguage = remember(revision) { speech.language }
+    val automatic = remember(LocalConfiguration.current) { Spoken.system() }
     val selectedLayout = remember(revision) { typing.layout }
-    val style = remember(revision) { speech.style }
-    val translate = remember(revision) { speech.translation }
-    val clean = remember(revision) { speech.clean }
-    val lowercase = remember(revision) { speech.lowercase }
-    val endWithPeriod = remember(revision) { speech.endWithPeriod }
-    val formatLists = remember(revision) { speech.formatLists }
-    val spokenPunctuation = remember(revision) { speech.spokenPunctuation }
-    val customVocabulary = remember(revision) { speech.customVocabulary }
-    var vocabularyDraft by remember { mutableStateOf(speech.vocabularyTerms.joinToString("\n")) }
     val autocorrect = remember(revision) { typing.autocorrect }
+    val autoCapitalize = remember(revision) { typing.autoCapitalize }
     val swearWords = remember(revision) { typing.suggestSwearWords }
     val spatial = remember(revision) { typing.spatial }
     val popups = remember(revision) { typing.popups }
     val haptics = remember(revision) { typing.haptics }
-    fun open(next: Page) { if (phase != SpeechPhase.Idle) cancel(); page = next }
+    val button = remember { ButtonPreferences(context) }
+    val hideButton = remember(revision) { button.hideWithKeyboard }
+    fun open(next: Page) { page = next }
     BackHandler(page != Page.Home) { open(page.parent) }
 
     Box(Modifier.fillMaxSize().background(colorResource(R.color.page)).safeDrawingPadding(),
@@ -101,7 +92,7 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                         Label(page.title, size = 26, weight = FontWeight.SemiBold, mod = Modifier.semantics { heading() })
                     }
                     if (page == Page.Home) {
-                        val steps = listOf(setup.mic, setup.chosen).count { !it }
+                        val steps = listOf(setup.mic, setup.chosen, computer != null).count { !it }
                         val status = if (steps == 0) "Ready" else "Finish setup · $steps " + if (steps == 1) "step" else "steps"
                         Row((if (steps > 0) Modifier.clickable(role = Role.Button) { setupPage(1) } else Modifier)
                             .heightIn(min = if (steps > 0) 44.dp else 26.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -114,25 +105,19 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                 }
                 when (page) {
                     Page.Home -> {
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colorResource(R.color.ink))
-                            .height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.weight(1f).fillMaxHeight().clickable(phase != SpeechPhase.Transcribing, role = Role.Button) { dictate() },
-                                contentAlignment = Alignment.Center) {
-                                Label(when (phase) {
-                                    SpeechPhase.Idle -> "Dictate"
-                                    SpeechPhase.Transcribing -> "Transcribing…"
-                                    else -> "Finish dictation"
-                                }, inverted = true, weight = FontWeight.SemiBold)
-                            }
-                            if (phase != SpeechPhase.Idle) Box(Modifier.fillMaxHeight().width(68.dp).clickable(role = Role.Button) { cancel() },
-                                contentAlignment = Alignment.Center) { Label("Cancel", inverted = true, size = 14) }
-                        }
-                        if (transcript.isNotEmpty()) Card { SelectionContainer { Label(transcript, mod = Modifier.padding(16.dp), lines = Int.MAX_VALUE) } }
-                        if (notice != null) Label(notice, muted = true, size = 14)
                         Card {
-                            listOf(Page.Dictation, Page.Keyboard, Page.Privacy, Page.Experiments).forEachIndexed { i, dest ->
-                                if (i != 0) Rule()
-                                Entry(dest.title, action = { open(dest) })
+                            Entry("Computer", computer?.name ?: "Not connected", action = { open(Page.Computer) })
+                            listOf(Page.Keyboard, Page.Privacy, Page.Experiments).forEach { dest ->
+                                Rule(); Entry(dest.title, action = { open(dest) })
+                            }
+                        }
+                        Card {
+                            // Android only lets the person turn an accessibility service on; off, it switches itself off.
+                            Toggle("Floating button", "Dictate into any app without the keyboard", setup.button) {
+                                if (it) ButtonPreferences.openAccessibility(context) else button.on = false
+                            }
+                            if (setup.button) {
+                                Rule(); Toggle("Hide with Hex keyboard", "The keyboard has its own mic", hideButton) { button.hideWithKeyboard = it }
                             }
                         }
                         Card {
@@ -140,53 +125,15 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                             Rule(); Entry("Run setup again", action = { setupPage(0) })
                         }
                     }
-                    Page.Dictation -> {
-                        Card {
-                            Entry("Style", value = style.name, action = { open(Page.Styles) })
-                            Rule(); Toggle(stringResource(R.string.dictation_lowercase), stringResource(R.string.dictation_lowercase_detail),
-                                lowercase) { speech.lowercase = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_format_lists), stringResource(R.string.dictation_format_lists_detail),
-                                formatLists) { speech.formatLists = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_spoken_punctuation), stringResource(R.string.dictation_spoken_punctuation_detail),
-                                spokenPunctuation) { speech.spokenPunctuation = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_end_with_period), stringResource(R.string.dictation_end_with_period_detail),
-                                endWithPeriod) { speech.endWithPeriod = it }
-                            Rule(); Entry("Dictation language", if (selectedLanguage == null) automatic.label else null,
-                                selectedLanguage?.label ?: "Automatic", { open(Page.Language) })
-                        }
-                        Card {
-                            Toggle("Translate what I say", "Dictate in Spanish, write in English", translate) { speech.translation = it }
-                            Rule(); Toggle("Clean up what I say", "Drop hesitations and spoken corrections", clean) { speech.clean = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_vocabulary), stringResource(R.string.dictation_vocabulary_detail),
-                                customVocabulary) { speech.customVocabulary = it }
-                            if (customVocabulary) {
-                                val ink = colorResource(R.color.ink)
-                                BasicTextField(value = vocabularyDraft, onValueChange = {
-                                    vocabularyDraft = it; speech.vocabularyTerms = it.split('\n')
-                                }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 14.dp),
-                                    textStyle = TextStyle(color = ink, fontFamily = inter, fontSize = 16.sp),
-                                    cursorBrush = SolidColor(ink), decorationBox = { field ->
-                                        Box { if (vocabularyDraft.isEmpty()) Label(stringResource(R.string.dictation_vocabulary_hint), muted = true); field() }
-                                    })
-                            }
-                        }
-                        Card {
-                            val detail = when (model) {
-                                ModelStore.State.Ready -> "Whisper small is ready"
-                                ModelStore.State.Available -> "Tiny works offline"
-                                ModelStore.State.Retry -> "Download interrupted; tiny is available"
-                                is ModelStore.State.Loading -> "Downloading · ${model.percent}%"
-                            }
-                            val action = model == ModelStore.State.Available || model == ModelStore.State.Retry
-                            Entry("Speech model", detail, if (action) "Download" else "",
-                                if (action) download else null)
-                        }
+                    Page.Computer -> Card {
+                        Box(Modifier.padding(16.dp)) { ComputerSection(store, computer) { computer = it } }
                     }
                     Page.Keyboard -> {
                         Card {
-                            Entry("Keyboard layout", if (selectedLayout == null) "Follows dictation · " + automatic.label else null,
+                            Entry("Keyboard layout", if (selectedLayout == null) automatic.label else null,
                                 selectedLayout?.label ?: "Automatic", { open(Page.Layout) })
                             Rule(); Toggle("Autocorrect", "Fix typos when you press space", autocorrect) { typing.autocorrect = it }
+                            Rule(); Toggle("Auto-capitalization", "Capitalize the first word of each sentence", autoCapitalize) { typing.autoCapitalize = it }
                             Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
                             Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
@@ -195,7 +142,7 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                         Card {
                             BasicTextField(value = practice, onValueChange = { practice = it }, maxLines = 4,
                                 modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                textStyle = TextStyle(color = ink, fontFamily = inter, fontSize = 16.sp),
+                                textStyle = TextStyle(color = ink, fontFamily = sans, fontSize = 16.sp),
                                 cursorBrush = SolidColor(ink), decorationBox = { field ->
                                     Box { if (practice.isEmpty()) Label("Test keyboard…", muted = true); field() }
                                 })
@@ -203,7 +150,7 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                     }
                     Page.Privacy -> {
                         Card {
-                            Entry("Everything stays on this device", "Voice and typed text are never uploaded")
+                            Entry("Your voice goes to your computer", "Hex on your computer transcribes it, never a cloud service")
                             Rule(); Entry("Typing history", "Hex stores no keystrokes or transcripts")
                         }
                         Card {
@@ -215,22 +162,11 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                         Toggle("Spatial autocorrect", if (autocorrect) "Use where taps land to fix typos" else "Turn on Autocorrect in Keyboard",
                             spatial, enabled = autocorrect) { typing.spatial = it }
                     }
-                    Page.Styles -> Card {
-                        Style.entries.forEachIndexed { i, it ->
+                    Page.Layout -> Card {
+                        (listOf(null) + Spoken.entries).forEachIndexed { i, it ->
                             if (i != 0) Rule()
-                            Entry(it.name, value = if (it == style) "✓" else "", action = { speech.style = it; open(Page.Dictation) })
-                        }
-                    }
-                    Page.Language, Page.Layout -> Card {
-                        val layout = page == Page.Layout
-                        // Layouts and dictation languages are separate lists that happen to match today.
-                        val choices: List<Triple<String?, Boolean, () -> Unit>> =
-                            if (layout) (listOf(null) + Spoken.entries).map { Triple(it?.label, it == selectedLayout, { typing.layout = it }) }
-                            else (listOf(null) + DictationLanguage.entries).map { Triple(it?.label, it == selectedLanguage, { speech.language = it }) }
-                        choices.forEachIndexed { i, (label, chosen, pick) ->
-                            if (i != 0) Rule()
-                            Entry(label ?: "Automatic", if (label != null) null else if (layout) "Follow dictation language" else stringResource(R.string.dictation_language_automatic_detail),
-                                if (chosen) "✓" else "", { pick(); open(page.parent) })
+                            Entry(it?.label ?: "Automatic", if (it == null) "Follow the phone's language" else null,
+                                if (it == selectedLayout) "✓" else "", { typing.layout = it; open(page.parent) })
                         }
                     }
                     Page.Policy, Page.Licences -> {
@@ -246,7 +182,7 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
 
 @Composable private fun Label(text: String, size: Int = 16, weight: FontWeight = FontWeight.Normal,
                               muted: Boolean = false, inverted: Boolean = false, lines: Int = 1, mod: Modifier = Modifier) {
-    BasicText(text, mod, style = TextStyle(fontFamily = inter, fontWeight = weight, fontSize = size.sp,
+    BasicText(text, mod, style = TextStyle(fontFamily = sans, fontWeight = weight, fontSize = size.sp,
         lineHeight = (size + 5).sp, color = colorResource(if (inverted) R.color.page else if (muted) R.color.quiet else R.color.ink)),
         maxLines = lines, overflow = TextOverflow.Ellipsis)
 }

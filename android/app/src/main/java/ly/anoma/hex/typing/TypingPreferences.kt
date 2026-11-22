@@ -12,6 +12,10 @@ internal class TypingPreferences(context: Context) {
     var autocorrect: Boolean
         get() = prefs.getBoolean("autocorrect", true)
         set(value) { prefs.edit().putBoolean("autocorrect", value).apply() }
+    /** Off by default: the keys show lowercase until you press shift. */
+    var autoCapitalize: Boolean
+        get() = prefs.getBoolean("autoCapitalize", false)
+        set(value) { prefs.edit().putBoolean("autoCapitalize", value).apply() }
     var suggestSwearWords: Boolean
         get() = prefs.getBoolean(SUGGEST_SWEAR_WORDS, false)
         set(value) { prefs.edit().putBoolean(SUGGEST_SWEAR_WORDS, value).apply() }
@@ -19,7 +23,7 @@ internal class TypingPreferences(context: Context) {
         get() = prefs.getBoolean("spatial", true)
         set(value) { prefs.edit().putBoolean("spatial", value).apply() }
     var popups: Boolean
-        get() = prefs.getBoolean("popups", true)
+        get() = prefs.getBoolean("popups", false)
         set(value) { prefs.edit().putBoolean("popups", value).apply() }
     var haptics: Boolean
         get() = prefs.getBoolean("haptics", true)

@@ -1,5 +1,7 @@
 <resources>
     <string name="app_name">Hex</string>
+    <string name="button_label">Hex button</string>
+    <string name="button_description">Keeps the Hex button on screen. Tap it to dictate; your computer running Hex turns the speech into text and Hex types it into the field.</string>
     <string name="full_keyboard">Full keyboard</string>
     <string name="dictation_lowercase">Lowercase</string>
     <string name="dictation_lowercase_detail">Lowercases everything</string>

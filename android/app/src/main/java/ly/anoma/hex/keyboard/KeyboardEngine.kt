@@ -29,7 +29,7 @@ internal interface KeyboardSurface {
 /** Keys in, text out: the current word, autocorrection and its undo, spaces, shift and the key pages.
  * It talks to the editor only through [KeyboardTextTarget] and to the views through [KeyboardSurface]. */
 internal class KeyboardEngine(
-    private val target: KeyboardTextTarget,
+    field: KeyboardTextTarget,
     private val feedback: TypingPreferences,
     private val layoutLanguage: () -> Spoken,
     private val loadDecoder: (String) -> SpatialDecoder,
@@ -43,7 +43,25 @@ internal class KeyboardEngine(
         /** The fix and the decoder's readings wait for this pause in typing: working them out costs a
          * search (2 ms median, 16 ms p95 per letter on the API 31 emulator), which shouldn't delay keys. */
         const val CHIP_PAUSE_MS = 100L
+        /** A selection change this long after the keyboard's last edit is the person's: a tap in the text. */
+        const val OWN_EDIT_MS = 500L
     }
+    private var editedAt = Long.MIN_VALUE / 2
+    // Every edit goes through here, so the selection changes that follow can be told from a tap in the text.
+    private val target = object : KeyboardTextTarget by field {
+        private fun <T> edit(block: () -> T): T { editedAt = clock(); return block() }
+        override fun commit(text: String) = edit { field.commit(text) }
+        override fun deleteBefore(length: Int) = edit { field.deleteBefore(length) }
+        override fun deleteCodePointsBefore(count: Int) = edit { field.deleteCodePointsBefore(count) }
+        override fun deleteAround(before: Int, after: Int) = edit { field.deleteAround(before, after) }
+        override fun setSelection(start: Int, end: Int) = edit { field.setSelection(start, end) }
+        override fun performEditorAction(id: Int) = edit { field.performEditorAction(id) }
+        override fun defaultEditorAction() = edit { field.defaultEditorAction() }
+        override fun sendKey(code: Int) = edit { field.sendKey(code) }
+    }
+    /** The word the caret was tapped into, split at the caret, while the strip shows its suggestions. */
+    private class Tapped(val left: String, val right: String)
+    private var tapped: Tapped? = null
     private var pendingChip: Runnable? = null
     var surface: KeyboardSurface? = null
     private val models = HashMap<String, SpatialDecoder>()
@@ -57,6 +75,7 @@ internal class KeyboardEngine(
     private val shift = ShiftState()
     private var symbols = false
     private var more = false
+    private var numpad = false
     private var selStart = -1
     private var selEnd = -1
     // Spaces, each remembered with the text before the cursor it left, so anything else in between
@@ -85,8 +104,9 @@ internal class KeyboardEngine(
                 InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_FILTER) &&
             attribute.inputType and (InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_FLAG_AUTO_COMPLETE) == 0
         resetTyping(); word = null; clearSpaces()
-        symbols = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
+        numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
             kind == InputType.TYPE_CLASS_DATETIME
+        symbols = numpad
         more = false; shift.reset()
         selStart = attribute.initialSelStart; selEnd = attribute.initialSelEnd
         refreshCaps(force = true)
@@ -94,6 +114,7 @@ internal class KeyboardEngine(
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
+        val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) {
             if (expectedCaret >= 0 && (newSelStart != expectedCaret || newSelEnd != expectedCaret)) {
                 // Editors may coalesce selection notifications. Compare the actual surrounding text
@@ -103,7 +124,35 @@ internal class KeyboardEngine(
                     oldSelStart == expectedCaret) { resetTyping(); surface?.suggestions(emptyList()) }
             }
             refreshCaps()
+            if (!expected && clock() - editedAt > OWN_EDIT_MS) caretMoved()
         }
+    }
+
+    /** The person put the caret somewhere in the text. In a word, the strip offers that word's
+     * suggestions, as Gboard does; picking one replaces the whole word. Elsewhere, next words. */
+    private fun caretMoved() {
+        val w = word ?: return
+        resetTyping(); clearSpaces()
+        if (symbols || selStart < 0 || selStart != selEnd) { surface?.suggestions(emptyList()); return }
+        val b = before()
+        val a = target.after(48).orEmpty()
+        val left = TypingWord.currentToken(b) ?: if (TypingWord.boundary(b.lastOrNull())) "" else null
+        var right = a.takeWhile { it.isLetter() || it == '\'' || it == '\u2019' }.trimEnd('\'', '\u2019')
+        if (a.getOrNull(right.length)?.let { it.isDigit() || it in "@_/" } == true) right = ""
+        val whole = (left ?: "") + right
+        if (left == null || whole.firstOrNull()?.isLetter() != true || whole.length > TypingWord.MAX_LENGTH) {
+            showSuggestions(w); return
+        }
+        val start = b.dropLast(left.length)
+        w.reread(whole, start.takeLast(40))
+        val strip = w.strip(autocorrect = feedback.autocorrect).map {
+            if (it.kind == Suggestion.Kind.Fix && feedback.blocked(w.decoder.model.language, whole, it.text))
+                Suggestion(it.text, Suggestion.Kind.Word) else it
+        }
+        // At the word's end it is the word in progress again: letters add to it and a pick ends it.
+        if (right.isEmpty()) { prefix = start.takeLast(40); w.restored(left, prefix) }
+        else { w.reset(); tapped = Tapped(left, right) }
+        surface?.suggestions(strip)
     }
 
     /** Suggest swear words changed: the current word's suggestions follow at once. */
@@ -124,6 +173,7 @@ internal class KeyboardEngine(
     /** Whether the field asks for a capital here, or caps lock is on: what shift would show. */
     private fun capsWanted(): Boolean {
         if (shift.locked) return true
+        if (!feedback.autoCapitalize) return false
         val mask = (editor?.inputType ?: 0) and
             (InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or InputType.TYPE_TEXT_FLAG_CAP_WORDS or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
         return !secure && mask != 0 && target.capsMode(mask) != 0
@@ -134,8 +184,10 @@ internal class KeyboardEngine(
         if (force || was != shift.uppercase) showPlane()
     }
     private fun showPlane() {
-        surface?.showPage(KeyboardPage(layoutLanguage(), symbols, more, shift.uppercase, shift.locked, EnterKey.from(editor)))
+        surface?.showPage(KeyboardPage(layoutLanguage(), symbols, more, shift.uppercase, shift.locked, EnterKey.from(editor), numpad))
     }
+    /** The keyboard came up: it starts in lowercase, whatever shift or caps lock was when it went away. */
+    fun opened() { shift.reset(); refreshCaps(force = true) }
     /** Shift went down: it acts at once, so a held shift and a letter type a capital. */
     fun shiftDown() {
         if (symbols) return
@@ -148,9 +200,17 @@ internal class KeyboardEngine(
         shift.up()
         if (was != shift.uppercase) showPlane()
     }
-    fun mode() { resetTyping(); clearSpaces(); surface?.suggestions(emptyList()); symbols = !symbols; more = false; shift.forgetTap(); showPlane() }
+    /** ?123 from the letters, ABC from any other page. */
+    fun mode() { leavePage(); symbols = !symbols; numpad = false; showPlane() }
+    /** The symbols page's 1234: the number pad. */
+    fun numpad() { leavePage(); symbols = true; numpad = true; showPlane() }
+    /** The number pad's !?#: the first symbols page. */
+    fun symbolPage() { leavePage(); symbols = true; numpad = false; showPlane() }
+    private fun leavePage() {
+        resetTyping(); clearSpaces(); surface?.suggestions(emptyList()); more = false; shift.forgetTap()
+    }
     private fun resetTyping() {
-        cancelChip(); word?.reset(); undo = null; expectedCaret = -1; prefix = ""
+        cancelChip(); word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
     }
     private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null }
     private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
@@ -262,6 +322,7 @@ internal class KeyboardEngine(
      * key that starts a word. A space right after a picked word is swallowed (it still counts towards
      * double-space), and a closing mark takes its place. */
     fun pickSuggestion(text: String) {
+        tapped?.let { pickForTapped(it, text); return }
         val w = word ?: return
         if (symbols || !canEndWord()) return
         val old = w.token
@@ -276,6 +337,17 @@ internal class KeyboardEngine(
             showPredictions(b)
             inputDone()
         }
+    }
+
+    // The tapped word goes whole, both sides of the caret, and the pick takes its place with no space.
+    private fun pickForTapped(t: Tapped, text: String) {
+        resetTyping()
+        if (!secure && target.before(t.left.length) == t.left && target.after(t.right.length) == t.right &&
+            target.selected().isNullOrEmpty()) {
+            target.beginBatch()
+            try { if (target.deleteAround(t.left.length, t.right.length)) target.commit(text) } finally { target.endBatch() }
+        }
+        surface?.suggestions(emptyList())
     }
 
     /** The space bar, tapped at [point] in [grid]'s coordinates (null off the letters page). */
@@ -397,6 +469,12 @@ internal class KeyboardEngine(
     fun deleteSelection() {
         if (!target.connected) return
         target.commit(""); resetTyping(); surface?.suggestions(emptyList())
+    }
+
+    /** The toolbar's clipboard chip: the clip goes in as it is, never autocorrected. */
+    fun paste(text: String) {
+        if (!target.connected) return
+        resetTyping(); clearSpaces(); target.commit(text); surface?.suggestions(emptyList()); refreshCaps()
     }
 
     /** Dictation starts: the word in progress is left as typed. */

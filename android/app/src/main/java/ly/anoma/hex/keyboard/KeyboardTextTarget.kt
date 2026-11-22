@@ -13,6 +13,7 @@ internal interface KeyboardTextTarget {
     fun commit(text: String): Boolean
     fun deleteBefore(length: Int): Boolean
     fun deleteCodePointsBefore(count: Int): Boolean
+    fun deleteAround(before: Int, after: Int): Boolean
     fun beginBatch()
     fun endBatch()
     fun setSelection(start: Int, end: Int): Boolean
@@ -32,6 +33,7 @@ internal class InputConnectionTarget(private val ime: InputMethodService) : Keyb
     override fun commit(text: String) = ic?.commitText(text, 1) ?: false
     override fun deleteBefore(length: Int) = ic?.deleteSurroundingText(length, 0) ?: false
     override fun deleteCodePointsBefore(count: Int) = ic?.deleteSurroundingTextInCodePoints(count, 0) ?: false
+    override fun deleteAround(before: Int, after: Int) = ic?.deleteSurroundingText(before, after) ?: false
     override fun beginBatch() { ic?.beginBatchEdit() }
     override fun endBatch() { ic?.endBatchEdit() }
     override fun setSelection(start: Int, end: Int) = ic?.setSelection(start, end) ?: false
