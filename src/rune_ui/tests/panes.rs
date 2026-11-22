@@ -2254,6 +2254,7 @@ fn labs_lists_every_toggle_off_by_default() {
         ("lab-live-text", settings.labs.live_text),
         ("lab-live-chapters", settings.labs.live_chapters),
         ("lab-vocabulary-files", settings.labs.vocabulary_files),
+        ("lab-hinglish", settings.labs.hinglish),
         ("lab-screen-vocabulary", settings.labs.screen_vocabulary),
         (
             "lab-learn-from-corrections",
@@ -2282,6 +2283,8 @@ fn labs_lists_every_toggle_off_by_default() {
     assert!(rt.state.settings.labs.live_text);
     tap(&mut rt, "lab-vocabulary-files");
     assert!(rt.state.settings.labs.vocabulary_files);
+    tap(&mut rt, "lab-hinglish");
+    assert!(rt.state.settings.labs.hinglish);
     tap(&mut rt, "lab-cursor-context");
     assert!(rt.state.settings.labs.cursor_context);
     tap(&mut rt, "lab-meetings");

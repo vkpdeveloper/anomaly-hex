@@ -51,6 +51,7 @@ impl Source {
 /// The speech-only Labs steps, read once per processing run.
 #[derive(Clone, Copy, Debug, Default)]
 struct DictationLabs {
+    hinglish: bool,
     spoken_formatting: bool,
     spoken_symbols: bool,
     filler_words: bool,
@@ -60,6 +61,7 @@ impl DictationLabs {
     /// The Labs switches as this process holds them now.
     fn current() -> Self {
         Self {
+            hinglish: crate::labs::hinglish(),
             spoken_formatting: crate::labs::spoken_formatting(),
             spoken_symbols: crate::labs::spoken_symbols(),
             filler_words: crate::labs::filler_words(),
@@ -499,9 +501,9 @@ impl Profiles {
         voice_prompt: Option<&str>,
     ) -> Processed {
         let profile = self.select(context);
-        // Labs › Spoken formatting, spoken symbols, and filler words only
-        // make sense for speech: typed text starts from what is already
-        // written and skips them.
+        // Labs › Hindi in Latin letters, spoken formatting, spoken symbols,
+        // and filler words only make sense for speech: typed text starts
+        // from what is already written and skips them.
         let corrected = self.corrected(
             profile,
             transcript,
@@ -1231,9 +1233,9 @@ impl Processed {
     }
 }
 
-/// The transcript ahead of mode corrections. Spoken formatting, spoken
-/// symbols, and filler words only apply to heard speech, so typed text skips
-/// every one of them.
+/// The transcript ahead of mode corrections. Hindi in Latin letters, spoken
+/// formatting, spoken symbols, and filler words only apply to heard speech,
+/// so typed text skips every one of them.
 fn prepare_transcript(
     transcript: &str,
     language: &str,
@@ -1243,6 +1245,15 @@ fn prepare_transcript(
     if source != Source::Dictation {
         return transcript.to_owned();
     }
+    // Latin letters come first, so every later step (the person's own
+    // replacements included) reads and writes the spelling that gets pasted.
+    let latin;
+    let transcript = if labs.hinglish {
+        latin = crate::dictation::hinglish::apply(transcript);
+        latin.as_str()
+    } else {
+        transcript
+    };
     let formatted;
     let transcript = if labs.spoken_formatting {
         formatted = crate::dictation::spoken_formatting::apply(transcript);
@@ -2027,6 +2038,7 @@ mod tests {
     #[test]
     fn typed_text_skips_the_dictation_only_labs() {
         let labs = DictationLabs {
+            hinglish: true,
             spoken_formatting: true,
             spoken_symbols: true,
             filler_words: true,
@@ -2141,6 +2153,44 @@ mod tests {
         assert_eq!(
             profiles.corrected(profile, "done comma thanks", "en", Source::TypedText, labs),
             "done WRONG cheers"
+        );
+    }
+
+    /// Labs › Hindi in Latin letters: off (the default) leaves Devanagari as
+    /// heard; on, it runs first, so the person's own Latin replacements see
+    /// the Latin spelling. Typed text never changes.
+    #[test]
+    fn hindi_in_latin_letters_precedes_replacements_and_only_when_on() {
+        use crate::app_settings::{DictationMode, DictationProcessingSettings};
+        use crate::dictation::text_replacements::TextReplacement;
+        let profiles = Profiles::from_settings(&DictationProcessingSettings {
+            default_mode: DictationMode {
+                replacements: vec![TextReplacement {
+                    matched_phrase: "accha".into(),
+                    output: "acha".into(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let profile = profiles.select(&context("Notes", None));
+        let speech = "अच्छा, कल मिलते हैं";
+        let off = DictationLabs::default();
+        assert_eq!(
+            profiles.corrected(profile, speech, "hi", Source::Dictation, off),
+            speech
+        );
+        let on = DictationLabs {
+            hinglish: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            profiles.corrected(profile, speech, "hi", Source::Dictation, on),
+            "acha, kal milte hain"
+        );
+        assert_eq!(
+            profiles.corrected(profile, speech, "hi", Source::TypedText, on),
+            speech
         );
     }
 

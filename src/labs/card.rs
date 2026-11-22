@@ -85,6 +85,7 @@ impl Feature {
             Self::DropTranscribe => "Transcribe dropped audio",
             Self::PasteLastPicker => "Paste Last picker",
             Self::VocabularyFiles => "Vocabulary files",
+            Self::Hinglish => "Hindi in Latin letters",
             Self::AnnotateAgentTools => "Agent tools for captures",
             Self::AnnotateAgentInstall => "Install agent skill from Annotate",
         }
@@ -311,6 +312,9 @@ impl Feature {
             }
             Self::VocabularyFiles => {
                 "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one"
+            }
+            Self::Hinglish => {
+                "Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi."
             }
             Self::AnnotateAgentTools => {
                 "Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely"

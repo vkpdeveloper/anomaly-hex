@@ -104,6 +104,10 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Spoken formatting no labs.spoken_formatting      spoken "new line"/"line break", "new paragraph", "open/close quote", "quote … unquote" become line breaks and quotation marks; Spanish "nuevo párrafo", "nueva línea", "abre/cierra comillas", … too (#630, #1040)
 ├── Spoken symbols  no    labs.spoken_symbols          spoken "hashtag", "underscore", "comma", … become symbols joined to their words: "#release", "my_variable", "done, thanks"; Spanish "arroba", "guion bajo", "coma", … too (#678, #1040)
 ├── Remove filler words no labs.filler_words          English dictations lose um, umm, uh, uhh, erm, er, ah, with no model (#631)
+├── Hindi in Latin letters no labs.hinglish         (every OS) Devanagari in a dictation is written the way Hindi is texted, with no model:
+│                                        "क्या हाल है यार" → "kya haal hai yaar"; English stays as heard; needs Language set to Hindi
+│                                        // dictation/hinglish.rs tests; hindi_in_latin_letters_precedes_replacements_and_only_when_on
+│                                        // (dictation/processor.rs); hinglish_is_its_own_switch_and_everywhere (labs.rs)
 ├── Clean up with Apple Intelligence no labs.clean_up_with_apple_intelligence (macOS)
 │                                        one short on-device pass after the corrections fixes clearly misheard words and
 │                                        resolves spoken self-corrections ("tuesday, no wait, wednesday" → "wednesday");
@@ -1224,6 +1228,78 @@ exactly as before. Checks: `only_english_dictations_apply_the_filter`,
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
 dictation with the toggle on; the Labs page goldens need regenerating on
 Linux with the new row.
+
+Hindi in Latin letters (`hinglish`, every OS, off by default): while on,
+`Profiles::process_cancellable` in
+[dictation/processor.rs](../../src/dictation/processor.rs) reads
+`labs::hinglish()` as each dictation's processing starts and runs
+`dictation::hinglish::apply` first, before spoken formatting, spoken
+symbols, filler words, the Global and mode corrections, OpenCode rewriting,
+Apple Intelligence cleanup, and transformations. It goes first so every
+later step reads the spelling that gets pasted: a correction written in
+Latin letters ("accha" → "acha") changes a spelling the person doesn't
+like, and an OpenCode rewrite or a transformation never sees Devanagari.
+Every dictation that is processed gets it: the shortcut on every OS,
+`hex dictation stop --print`, Phone dictation (the computer runs Global's
+Output steps on the phone's transcript), and the local API's
+`process=global`. History's final text and Paste Last hold the Latin text;
+History's raw text keeps the Devanagari as heard. Dictate without
+processing, typed text, live text (provisional, in the HUD), and meetings
+are unchanged. Meetings stay out on purpose: a meeting transcript is a
+record, kept in the script the model wrote, and its search, notes, and
+`hex meetings` read that.
+
+The rewrite touches only Devanagari words (U+0900 to U+097F), whatever the
+dictation's language; Latin text, numbers, emoji, and other scripts pass
+through, so a sentence mixing Hindi and English keeps its English. A short
+table holds common words no rule spells the chat way ("नहीं" → "nahi",
+"हम" → "hum", "क्यों" → "kyun") and English words written in Devanagari
+("टीम" → "team", "ऑफ़िस" → "office"); its keys ignore nukta and treat
+chandrabindu as anusvara, so "हूँ" and "हूं" match alike. Every other word
+is read as syllables and spelled by rule, with no model and no added
+latency: the inherent "a" is dropped at the end of a word (kept after a
+conjunct ending in र, य, or व: "mitra", "satya") and in the middle between
+a sounded syllable no anusvara closes and a single sounded consonant
+("karna", "samajhna", "zindagi", but "namaste"); anusvara and chandrabindu
+are "m" before प फ ब भ म, nothing before न, "in" after a last e ("mein"),
+else "n"; nukta letters keep their sound ("ज़" z, "फ़" f, "ड़" d); long
+vowels take chat spellings ("ee" and "oo" inside a word, "aa" only in a
+closed syllable: "yaar", "khana"); a first "a" before a silent ह is "e"
+("pehle", "rehna"); ए after a vowel is "ye" ("gaye", "chahiye"). Output is
+lowercase. A danda becomes a full stop against the last word, and
+Devanagari digits become ASCII digits.
+
+Hindi has to reach a model that writes it. Hex's default Parakeet models
+write English only. Set Language to Hindi (Settings › General, or
+`hex model use qwen3_asr06_b --language hi`); the picker then recommends Qwen3-ASR 0.6B
+(about 850 MB), and Whisper large-v3-turbo (about 890 MB) writes Hindi too.
+On Auto, Whisper guesses, and Hindi can come out in Urdu script, which this
+lab leaves alone. Phone dictation uses the computer's model and language:
+Hex for Android sends none of its own. The card says to set the speech
+language to Hindi; the model names live here, not on the card. Marathi,
+Nepali, and other Devanagari text would be rewritten by the same Hindi
+rules, and names or rare words can come out spelled differently from how a
+person writes them; a correction fixes either.
+
+Checks: `writes_everyday_hindi_the_chat_way`,
+`drops_the_schwas_hindi_does_not_say`, `spells_nasals_by_what_follows`,
+`reads_a_word_however_the_model_encodes_it`, `rewrites_whole_sentences`, and
+`keeps_english_numbers_and_emoji_as_heard` in
+[dictation/hinglish.rs](../../src/dictation/hinglish.rs);
+`hindi_in_latin_letters_precedes_replacements_and_only_when_on` in
+[dictation/processor.rs](../../src/dictation/processor.rs);
+`hinglish_is_its_own_switch_and_everywhere` in [labs.rs](../../src/labs.rs);
+`labs_lists_every_toggle_off_by_default` in
+[panes.rs](../../src/rune_ui/tests/panes.rs). Observed on a Mac
+(2026-11-22): two synthetic Hindi clips (macOS `say -v Lekha`, 16 kHz)
+transcribed by `hex transcribe --model qwen3_asr06_b --language hi` in an
+isolated data folder came out in Devanagari, and `hinglish::apply` turned
+them into "kya haal hai yaar main khush nahi hoon lekin theek hai" and "bhai
+kal ki meeting kitne baje hai mujhe thoda der ho jayegi". That run joined
+the model and the rewrite by hand, since `hex transcribe` doesn't process.
+Not yet observed: a real dictation with the toggle on through the shortcut
+or a phone; the Labs page goldens need regenerating on Linux with the new
+row.
 
 Clean up with Apple Intelligence (`clean-up-apple-intelligence`, macOS, off
 by default): while on, each macOS dictation that its mode does not rewrite

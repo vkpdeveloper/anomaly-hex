@@ -147,6 +147,12 @@ pub fn spoken_symbols() -> bool {
     on(SPOKEN_SYMBOLS)
 }
 
+/// Devanagari in a dictation is written in Latin letters (read as each
+/// dictation's processing starts).
+pub fn hinglish() -> bool {
+    on(HINGLISH)
+}
+
 /// Filler words such as "um" and "uh" leave dictations (read as each
 /// dictation's processing starts).
 pub fn filler_words() -> bool {

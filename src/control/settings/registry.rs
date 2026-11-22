@@ -370,6 +370,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: import vocabulary terms from a CSV file in the Vocabulary sheet, and export the list as one",
     ),
     key(
+        "labs.hinglish",
+        Kind::Bool,
+        "Labs: write the Devanagari in each dictation in Latin letters, the way Hindi is texted",
+    ),
+    key(
         "labs.screen_vocabulary",
         Kind::Bool,
         "Labs: use names and terms visible in the focused window as temporary vocabulary for each dictation (macOS)",

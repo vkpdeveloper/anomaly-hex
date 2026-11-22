@@ -838,6 +838,19 @@
       ],
       "summary": "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one",
       "title": "Vocabulary files"
+    },
+    {
+      "added": "2026-11-22",
+      "group": "dictation",
+      "groupTitle": "Dictation",
+      "id": "hinglish",
+      "oses": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "summary": "Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi.",
+      "title": "Hindi in Latin letters"
     }
   ]
 }

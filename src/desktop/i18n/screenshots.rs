@@ -18,20 +18,32 @@ pub(super) fn merged(
     table: &[(&'static str, &'static str)],
     language: Language,
 ) -> HashMap<&'static str, &'static str> {
-    let (extra, agents, phone) = match language {
-        Language::French => (FRENCH, super::agents::FRENCH, super::phone::FRENCH),
+    let (extra, agents, phone, labs) = match language {
+        Language::French => (
+            FRENCH,
+            super::agents::FRENCH,
+            super::phone::FRENCH,
+            super::labs::FRENCH,
+        ),
         Language::Portuguese => (
             PORTUGUESE,
             super::agents::PORTUGUESE,
             super::phone::PORTUGUESE,
+            super::labs::PORTUGUESE,
         ),
-        Language::Russian => (RUSSIAN, super::agents::RUSSIAN, super::phone::RUSSIAN),
+        Language::Russian => (
+            RUSSIAN,
+            super::agents::RUSSIAN,
+            super::phone::RUSSIAN,
+            super::labs::RUSSIAN,
+        ),
     };
     table
         .iter()
         .chain(extra)
         .chain(agents)
         .chain(phone)
+        .chain(labs)
         .copied()
         .collect()
 }

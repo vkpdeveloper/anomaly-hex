@@ -50,8 +50,9 @@ Settings › Output adds a **Typed text** section whose shortcut
 nothing records clears the clipboard, sends Ctrl+A and Ctrl+C to the focused
 field, runs the focused app's Output steps on the copied text, clears and
 copies again to check the field still holds that text, then sends Ctrl+V to
-replace it. Spoken formatting, spoken symbols, and filler words are
-dictation-only and do not run on typed text. It takes the clipboard for the
+replace it. Hindi in Latin letters, spoken formatting, spoken symbols, and
+filler words are dictation-only and do not run on typed text. It takes the
+clipboard for the
 job, including any paste still waiting to restore, and puts the saved
 clipboard back 500 ms after the paste unless something newer replaced it. If
 Hex could not snapshot the clipboard, the result stays on it. Without

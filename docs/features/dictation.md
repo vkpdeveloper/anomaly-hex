@@ -605,8 +605,9 @@ Output > Typed text                        // labs.md
     ├── read the selection as text/plain, bounded to 1 MiB and one second
     ├── no text, or only whitespace -> error tone, clipboard restored, nothing pasted
     ├── run the matching mode's Output steps, with transformation context
-    │   `source: "typed-text"` (dictation passes `"dictation"`); spoken
-    │   formatting, spoken symbols, and filler words are dictation-only
+    │   `source: "typed-text"` (dictation passes `"dictation"`); Hindi in
+    │   Latin letters, spoken formatting, spoken symbols, and filler words
+    │   are dictation-only
     ├── processed text equals the selection -> clipboard restored, nothing pasted
     ├── clear, re-copy the selection -> different text or an ignored copy ->
     │   abort, clipboard restored, nothing pasted (typing or switching windows

@@ -225,6 +225,9 @@ impl Feature {
             Self::VocabularyFiles => {
                 "Import terms from a CSV file into the vocabulary sheet, merging them into the list, and export the list as a CSV file"
             }
+            Self::Hinglish => {
+                "Write the Devanagari in each dictation in Latin letters the way Hindi is texted (\"kya haal hai\"), leaving English as heard; set the speech language to Hindi so the model writes Hindi"
+            }
             Self::AnnotateAgentTools => {
                 "Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely"
             }
