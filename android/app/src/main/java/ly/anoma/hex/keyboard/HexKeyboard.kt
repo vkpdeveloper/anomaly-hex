@@ -31,6 +31,7 @@ import ly.anoma.hex.relay.Router
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.EmailAddresses
+import ly.anoma.hex.typing.EmojiWords
 import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
@@ -64,6 +65,22 @@ class HexKeyboard : InputMethodService() {
     private fun writeLearned(text: String) {
         val partial = File(filesDir, LearnedWords.FILE + ".partial")
         runCatching { partial.writeText(text); partial.renameTo(learnedFile) }
+    }
+    // The emoji you pick for words, kept beside the emoji panel's recent ones, and each layout's emoji
+    // lists, read on first use (English's, and Hinglish's own with English's).
+    private val emojiPrefs by lazy { getSharedPreferences("emoji", MODE_PRIVATE) }
+    private val emojiPicks by lazy { EmojiWords.Picks.read(emojiPrefs.getString(EMOJI_PICKS, "").orEmpty()) }
+    private val emojiLists = HashMap<String, EmojiWords>()
+    private fun emojiLists(language: String): EmojiWords? {
+        emojiLists[language]?.let { return it }
+        val names = when (language) {
+            Spoken.English.code -> listOf("en")
+            Spoken.Hinglish.code -> listOf("hien", "en")
+            else -> return null
+        }
+        val paint = android.graphics.Paint()
+        return EmojiWords(names.map { EmojiWords.parse(assets.open("typing/$it.emoji").bufferedReader().use { r -> r.readText() }) },
+            shows = paint::hasGlyph).also { emojiLists[language] = it }
     }
     // The email addresses the strip offers: the phone's accounts, read once, and your contacts' while
     // Settings › Keyboard's switch and the Contacts permission are both on, read again a little after
@@ -118,7 +135,8 @@ class HexKeyboard : InputMethodService() {
     internal val engine by lazy {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
             readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine) }, learned = learned,
-            learnedChanged = ::learnedChanged, emails = emails, background = words)
+            learnedChanged = ::learnedChanged, emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
+            emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() }, background = words)
     }
     internal val dictation by lazy {
         Dictation(this,
@@ -140,7 +158,10 @@ class HexKeyboard : InputMethodService() {
                 if (!feedback.fixButton) fixWork.execute { TinyfixFiles.drop() }
                 view?.fixChanged()
             }
-            TypingPreferences.FORGET_LEARNED -> { main.removeCallbacks(saveLearned); learned.clear(); engine.learnedWordsChanged() }
+            TypingPreferences.FORGET_LEARNED -> {
+                main.removeCallbacks(saveLearned); learned.clear(); engine.learnedWordsChanged()
+                emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
+            }
             TypingPreferences.LEARN_FROM_HISTORY ->
                 if (feedback.learnFromHistory) fetchHistoryWords(force = true)
                 else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
@@ -160,7 +181,7 @@ class HexKeyboard : InputMethodService() {
         fun hindi(word: String) = word.lowercase().let { hinglish.index(it) >= 0 && english.index(it) < 0 }
         ::hindi
     }
-    /** A check is running; the toolbar dims the button until it's done. */
+    /** A check is running; another tap waits until it's done. */
     internal var fixing = false
         private set(value) { field = value; view?.fixChanged() }
     // tinyfix knows only English: on another layout it would "fix" every word it doesn't know.
@@ -255,6 +276,7 @@ class HexKeyboard : InputMethodService() {
     }
     private companion object {
         const val SAVE_DELAY_MS = 3_000L
+        const val EMOJI_PICKS = "picks"
         const val CONTACTS_DELAY_MS = 2_000L
         const val HISTORY_WORDS_MS = 6 * 60 * 60_000L
     }

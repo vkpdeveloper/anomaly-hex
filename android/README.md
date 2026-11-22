@@ -58,6 +58,19 @@ button's checker over each sentence: a real word the sentence says should be ano
 middle. The two share one copy of the checker, one check at a time. Apps
 built with Compose (Google Messages) don't ask for spell checks.
 
+**Emoji.** On the English and Hinglish layouts the strip shows up to two emoji for the word being
+typed, or the word just before a space, in the third word's place, as Gboard does ("medicine" 💊 💉,
+"chai" ☕ 🫖). English's come from Unicode CLDR 46's emoji names and keywords
+([en.emoji](app/src/main/assets/typing/en.emoji)), with Hex's own picks for chat words first;
+Hinglish adds Hex's list of Hindi words ([hien.emoji](app/src/main/assets/typing/hien.emoji)). A tap
+ends the word, then types the emoji and a space. The emoji you pick for a word come first next time,
+most picked first; one picked from the emoji panel right after a word shows for that word once
+picked twice. Picks are counts per word (at most 1,000 words), never learned in password fields or
+apps that ask for no personalised learning, and **Forget learned words** clears them.
+
+**Grid menu.** The grid at the strip's start opens a menu in place of the strip and keys:
+**Clipboard**, **Fix mistakes** (only where the Fix button works) and **Settings**.
+
 **Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
 tap it to replace the shortcut. Space, marks and return leave the shortcut as typed.
 
@@ -73,19 +86,18 @@ after they change. Typed addresses stay on the phone with the learned words.
 
 **Keyboard › Fix button** is off by default. Turning it on downloads tinyfix's model and word
 lists (3.5 MB, MIT, pinned to one Hugging Face revision and checked by size and SHA-256) into
-the app's files; the APK ships none of it, and turning it off deletes them. The toolbar then
-shows a spellcheck button beside the mic on the English and Hinglish layouts (tinyfix knows no
-other language). On Hinglish it leaves Hindi words alone: those Hinglish's typing model has and
+the app's files; the APK ships none of it, and turning it off deletes them. The grid menu then
+shows **Fix mistakes** on the English and Hinglish layouts (tinyfix knows no other language). On Hinglish it leaves Hindi words alone: those Hinglish's typing model has and
 English's lacks, so "nahi" never becomes "nazi"; a Hindi word that is also English ("main") is
 still checked as English. Tapping it checks up to 1,000 characters on each
 side of the caret with a [Kotlin port](app/src/main/java/ly/anoma/hex/fix/) of tinyfix 0.1.1
 (misspellings, and real words that don't fit, such as "form" for "from") and rewrites the
 fixed words in one batch, keeping the caret. **Undo fixes** puts them back while the field is
 unchanged, and those words are left alone until the keyboard restarts. Password fields never
-show the button. `TinyfixTest.fixesAsThePackageDoes` compares the port with the npm package's
+show the tile. `TinyfixTest.fixesAsThePackageDoes` compares the port with the npm package's
 output on 55 sentences when `HEX_TINYFIX_DIR` points at the downloaded files. Each checked word
 costs one model run (about 3 ms on a Pixel emulator), and the first tap also reads the files
-(0.7 to 1.6 s), so the button dims until the check finishes.
+(0.7 to 1.6 s); another tap waits until the check finishes.
 
 On space, the Kotlin decoder compares each tap with the measured key centres and combines those distances with the previous word’s probability. It can recover a missing space. A known spelling requires a higher confidence margin than a nonword. Immediately press **Delete** to restore exactly what you typed, without the space. Undo the same replacement twice and Hex keeps that spelling in later sessions. Only rejection counts keyed by hashes are saved locally; there is no typing journal.
 
@@ -97,7 +109,7 @@ On space, the Kotlin decoder compares each tap with the measured key centres and
 
 ## Clipboard
 
-The clipboard button beside the grid opens the clipboard in place of the strip and keys, at their height: recent screenshots in a row, then copies in two columns, pinned first and newest first. A tap pastes a clip or puts an image in and goes back to the keys; touch and hold one for Pin and Delete (TalkBack has both as actions); Clear removes everything not pinned. The strip's chip offers the last copy for 10 minutes, or a screenshot taken in the last 5 minutes, whichever is newer, in place of next-word guesses. An image (a screenshot or a copied picture) is offered only in a field that takes images (`EditorInfo.contentMimeTypes`), as Gboard does. It goes when it is tapped, when a word is typed, or once it is too old, and the clipboard keeps it.
+The grid menu's Clipboard tile opens the clipboard in place of the strip and keys, at their height: recent screenshots in a row, then copies in two columns, pinned first and newest first. A tap pastes a clip or puts an image in and goes back to the keys; touch and hold one for Pin and Delete (TalkBack has both as actions); Clear removes everything not pinned. The strip's chip offers the last copy for 10 minutes, or a screenshot taken in the last 5 minutes, whichever is newer, in place of next-word guesses. An image (a screenshot or a copied picture) is offered only in a field that takes images (`EditorInfo.contentMimeTypes`), as Gboard does. It goes when it is tapped, when a word is typed, or once it is too old, and the clipboard keeps it.
 
 [ClipKeeper](app/src/main/java/ly/anoma/hex/keyboard/ClipKeeper.kt) watches the clipboard while the keyboard runs, so copies made in other apps join too. Unpinned clips go an hour after they were copied, as Gboard's do: the clipboard carries one-time codes, addresses and things copied in passing, and an hour covers copying here to paste there without the keyboard keeping a record. At most 20 stay, 5 of them images; text over 50,000 characters pastes from the chip but isn't kept. Up to 50 pinned clips stay until unpinned (which starts their hour) or deleted, and only they are written to disk: `clipboard/pinned.txt` and the pinned images beside it, in Hex's private files (owner-only, never backed up). Recent clips live in memory and go when the keyboard's process ends. A copy marked sensitive (`EXTRA_IS_SENSITIVE`, as password managers mark theirs) or made in a password field is never kept; the chip shows it masked.
 

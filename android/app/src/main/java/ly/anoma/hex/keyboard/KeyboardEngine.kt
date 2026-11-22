@@ -12,6 +12,7 @@ import ly.anoma.hex.fix.Tinyfix
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.speech.SpokenText
 import ly.anoma.hex.typing.EmailAddresses
+import ly.anoma.hex.typing.EmojiWords
 import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
 import ly.anoma.hex.typing.LearnedWords
@@ -52,6 +53,12 @@ internal class KeyboardEngine(
     private val learnedChanged: () -> Unit = {},
     /** The addresses the strip offers as one is typed, with those in [learned]. */
     private val emails: EmailAddresses = EmailAddresses(),
+    /** A typing model's emoji lists (by its language), or null for a language with none. */
+    private val emojiLists: (String) -> EmojiWords? = { null },
+    /** The emoji you picked for words, learned in the same fields as [learned]. */
+    private val emojiPicks: EmojiWords.Picks = EmojiWords.Picks(),
+    /** [emojiPicks] changed and should be saved. */
+    private val emojiPicked: () -> Unit = {},
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
@@ -132,6 +139,8 @@ internal class KeyboardEngine(
     /** The addresses the strip offers and the text they complete, which a pick replaces. */
     private class AddressOffer(val typed: String, val addresses: List<String>)
     private var addressOffer: AddressOffer? = null
+    /** The word the strip's emoji are for, which a picked one is learned for. */
+    private var emojiWord: String? = null
     // Each address is learned once per field, and leaving it teaches only after something was typed there.
     private val addressesLearned = HashSet<String>()
     private var typedHere = false
@@ -363,15 +372,54 @@ internal class KeyboardEngine(
      * three, first, in an address field; elsewhere one in the last slot once three characters match,
      * and your contacts' only once an @ is typed, so they don't crowd out words. */
     private fun showStrip(slots: List<Suggestion>) {
-        addressOffer = null
+        addressOffer = null; emojiWord = null
         val typed = if (addressesHere && selStart == selEnd) EmailAddresses.typed(before()) else null
         val found = if (typed == null || typed.length < (if (addressField) 1 else 3)) emptyList()
             else emails.matching(typed, learned, withContacts = addressField || '@' in typed, limit = if (addressField) 3 else 1)
-        if (found.isEmpty()) { surface?.suggestions(slots); return }
+        if (found.isEmpty()) { surface?.suggestions(slots + emojiFor(slots)); return }
         addressOffer = AddressOffer(typed!!, found)
         val offered = found.map { Suggestion(it, Suggestion.Kind.Word) }
         surface?.suggestions(if (addressField) (offered + slots).take(3) else slots.take(2) + offered)
     }
+    /** Emoji for the word being typed or one of the strip's words for it ("medicin" finds 💊 through
+     * "medicine"), or after a space for the word before it, as Gboard offers them. */
+    private fun emojiFor(slots: List<Suggestion>): List<Suggestion> {
+        val w = word ?: return emptyList()
+        if (symbols || selStart != selEnd) return emptyList()
+        val lists = emojiLists(w.decoder.model.language) ?: return emptyList()
+        val words = if (w.token.isNotEmpty()) listOf(w.token) + slots.filter { it.kind == Suggestion.Kind.Fix || it.kind == Suggestion.Kind.Word }.map { it.text }
+            else before().takeIf { it.endsWith(" ") }?.let(EmojiWords::wordBefore)?.let(::listOf) ?: return emptyList()
+        val found = lists.find(words, emojiPicks) ?: return emptyList()
+        emojiWord = found.word
+        return found.emoji.map { Suggestion(it, Suggestion.Kind.Emoji) }
+    }
+
+    /** An emoji on the strip was tapped. A word being typed ends first as space would end it, fix and
+     * all, then the emoji goes in with its own space, as a picked word does; it's learned for its word. */
+    fun pickEmoji(emoji: String) {
+        if (!target.connected) return
+        edited(); typedHere = true
+        val learnFor = emojiWord
+        val w = word
+        if (w != null && !symbols && w.token.isNotEmpty() && endsWith(prefix + w.token)) typeSpace(null, null)
+        takeHeldSpace(before())
+        clearSpaces(); resetTyping()
+        val holds = SpaceRules.separates(target.after(1))
+        if (!target.commit(if (holds) emoji else "$emoji ")) return
+        if (learnFor != null && ordinaryField) { emojiPicks.pick(learnFor, emoji); emojiPicked() }
+        val b = before()
+        if (holds) heldAnchor = b else pickedAnchor = b
+        showPredictions(b); inputDone()
+    }
+
+    /** An emoji from the emoji panel: typed as it is, and learned for the word right before it, if any. */
+    fun emoji(text: String) {
+        // The panel leaves the word, so the field's kind says whether to learn.
+        val after = if (ordinaryField && selStart == selEnd) EmojiWords.wordBefore(before()) else null
+        type(text)
+        if (after != null) { emojiPicks.pick(after, text); emojiPicked() }
+    }
+
     private fun before() = if (secure) "" else target.before(96).orEmpty()
     private fun endsWith(suffix: String) = !secure && target.before(suffix.length) == suffix
     private fun canEndWord() = !secure && (target.after(1)?.firstOrNull()?.let {

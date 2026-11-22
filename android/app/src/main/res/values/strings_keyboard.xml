@@ -17,7 +17,9 @@
     <string name="keyboard_more_characters">Show more characters</string>
     <string name="keyboard_transcribing">Transcribing</string>
     <string name="keyboard_recording">Recording</string>
-    <string name="keyboard_open_hex">Hex settings</string>
+    <string name="keyboard_menu">Menu</string>
+    <string name="keyboard_close">Close</string>
+    <string name="keyboard_settings">Settings</string>
     <string name="keyboard_paste_clip">Paste %1$s</string>
     <string name="keyboard_keep">Keep %1$s</string>
     <string name="keyboard_suggest">Suggest %1$s</string>

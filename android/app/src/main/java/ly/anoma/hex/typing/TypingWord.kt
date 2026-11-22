@@ -7,9 +7,9 @@ internal data class Correction(val original: String, val replacement: String)
 
 /** One slot of the suggestion strip. [Kind.Typed] keeps what was typed as typed; [Kind.Fix] is what
  * space will put in its place (shown highlighted); [Kind.Word] a completion or another reading;
- * [Kind.Next] a word that may follow, offered after a space. */
+ * [Kind.Next] a word that may follow, offered after a space; [Kind.Emoji] an emoji for the word ([EmojiWords]). */
 internal data class Suggestion(val text: String, val kind: Kind) {
-    enum class Kind { Typed, Fix, Word, Next }
+    enum class Kind { Typed, Fix, Word, Next, Emoji }
 }
 
 /** The current word, and the one a space just finished while the next is typed. Both the keyboard

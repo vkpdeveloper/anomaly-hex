@@ -1,7 +1,6 @@
 package ly.anoma.hex.keyboard
 
 import android.content.Context
-import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
@@ -15,20 +14,21 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import ly.anoma.hex.MainActivity
 import ly.anoma.hex.R
 import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
-/** Gboard's toolbar above the keys: the grid and clipboard buttons on the left, the mic in its circle on
- * the right (with the fix button before it, when that is on), and between them the three suggestions,
- * the chip for something just copied or a screenshot just taken, or the recording's level while dictating. */
-internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipboard: () -> Unit) : FrameLayout(context) {
+/** Gboard's toolbar above the keys: the grid button for the menu on the left, the mic in its circle on
+ * the right, and between them the suggestions (three words, or two and their emoji), the chip for
+ * something just copied or a screenshot just taken, or the recording's level while dictating. */
+internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu: () -> Unit) : FrameLayout(context) {
     private companion object {
         const val SUGGESTION = 19.5f
         const val SUGGESTION_MIN = 12f
         const val CHIP_WIDTH = 143f
+        const val EMOJI = 21f
+        const val EMOJI_SLOT = 46f
         const val NOTE_MS = 3_000L
         const val HOLD_MS = 350L
     }
@@ -40,21 +40,19 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
     private val centre = px(if (landscape) KeyboardMetrics.TOOLBAR_CENTER_LANDSCAPE else KeyboardMetrics.TOOLBAR_CENTER)
     private val pill = px(KeyboardMetrics.PILL)
 
-    private val grid = button(R.drawable.ic_grid, 25f, R.string.keyboard_open_hex) {
-        context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
-    private val clipboardButton = button(R.drawable.ic_clipboard, 23f, R.string.keyboard_clipboard, openClipboard)
+    private val grid = button(R.drawable.ic_grid, 25f, R.string.keyboard_menu, openMenu)
     private val cancel = button(R.drawable.ic_cancel, 22f, R.string.keyboard_cancel_dictation) { ime.dictation.cancel() }
-    private val fix = button(R.drawable.ic_spellcheck, 24f, R.string.keyboard_fix) { ime.fix() }
     private val mic = FrameLayout(context)
     private val micFace = View(context)
     private val micIcon = ImageView(context)
 
     private val slots = LinearLayout(context)
-    private val slotViews = List(3) { FrameLayout(context) }
-    private val words = List(3) { TextView(context) }
-    private val dividers = List(2) { View(context) }
-    private var offered = arrayOfNulls<String>(3)
+    // Three word slots, then two narrower ones for emoji, which take the third word's place.
+    private val slotViews = List(5) { FrameLayout(context) }
+    private val words = List(5) { TextView(context) }
+    private val dividers = List(4) { View(context) }
+    private var offered = arrayOfNulls<Suggestion>(5)
+    private var fitted = 0f
     /** The strip holds only next-word guesses, which a fresh copy or photo replaces. */
     private var guessing = false
 
@@ -84,29 +82,37 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
         // Everything centres on the line Gboard's toolbar icons sit on, a little above the middle.
         setPadding(0, 0, 0, (toolbarHeight - 2 * centre).coerceAtLeast(0))
 
-        for (i in 0..2) {
+        for (i in 0..4) {
             if (i > 0) slots.addView(dividers[i - 1].apply { setBackgroundColor(color(R.color.kb_function)) },
                 LinearLayout.LayoutParams(px(1f), px(24f)).apply { gravity = Gravity.CENTER_VERTICAL })
             words[i].apply {
-                text(this, SUGGESTION); gravity = Gravity.CENTER; setTextColor(color(R.color.kb_ink))
+                text(this, if (i < 3) SUGGESTION else EMOJI); gravity = Gravity.CENTER; setTextColor(color(R.color.kb_ink))
                 maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                // A long word shrinks to fit its slot, as Gboard's do; only one too long even then is cut.
-                setAutoSizeTextTypeUniformWithConfiguration(px(SUGGESTION_MIN), px(SUGGESTION), 1, TypedValue.COMPLEX_UNIT_PX)
                 setPadding(px(6f), 0, px(6f), 0); importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
             }
             slotViews[i].apply {
                 isFocusable = true
                 background = pressable(android.graphics.Color.TRANSPARENT, false)
-                setOnClickListener { offered[i]?.let(ime.engine::pickSuggestion) }
+                setOnClickListener {
+                    val slot = offered[i] ?: return@setOnClickListener
+                    if (slot.kind == Suggestion.Kind.Emoji) ime.engine.pickEmoji(slot.text) else ime.engine.pickSuggestion(slot.text)
+                }
                 // As wide as its slot, so a new word only redraws the strip; a word sized to its text
                 // would measure the whole keyboard again on every key.
                 addView(words[i], LayoutParams(-1, -1, Gravity.CENTER))
             }
-            slots.addView(slotViews[i], LinearLayout.LayoutParams(0, -1, 1f))
+            // The last emoji keeps clear of the mic's circle.
+            if (i == 4) words[i].setPadding(px(6f), 0, px(14f), 0)
+            slots.addView(slotViews[i], when (i) {
+                in 0..2 -> LinearLayout.LayoutParams(0, -1, 1f)
+                3 -> LinearLayout.LayoutParams(px(EMOJI_SLOT), -1)
+                else -> LinearLayout.LayoutParams(px(EMOJI_SLOT + 8f), -1)
+            })
         }
-        // Gboard's dividers sit at a third and two thirds of the span between the icons' edges; the
-        // clipboard button beside the grid moves the span's start by its width.
-        addView(slots, LayoutParams(-1, -1).apply { marginStart = px(78f); marginEnd = px(34.4f) })
+        // The words share one size, as Gboard's do: the largest at which each fits its slot.
+        slots.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitWords() }
+        // Gboard's dividers sit at a third and two thirds of the span between the icons' edges.
+        addView(slots, LayoutParams(-1, -1).apply { marginStart = px(32.6f); marginEnd = px(34.4f) })
 
         chip.apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -156,7 +162,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        addView(noteText, LayoutParams(-1, -1).apply { marginStart = px(94f); marginEnd = px(48f) })
+        addView(noteText, LayoutParams(-1, -1).apply { marginStart = px(48f); marginEnd = px(48f) })
 
         well.background = GradientDrawable().apply { setColor(color(R.color.kb_key)); cornerRadius = pill / 2f }
         well.clipToOutline = true
@@ -169,7 +175,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
         addView(well, LayoutParams(-1, pill, Gravity.CENTER_VERTICAL).apply { marginStart = px(48f); marginEnd = px(50f) })
 
         addView(grid, LayoutParams(px(45.4f), -1, Gravity.START))
-        addView(clipboardButton, LayoutParams(px(45.4f), -1, Gravity.START).apply { marginStart = px(45.4f) })
         addView(cancel, LayoutParams(px(45.4f), -1, Gravity.START))
 
         mic.apply {
@@ -182,7 +187,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
             setOnTouchListener { v, e -> micTouch(v, e) }
         }
         addView(mic, LayoutParams(px(46.2f), -1, Gravity.END))
-        addView(fix, LayoutParams(px(45.4f), -1, Gravity.END).apply { marginEnd = px(46.2f) })
         dictation(DictationPhase.Idle)
     }
 
@@ -205,19 +209,31 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
 
     /** The typing model's slots in its order. With what was typed among them they show as given: typed
      * on the left, then the fix or the likeliest word in the middle. Without it, the likeliest word takes
-     * the middle and the next the left, as Gboard places them. */
+     * the middle and the next the left, as Gboard places them. With emoji, two words come first, in
+     * the order given, and up to two emoji after them in the third word's place. */
     fun suggestions(list: List<Suggestion>) {
-        val shown = arrayOfNulls<Suggestion>(3)
-        if (list.any { it.kind == Suggestion.Kind.Typed }) list.take(3).forEachIndexed { i, slot -> shown[i] = slot }
-        else { shown[1] = list.getOrNull(0); shown[0] = list.getOrNull(1); shown[2] = list.getOrNull(2) }
-        offered = Array(3) { shown[it]?.text }
-        guessing = list.all { it.kind == Suggestion.Kind.Next }
-        for (i in 0..2) {
+        val shown = arrayOfNulls<Suggestion>(5)
+        val emoji = list.filter { it.kind == Suggestion.Kind.Emoji }.take(2)
+        val words = list.filter { it.kind != Suggestion.Kind.Emoji }
+        if (emoji.isNotEmpty() || words.any { it.kind == Suggestion.Kind.Typed }) {
+            words.take(if (emoji.isEmpty()) 3 else 2).forEachIndexed { i, slot -> shown[i] = slot }
+        } else { shown[1] = words.getOrNull(0); shown[0] = words.getOrNull(1); shown[2] = words.getOrNull(2) }
+        emoji.forEachIndexed { i, slot -> shown[3 + i] = slot }
+        offered = shown
+        guessing = words.all { it.kind == Suggestion.Kind.Next }
+        val emojiShown = emoji.isNotEmpty()
+        slotViews[2].visibility = if (emojiShown) GONE else VISIBLE
+        dividers[1].visibility = slotViews[2].visibility
+        dividers[2].visibility = if (emojiShown) VISIBLE else GONE
+        slotViews[3].visibility = dividers[2].visibility
+        dividers[3].visibility = if (emoji.size > 1) VISIBLE else GONE
+        slotViews[4].visibility = dividers[3].visibility
+        for (i in 0..4) {
             val slot = shown[i]
             val s = slot?.text.orEmpty()
-            words[i].text = s
+            this.words[i].text = s
             // The word space will put in gets Gboard's heavier weight.
-            words[i].useSans(if (slot?.kind == Suggestion.Kind.Fix) 600 else 400)
+            if (i < 3) this.words[i].useSans(if (slot?.kind == Suggestion.Kind.Fix) 600 else 400)
             slotViews[i].contentDescription = when {
                 s.isEmpty() -> null
                 slot?.kind == Suggestion.Kind.Typed -> context.getString(R.string.keyboard_keep, s)
@@ -226,7 +242,27 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
             }
             slotViews[i].isEnabled = s.isNotEmpty()
         }
+        fitWords()
         update()
+    }
+
+    // One size for every word shown: the largest up to Gboard's 19.5 dp at which each fits its slot, down
+    // to 12 dp; a word too long even then is cut. Set only when it changes, since a new size lays the
+    // keyboard out again.
+    private fun fitWords() {
+        var size = px(SUGGESTION).toFloat()
+        for (i in 0..2) {
+            val view = words[i]
+            val room = slotViews[i].width - view.paddingLeft - view.paddingRight
+            if (slotViews[i].visibility != VISIBLE || view.text.isEmpty() || room <= 0) continue
+            val paint = android.text.TextPaint(view.paint).apply { textSize = px(SUGGESTION).toFloat() }
+            val wide = paint.measureText(view.text.toString())
+            if (wide > room) size = minOf(size, px(SUGGESTION) * room / wide)
+        }
+        size = size.coerceAtLeast(px(SUGGESTION_MIN).toFloat())
+        if (size == fitted) return
+        fitted = size
+        for (i in 0..2) words[i].setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
     }
 
     fun dictation(phase: DictationPhase) {
@@ -264,18 +300,11 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
 
     fun update() {
         val idle = phase == DictationPhase.Idle
-        val fixShown = idle && ime.fixShown
-        fix.visibility = if (fixShown) VISIBLE else GONE
-        fix.alpha = if (ime.fixing) 0.4f else 1f
-        // The suggestions and notes make room for the fix button.
-        endMargin(slots, if (fixShown) 80f else 34.4f)
-        endMargin(noteText, if (fixShown) 94f else 48f)
         val suggesting = offered.any { it != null }
         val noting = idle && note != null
         well.visibility = if (idle) GONE else VISIBLE
         cancel.visibility = if (idle) GONE else VISIBLE
         grid.visibility = if (idle) VISIBLE else GONE
-        clipboardButton.visibility = if (idle) VISIBLE else GONE
         noteText.visibility = if (noting) VISIBLE else GONE
         noteText.text = note
         val undoing = idle && !noting && undoOffer != null
@@ -327,10 +356,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
     override fun onDetachedFromWindow() { cancelGestures(); super.onDetachedFromWindow() }
     fun cancelGestures() { removeCallbacks(hold); removeCallbacks(expire); held = false; mic.isPressed = false }
 
-    private fun endMargin(view: View, dp: Float) {
-        val params = view.layoutParams as LayoutParams
-        if (params.marginEnd != px(dp)) { params.marginEnd = px(dp); view.layoutParams = params }
-    }
     private fun text(view: TextView, dp: Float) = view.apply {
         setTextSize(TypedValue.COMPLEX_UNIT_DIP, dp); useSans(); includeFontPadding = false
     }

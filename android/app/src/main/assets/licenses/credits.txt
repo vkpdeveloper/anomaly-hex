@@ -3,6 +3,8 @@ Google Sans by the Google Sans Project Authors. SIL Open Font License 1.1 (googl
 Unmodified variable font from https://github.com/google/fonts/tree/main/ofl/googlesans
 Material Symbols icons by Google. Apache License 2.0.
 Emoji list from Unicode's emoji-test.txt, © Unicode, Inc., Unicode License v3.
+Emoji keywords (typing/en.emoji) from Unicode CLDR 46 annotations (en), © Unicode, Inc., Unicode License v3,
+with Hex's own picks for chat words; Hinglish emoji words (typing/hien.emoji) are Hex's own.
 
 Keyboard suggestion filter: List of Dirty, Naughty, Obscene, and Otherwise Bad Words
 (LDNOOBW), © 2012–2020 Shutterstock, Inc., and contributors. English, Spanish, German,

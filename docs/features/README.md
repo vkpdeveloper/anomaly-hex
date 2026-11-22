@@ -3043,7 +3043,14 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Keyboard > Keyboard layout > Hinglish -> Hindi in Latin letters and English, tapped or glided
 │   (HinglishTest; unit tests only, no device run)
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
-├── Strip's clipboard button -> clipboard panel: recent screenshots, then clips pinned first,
+├── Strip's grid -> menu in place of the strip and keys: Clipboard, Fix mistakes (only where
+│   the Fix button works), Settings (seen on a Pixel emulator)
+├── Type a word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
+│   third slot ("medicine" 💊 💉, "chai" ☕ 🫖); a tap ends the word and types the emoji
+│   ├── The emoji you pick for a word come first next time; a panel pick shows once picked twice
+│   ├── Password and no-learning fields -> no emoji, nothing learned; Forget learned words clears
+│   └── Proof limits: EmojiSuggestionsTest; strip, pick and learning seen on a Pixel emulator
+├── Grid menu › Clipboard -> clipboard panel: recent screenshots, then clips pinned first,
 │   newest first; tap pastes or inserts, touch and hold -> Pin or Delete, Clear -> unpinned go
 │   ├── Unpinned clips go an hour after copying (20 kept, 5 images); up to 50 pins, the
 │   │   only clips saved (owner-only private files)
@@ -3076,7 +3083,7 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │       no pop-up and the fixes seen on a Pixel emulator in a platform text field; Compose
 │       fields (Google Messages) ask for no checks
 └── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)
-    ├── Tap the toolbar's spellcheck button (English or Hinglish layout) -> fix words
+    ├── Grid menu › Fix mistakes (English or Hinglish layout) -> fix words
     │   within 1,000 characters of the caret
     ├── On Hinglish -> Hindi words (in Hinglish's model, not English's) stay as typed
     ├── Undo fixes -> restore them while the field is unchanged; skip them until restart

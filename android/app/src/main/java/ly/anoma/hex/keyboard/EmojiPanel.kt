@@ -142,8 +142,8 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
     }
 
     private fun pick(text: String) {
-        ime.engine.type(text)
-        if (emoticons) return
+        if (emoticons) { ime.engine.type(text); return }
+        ime.engine.emoji(text)
         val recent = listOf(text) + prefs.getString("recent", "").orEmpty().split(' ').filter { it.isNotEmpty() && it != text }
         prefs.edit().putString("recent", recent.take(RECENT_MAX).joinToString(" ")).apply()
     }
