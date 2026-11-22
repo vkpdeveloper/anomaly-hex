@@ -46,3 +46,7 @@ Changes: normalized and lowercased word forms, filtered the book counts to attes
 Bokmål spellings, selected informative pairs and quantized probabilities into HXTM v3.
 The Bokmål validity list (nb.valid) is the Norsk ordbank standard full forms outside the model
 that the same book counts use at least 1,000 times, with each word's count quantized to a cost.
+
+Fix button: a Kotlin port of tinyfix by Caleb Fahlgren (https://github.com/cfahlgren1/tinyfix),
+MIT License (tinyfix-mit.txt). Its model and word lists (https://huggingface.co/paperweight/tinyfix,
+MIT) are not in the app: they download only when you turn on the fix button.
