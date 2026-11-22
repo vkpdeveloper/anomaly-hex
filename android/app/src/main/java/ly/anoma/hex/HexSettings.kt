@@ -145,6 +145,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                         Box(Modifier.padding(16.dp)) { ComputerSection(store, computer) { computer = it } }
                     }
                     Page.Keyboard -> {
+                        val photos = rememberRecentPhotos(context)
                         Card {
                             Entry("Keyboard layout", if (selectedLayout == null) automatic.label else null,
                                 selectedLayout?.label ?: "Automatic", { open(Page.Layout) })
@@ -170,6 +171,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }
                             Rule(); Toggle("Show gesture trail", if (glide) "A line follows your finger" else "Turn on Glide typing",
                                 glideTrail, enabled = glide) { typing.glideTrail = it }
+                            Rule(); Toggle("Recent photos", if (photos.partial) "Only the photos you chose" else "Offer a screenshot or photo you just took",
+                                photos.on) { photos.change(it) }
                             Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
                                 typing.learnFromHistory = it
                             }
