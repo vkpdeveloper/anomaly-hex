@@ -143,7 +143,9 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             addView(autofillScroll.apply {
                 isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER
-                addView(autofillRest.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL },
+                // Chips that fit sit in the middle, as the clipboard chip does; more scroll from the start.
+                isFillViewport = true
+                addView(autofillRest.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER },
                     LayoutParams(-2, -1))
                 setOnScrollChangeListener { _, _, _, _, _ -> clipChips() }
                 // A new chip or a new width moves the chips without a scroll.
