@@ -19,6 +19,7 @@ mod discovery;
 mod http;
 mod meeting_events;
 pub mod phone;
+mod phone_words;
 pub(crate) mod processing;
 mod streams;
 pub(crate) mod timestamps;

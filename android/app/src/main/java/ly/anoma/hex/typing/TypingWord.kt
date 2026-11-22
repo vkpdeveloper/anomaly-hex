@@ -74,7 +74,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
                 val previous = finished.lowercase()
                 val index = model.context(previous)
                 val next = if (index >= 0) model.nextWords(index, suggestSwearWords, fill = false) else emptyList()
-                (next + commonWords[model.language].orEmpty()).filter {
+                (decoder.learned?.next(previous).orEmpty() + next + commonWords[model.language].orEmpty()).filter {
                     it.lowercase() != previous && !model.neverSuggest.blocks(it.lowercase(), suggestSwearWords, index)
                 }
             }
@@ -82,7 +82,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         val upper = addsCapitals && (capitalize ?: startsSentence(text))
         val out = ArrayList<String>(3)
         for (w in words) {
-            val shown = if (upper) w.replaceFirstChar { it.uppercase() } else if (addsCapitals) displayed(w) else w.lowercase()
+            val shown = if (upper) w.replaceFirstChar { it.uppercase() } else if (addsCapitals) displayed(w)
+                else if (decoder.personal?.owns(w) == true) w else w.lowercase()
             if (out.none { it.equals(shown, ignoreCase = true) }) out.add(shown)
             if (out.size == 3) break
         }
@@ -133,6 +134,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         for (s in short) add(s)
         // Your own words before the rest of the dictionary's (iOS lists UILexicon terms with them).
         decoder.personal?.completions(token)?.forEach { add(yours(it)) }
+        // Then the words you write most, as Gboard completes from what it learned.
+        decoder.learned?.completions(token)?.forEach { add(if (it.any(Char::isUpperCase)) yours(it) else shown(it)) }
         for (w in model.completions(lower, suggestSwearWords, previous)) add(shown(model.text(w)))
         if (readings && token.length < 3) for (r in decision().readings) add(reading(r.text))
         if (pool.isEmpty()) return listOf(typed)
@@ -159,8 +162,10 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     /** The words a glide spells after `before` (the text before the cursor), likeliest first, spelled as
      * the strip shows them: a name with its capital, your own word your way. */
     fun glide(path: List<KeyPoint>, grid: KeyGrid, before: String): List<String> =
-        glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal)
-            .map { if (it.personal) it.text else displayed(it.text) }
+        glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal, decoder.learned)
+            .map { if (it.personal) it.text else learnedSpelling(it.text) ?: displayed(it.text) }
+    // How you write a model word when you give it capitals it doesn't have ("hex" -> "Hex").
+    private fun learnedSpelling(word: String) = decoder.learned?.spelling(word)?.takeIf { it != word && it.lowercase() == word }
     private fun decision() = decision ?: decoder.decide(token.lowercase(), taps, previous, suggestSwearWords).also { decision = it }
     // Your own words are always yours to offer, as iOS offers UILexicon terms.
     private fun blocked(spelling: String) = model.neverSuggest.blocks(spelling.lowercase(), suggestSwearWords, previous) &&

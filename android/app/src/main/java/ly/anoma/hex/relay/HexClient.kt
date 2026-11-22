@@ -43,6 +43,23 @@ object HexClient {
         )
     }
 
+    /** How often each word, and each pair of neighbouring words, appears in the computer's Hex History. */
+    data class Words(val words: List<Pair<String, Int>>, val pairs: List<Triple<String, String, Int>>)
+
+    fun words(host: String, port: Int, code: String): Words {
+        val json = request(host, port, code, "GET", "/phone/v1/words", null, 2_000, 15_000)
+        val words = json.optJSONArray("words")
+        val pairs = json.optJSONArray("pairs")
+        return Words(
+            words = (0 until (words?.length() ?: 0)).mapNotNull { i ->
+                words!!.optJSONArray(i)?.takeIf { it.length() == 2 }?.let { it.optString(0) to it.optInt(1) }
+            },
+            pairs = (0 until (pairs?.length() ?: 0)).mapNotNull { i ->
+                pairs!!.optJSONArray(i)?.takeIf { it.length() == 3 }?.let { Triple(it.optString(0), it.optString(1), it.optInt(2)) }
+            },
+        )
+    }
+
     /** Sends a WAV and returns the trimmed transcript. */
     fun transcribe(host: String, port: Int, code: String, wav: ByteArray): String {
         val json = request(host, port, code, "POST", "/phone/v1/transcriptions", wav, 2_000, 60_000)

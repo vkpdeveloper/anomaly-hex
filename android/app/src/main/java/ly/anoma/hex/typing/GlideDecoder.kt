@@ -10,8 +10,9 @@ import kotlin.math.hypot
  * the last where it ends. A letter costs how far its pass misses the key's centre; the path between
  * two matched letters costs how far it bends away from the straight line, so a corner no letter
  * explains ("te" read from t, h, e) is dear. The likeliest words then add the language model's cost
- * after the previous word. Your own words are walked the same way, scored as a moderately common
- * word, as the tap decoder scores them. */
+ * after the previous word, mixed with how often you write it ([LearnedWords]). Your own words are walked
+ * the same way, scored as a moderately common word or likelier when you write them often, as the tap
+ * decoder scores them. */
 internal class GlideDecoder(private val model: TypingModel) {
     /** [text] is the model's lowercase spelling, or yours ([personal]) as you wrote it. */
     data class Candidate(val text: String, val cost: Double, val personal: Boolean)
@@ -21,29 +22,36 @@ internal class GlideDecoder(private val model: TypingModel) {
     /** The likeliest words for [path] (in [grid]'s coordinates), best first, at most [limit].
      * [previous] is the word before as the model's context index (-1 for none). */
     fun decode(path: List<KeyPoint>, grid: KeyGrid, previous: Int, swears: Boolean,
-               personal: PersonalWords?, limit: Int = 3): List<Candidate> {
+               personal: PersonalWords?, learned: LearnedWords? = null, limit: Int = 3): List<Candidate> {
         // A path that strays far from its keys still gets an answer: read again with twice the reach.
         for (reach in REACHES) {
             val read = Reading.of(path, grid, model, reach) ?: return emptyList()
-            val found = candidates(read, previous, swears, personal, limit)
+            val found = candidates(read, previous, swears, personal, learned, limit)
             if (found.isNotEmpty()) return found
         }
         return emptyList()
     }
 
-    private fun candidates(read: Reading, previous: Int, swears: Boolean, personal: PersonalWords?, limit: Int): List<Candidate> {
+    private fun candidates(read: Reading, previous: Int, swears: Boolean, personal: PersonalWords?, learned: LearnedWords?,
+                           limit: Int): List<Candidate> {
         val found = HashMap<String, Candidate>()
         fun offer(text: String, cost: Double, yours: Boolean) {
             val key = text.lowercase()
             if (cost < (found[key]?.cost ?: Double.POSITIVE_INFINITY)) found[key] = Candidate(text, cost, yours)
         }
         val context = model.neverSuggest.restrictedContext(previous)
+        val before = if (previous in 0 until model.size) model.text(previous) else null
         for ((word, spatial) in walk(read, model)) {
             if (model.neverSuggest.blocks(word, swears, context)) continue
-            offer(model.text(word), spatial + LM_WEIGHT * model.languageCost(previous, word), false)
+            val text = model.text(word)
+            val lm = model.languageCost(previous, word).let { learned?.mixed(it, text, before) ?: it }
+            offer(text, spatial + LM_WEIGHT * lm, false)
         }
-        if (personal != null && personal.size > 0) for ((word, spatial) in walk(read, personal))
-            offer(personal.text(word), spatial + LM_WEIGHT * USER_WORD_COST, true)
+        if (personal != null && personal.size > 0) for ((word, spatial) in walk(read, personal)) {
+            val text = personal.text(word)
+            val lm = minOf(USER_WORD_COST, learned?.mixed(Double.POSITIVE_INFINITY, text, before) ?: USER_WORD_COST)
+            offer(text, spatial + LM_WEIGHT * lm, true)
+        }
         return found.values.sortedWith(compareBy<Candidate> { it.cost }.thenBy { it.text }).take(limit)
     }
 

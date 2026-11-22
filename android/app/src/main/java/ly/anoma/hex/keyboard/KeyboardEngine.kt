@@ -11,6 +11,7 @@ import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.speech.SpokenText
 import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
+import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.Suggestion
@@ -35,8 +36,12 @@ internal class KeyboardEngine(
     private val feedback: TypingPreferences,
     private val layoutLanguage: () -> Spoken,
     private val loadDecoder: (String) -> SpatialDecoder,
-    /** Reads Android's personal dictionary for a model; runs on [background]. */
-    private val readPersonal: ((TypingModel) -> PersonalWords)? = null,
+    /** Reads Android's personal dictionary for a model, with the words you've written it lacks; runs on [background]. */
+    private val readPersonal: ((TypingModel, Collection<String>) -> PersonalWords)? = null,
+    /** What you write, learned as each word ends in an ordinary text field (never a password or incognito field). */
+    private val learned: LearnedWords = LearnedWords(),
+    /** [learned] changed and should be saved. */
+    private val learnedChanged: () -> Unit = {},
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
@@ -183,8 +188,20 @@ internal class KeyboardEngine(
     fun personalWordsChanged() { for (decoder in models.values) loadPersonal(decoder) }
     private fun loadPersonal(decoder: SpatialDecoder) {
         val read = readPersonal ?: return
-        background.execute { decoder.personal = read(decoder.model) }
+        val model = decoder.model
+        background.execute { decoder.personal = read(model, learned.words().filter { model.index(it.lowercase()) < 0 && !model.known(it.lowercase()) }) }
     }
+
+    /** The word that ends [b], the text before the cursor, is learned when [boundary] characters (a
+     * space or mark that just went in after it, or none) follow it. */
+    private fun learn(b: String, boundary: Int) {
+        if (word == null || secure || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
+        val f = LearnedWords.finished(b) ?: return
+        if (learned.learn(f.word, f.previous, f.sentenceStart)) personalWordsChanged()
+        learnedChanged()
+    }
+    /** The paired computer's words changed what [learned] holds: every language reads its words again. */
+    fun learnedWordsChanged() = personalWordsChanged()
 
     /** Whether the field asks for a capital here (with Auto-capitalisation on), or caps lock is on: what shift would show. */
     private fun capsWanted(): Boolean {
@@ -242,7 +259,7 @@ internal class KeyboardEngine(
         resetTyping()
         word = if (ordinaryField) {
             try {
-                TypingWord(models.getOrPut(language) { loadDecoder(language).also(::loadPersonal) }, feedback.spatial)
+                TypingWord(models.getOrPut(language) { loadDecoder(language).also { it.learned = learned; loadPersonal(it) } }, feedback.spatial)
                     .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize }
             } catch (_: java.io.IOException) { null } // The editor can still type if its assets cannot be read.
         } else null
@@ -322,6 +339,7 @@ internal class KeyboardEngine(
     // returns the text before the cursor.
     private fun takeHeldSpace(before: String): String {
         if (before != heldAnchor && before != glided?.anchor) return before
+        if (before == glided?.anchor) learn(before, 0)
         heldAnchor = null; glided = null
         if (!target.commit(" ")) return before
         if (expectedCaret >= 0) expectedCaret++
@@ -356,6 +374,7 @@ internal class KeyboardEngine(
             resetTyping()
             val b = before()
             if (holds) heldAnchor = b else pickedAnchor = b
+            learn(b, if (holds) 0 else 1)
             showPredictions(b)
             inputDone()
         }
@@ -373,7 +392,11 @@ internal class KeyboardEngine(
         if (!secure && target.before(t.left.length) == t.left && target.after(t.right.length) == t.right &&
             target.selected().isNullOrEmpty()) {
             target.beginBatch()
-            try { if (target.deleteAround(t.left.length, t.right.length)) target.commit(text) } finally { target.endBatch() }
+            try {
+                if (target.deleteAround(t.left.length, t.right.length) && target.commit(text)) {
+                    learned.learn(text, null, false); learnedChanged()
+                }
+            } finally { target.endBatch() }
         }
         surface?.suggestions(emptyList())
     }
@@ -414,6 +437,7 @@ internal class KeyboardEngine(
     }
     private fun afterSpace(now: Long) {
         val b = before()
+        learn(b, 1)
         spaceAnchor = b; spaceAt = now
         showPredictions(b); inputDone()
     }
@@ -435,15 +459,21 @@ internal class KeyboardEngine(
         val w = word
         if (mark && w != null && !symbols && canEndWord()) {
             val swap = w.textReplacement(text)
-            if (swap != null && replace(swap.original, swap.replacement + value)) { resetTyping(); showPredictions(before()); inputDone(); return }
+            if (swap != null && replace(swap.original, swap.replacement + value)) { resetTyping(); afterMark(value); return }
             if (feedback.autocorrect && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
                 val fix = w.finish(value[0])
                 if (fix != null && !feedback.blocked(w.decoder.model.language, fix.original, fix.replacement) &&
-                    replace(fix.original, fix.replacement + value)) { resetTyping(); showPredictions(before()); inputDone(); return }
+                    replace(fix.original, fix.replacement + value)) { resetTyping(); afterMark(value); return }
             }
         }
-        resetTyping(); target.commit(value); showPredictions(if (w != null) before() else null)
+        resetTyping()
+        if (target.commit(value) && mark) { afterMark(value); return }
+        showPredictions(if (w != null) before() else null)
         inputDone()
+    }
+    private fun afterMark(mark: String) {
+        val b = before()
+        learn(b, mark.length); showPredictions(b); inputDone()
     }
     fun delete() {
         if (!target.connected) return
@@ -482,6 +512,7 @@ internal class KeyboardEngine(
         edited()
         // A text replacement that ends the text goes in before the line break or the editor's action.
         word?.takeIf { canEndWord() }?.textReplacement(before())?.let { replace(it.original, it.replacement) }
+        learn(before(), 0)
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
         val info = editor
         if (info?.actionLabel != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) == 0 &&

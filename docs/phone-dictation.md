@@ -65,6 +65,21 @@ transformations. No desktop app or page is behind the phone's text field, so
 the Global mode applies, never an app or website mode. A step that fails or
 misses its deadline keeps the text before it, as on the desktop.
 
+`GET /phone/v1/words`: the words the phone's keyboard starts from (Hex for
+Android › Keyboard › Learn from Hex history, on by default, fetched at most
+every six hours). Counts of each word and each pair of neighbouring words in
+this computer's History, within its retention, never a dictation itself
+(`phone_words`). Spellings are as said mid-sentence; pairs are lowercase,
+never cross a sentence or clause mark, and are sent only when seen twice.
+
+```json
+{"words": [["Vaibhav", 12], ["the", 9]], "pairs": [["the", "build", 3]]}
+```
+
+At most 5,000 words and 10,000 pairs, commonest first. The keyboard keeps
+them on the phone, beside the words you type there (`LearnedWords`), and
+Forget learned words clears both.
+
 ## Security
 
 Anyone holding the code on a reachable network can transcribe with this

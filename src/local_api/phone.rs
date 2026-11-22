@@ -127,6 +127,9 @@ pub(crate) fn apply(settings: &AppSettings) {
         // the listener runs in its place.
         selection: crate::transcription::custom_models::runnable(&settings.transcription),
     });
+    *super::phone_words::RETENTION
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = Some(settings.history_retention);
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
         desired.wanted = wanted;
@@ -595,6 +598,10 @@ fn handle(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Opti
             ))
         }
         ("POST", "/phone/v1/transcriptions") => transcribe(request, stream, shared),
+        ("GET", "/phone/v1/words") => Some(HttpResponse::json(
+            200,
+            &super::phone_words::from_history(crate::desktop::events::now_ms()),
+        )),
         _ => Some(HttpResponse::code(404, "not_found")),
     }
 }

@@ -106,11 +106,12 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         fun applies(locale: String?, language: String) = locale.isNullOrEmpty() ||
             locale.substringBefore('_').lowercase().let { it == language || (language == "nb" && it == "no") }
 
-        /** The personal dictionary's words and shortcuts for the model's language (or every language).
+        /** The personal dictionary's words and shortcuts for the model's language (or every language),
+         * with the words you've written that the model lacks ([learned], `LearnedWords.words`).
          * Android lets only an enabled input method or spell checker read it, with no permission, and
          * answers anyone else with nothing; any failure reads as nothing. Read it off the main thread. */
-        fun read(resolver: ContentResolver, model: TypingModel): PersonalWords {
-            val words = ArrayList<String>()
+        fun read(resolver: ContentResolver, model: TypingModel, learned: Collection<String> = emptyList()): PersonalWords {
+            val words = ArrayList<String>(learned)
             val shortcuts = HashMap<String, String>()
             try {
                 resolver.query(UserDictionary.Words.CONTENT_URI,
@@ -126,7 +127,7 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
                     }
                 }
             } catch (_: RuntimeException) {
-                return PersonalWords(model, emptyList(), emptyMap())
+                return PersonalWords(model, learned, emptyMap())
             }
             return PersonalWords(model, words, shortcuts)
         }

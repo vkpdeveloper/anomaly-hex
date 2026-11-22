@@ -78,6 +78,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val haptics = remember(revision) { typing.haptics }
     val glide = remember(revision) { typing.glide }
     val glideTrail = remember(revision) { typing.glideTrail }
+    val learnFromHistory = remember(revision) { typing.learnFromHistory }
+    var confirmForget by remember { mutableStateOf(false) }
     val button = remember { ButtonPreferences(context) }
     val hideButton = remember(revision) { button.hideWithKeyboard }
     fun open(next: Page) { page = next }
@@ -156,6 +158,12 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }
                             Rule(); Toggle("Show gesture trail", if (glide) "A line follows your finger" else "Turn on Glide typing",
                                 glideTrail, enabled = glide) { typing.glideTrail = it }
+                            Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
+                                typing.learnFromHistory = it
+                            }
+                            Rule(); Entry("Forget learned words", if (confirmForget) "Tap again to forget everything the keyboard learned" else null, "", {
+                                if (confirmForget) { typing.forgetLearned(context.filesDir); confirmForget = false } else confirmForget = true
+                            })
                         }
                         val ink = colorResource(R.color.ink)
                         Card {

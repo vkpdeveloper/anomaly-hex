@@ -8,6 +8,8 @@ import android.view.inputmethod.EditorInfo
 import java.io.File
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.Glides
+import ly.anoma.hex.typing.LearnedWords
+import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.typing.TypingModel
@@ -120,12 +122,38 @@ class GlideEngineTest {
         assertFalse(off.engine.glides)
     }
 
+    @Test fun aNameYouTypeTwiceGlidesAsYouWriteIt() {
+        val k = Keyboard()
+        k.prefs.autocorrect = false
+        repeat(2) { k.type("hi Vaibhav ") }
+        assertTrue("Vaibhav" in k.learned.words())
+        k.glide("vaibhav")
+        assertTrue(k.field.text, k.field.text.endsWith(" Vaibhav"))
+    }
+
+    @Test fun aGlidedWordIsLearnedOnlyOnceItStays() {
+        val k = Keyboard()
+        k.glide("hello"); k.engine.delete()
+        assertEquals(Double.POSITIVE_INFINITY, k.learned.cost("hello", null), 0.0)
+        k.glide("hello"); k.engine.space()
+        assertTrue(k.learned.cost("hello", null).isFinite())
+    }
+
+    @Test fun passwordFieldsTeachNothing() {
+        val k = Keyboard(type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        k.type("secret secret ")
+        assertTrue(k.learned.words().isEmpty())
+        assertEquals(Double.POSITIVE_INFINITY, k.learned.cost("secret", null), 0.0)
+    }
+
     private inner class Keyboard(text: String = "", autoCapitalize: Boolean = false,
                                  type: Int = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES) {
         val field = Field(text)
         val prefs = TypingPreferences(Prefs.context()).also { it.autoCapitalize = autoCapitalize }
         var strip = emptyList<Suggestion>()
-        val engine = KeyboardEngine(field, prefs, { Spoken.English }, { SpatialDecoder(model) }, clock = { 0L })
+        val learned = LearnedWords()
+        val engine = KeyboardEngine(field, prefs, { Spoken.English }, { SpatialDecoder(model) },
+            readPersonal = { m, mine -> PersonalWords(m, mine, emptyMap()) }, learned = learned, clock = { 0L })
 
         init {
             engine.surface = object : KeyboardSurface {
@@ -142,9 +170,10 @@ class GlideEngineTest {
 
         fun glide(word: String) = engine.glide(Glides.path(word, grid, smooth = .5 * grid.pitchX), grid)
         fun tap(letter: String) {
-            val p = grid.centres.getValue(letter.single())
+            val p = grid.centres.getValue(letter.single().lowercaseChar())
             engine.letter(letter, p.x, p.y, grid)
         }
+        fun type(text: String) { for (c in text) if (c == ' ') engine.space() else tap(c.toString()) }
     }
 
     private companion object {

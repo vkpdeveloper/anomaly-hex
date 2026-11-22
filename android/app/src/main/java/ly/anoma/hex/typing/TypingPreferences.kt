@@ -34,6 +34,20 @@ internal class TypingPreferences(context: Context) {
     var glideTrail: Boolean
         get() = prefs.getBoolean("glideTrail", true)
         set(value) { prefs.edit().putBoolean("glideTrail", value).apply() }
+    /** Whether the keyboard starts from the words in the paired computer's Hex History (`LearnedWords.seed`). */
+    var learnFromHistory: Boolean
+        get() = prefs.getBoolean(LEARN_FROM_HISTORY, true)
+        set(value) { prefs.edit().putBoolean(LEARN_FROM_HISTORY, value).apply() }
+    /** When the computer's words last arrived, in wall-clock milliseconds; 0 for never. */
+    var historyWordsAt: Long
+        get() = prefs.getLong("historyWordsAt", 0)
+        set(value) { prefs.edit().putLong("historyWordsAt", value).apply() }
+    /** Forgets every word the keyboard learned: the saved file now, and a running keyboard's copy
+     * through [FORGET_LEARNED]. */
+    fun forgetLearned(files: java.io.File) {
+        java.io.File(files, LearnedWords.FILE).delete()
+        prefs.edit().putLong(FORGET_LEARNED, System.currentTimeMillis()).putLong("historyWordsAt", 0).apply()
+    }
 
     // Remember only explicit rejection of this exact pair in this language; never save typed text.
     private fun pair(language: String, original: String, replacement: String): String {
@@ -46,5 +60,9 @@ internal class TypingPreferences(context: Context) {
         val key = pair(language, original, replacement)
         prefs.edit().putInt(key, (prefs.getInt(key, 0) + 1).coerceAtMost(2)).apply()
     }
-    companion object { const val SUGGEST_SWEAR_WORDS = "suggestSwearWords" }
+    companion object {
+        const val SUGGEST_SWEAR_WORDS = "suggestSwearWords"
+        const val LEARN_FROM_HISTORY = "learnFromHistory"
+        const val FORGET_LEARNED = "forgetLearned"
+    }
 }
