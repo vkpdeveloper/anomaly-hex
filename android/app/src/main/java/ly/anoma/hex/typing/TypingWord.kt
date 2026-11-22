@@ -100,20 +100,20 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     /** The strip while a word is typed (iOS AutocorrectEngine.suggestions): what was typed
      * ([Suggestion.Kind.Typed]), then what space will put in ([Suggestion.Kind.Fix]) or the likeliest
      * candidate, then the runner-up. An unfinished word that space leaves alone (no word yet, "th")
-     * gets three candidates instead. Candidates: a suggest-only English contraction ("ill" ->
-     * "I'll"), the likeliest completions of a 1–3 letter word after the word before, then, for a
-     * word of three letters or more, the decoder's other readings of the taps before completions by
-     * frequency (after two letters the word is usually unfinished: completions first). Never what was
-     * typed again. [autocorrect] off: no fix and no readings, completions only. */
+     * gets three candidates instead. Candidates: your shortcut's phrase ("addr"), which only a tap puts
+     * in, as on Gboard; a suggest-only English contraction ("ill" -> "I'll"), the likeliest
+     * completions of a 1–3 letter word after the word before, then, for a word of three letters or
+     * more, the decoder's other readings of the taps before completions by frequency (after two
+     * letters the word is usually unfinished: completions first). Never what
+     * was typed again. [autocorrect] off: no fix and no readings, completions only. */
     fun strip(autocorrect: Boolean = true): List<Suggestion> {
         if (token.length !in 1..MAX_LENGTH) return emptyList()
         val typed = Suggestion(token, Suggestion.Kind.Typed)
-        // Your shortcut: what you typed and its phrase, which space puts in whatever autocorrect does.
-        decoder.personal?.shortcut(token)?.let { return listOf(typed, Suggestion(it, Suggestion.Kind.Fix)) }
+        val shortcut = decoder.personal?.shortcut(token)
         val fix = if (autocorrect) replacement() else null
         val pool = ArrayList<String>(4)
         val lower = token.lowercase()
-        val showTyped = fix != null || blocked(token) || knows(lower)
+        val showTyped = fix != null || shortcut != null || blocked(token) || knows(lower)
         val size = if (showTyped) 2 else 3
         val lowered = !addsCapitals && token.none { it.isUpperCase() }
         fun add(word: String) {
@@ -122,6 +122,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
                 !blocked(s)) pool.add(s)
         }
         fix?.let { pool.add(it) }
+        shortcut?.let { pool.add(it) }
         if (autocorrect && fix == null && model.spelling == "en") suggestOnly[lower]?.let { add(matchCase(token, it)) }
         // Your own word, completed once two letters match, before the dictionary's: a word you added is
         // likelier what you mean than a reading's runner-up ("zor" offers "Zorbex" beside the fix "or").
@@ -214,10 +215,6 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         return prefix in elisions && before.dropLast(1 + prefix.length).lastOrNull().let { boundary(it) }
     }
 
-    /** Your text replacement whose shortcut ends `before` (the text before the cursor), from the personal
-     * dictionary: on space, a closing mark or return, put it in before anything else, autocorrect on
-     * or off (iOS #2152, #2173). Null when no shortcut ends the text. */
-    fun textReplacement(before: String): Correction? = decoder.personal?.replacement(before)
     // A capitalised word of yours that is also an ordinary lowercase word ("Will", "Bill") stays
     // lowercase when typed so, as iOS's withoutStrayCapital.
     private fun ordinary(word: String) = word.lowercase().let { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 95 }
@@ -237,7 +234,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private fun withCapitals(): String? {
         if (token.isEmpty()) return null
         val personal = decoder.personal
-        personal?.shortcut(token)?.let { return it }
+        // Your shortcut stays as typed: its phrase is the strip's to offer.
+        if (personal?.shortcut(token) != null) return null
         // Your own word: never corrected into another, and spelled your way ("github" -> "GitHub").
         personal?.index(token)?.takeIf { it >= 0 }?.let { return yours(personal.text(it)).takeIf { s -> s != token } }
         if (literalOnly || blocked(token)) return null

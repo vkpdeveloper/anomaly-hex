@@ -443,9 +443,6 @@ internal class KeyboardEngine(
         val w = word
         if (w != null && !symbols && canEndWord()) {
             val old = w.token; val lang = w.decoder.model.language
-            // Your text replacements first, whatever autocorrect is set to; they never offer an undo.
-            val swap = w.textReplacement(b)
-            if (swap != null && replace(swap.original, swap.replacement + " ")) { resetTyping(); afterSpace(now); return }
             if (feedback.autocorrect && old.isNotEmpty() && endsWith(prefix + old)) {
                 val fix = w.finish(' ', point, grid)
                 if (fix != null && !feedback.blocked(lang, fix.original, fix.replacement) && replace(fix.original, fix.replacement + " ")) {
@@ -477,12 +474,10 @@ internal class KeyboardEngine(
             if (replace(" ", value)) { resetTyping(); showPredictions(before()); inputDone(); return }
         }
         // Anything that starts another word puts a held space in first; marks go against the word.
-        val text = if (value.any { it in SpaceRules.JOINERS || it.isWhitespace() }) b else takeHeldSpace(b)
+        if (value.none { it in SpaceRules.JOINERS || it.isWhitespace() }) takeHeldSpace(b)
         clearSpaces()
         val w = word
         if (mark && w != null && !symbols && canEndWord()) {
-            val swap = w.textReplacement(text)
-            if (swap != null && replace(swap.original, swap.replacement + value)) { resetTyping(); afterMark(value); return }
             if (feedback.autocorrect && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
                 val fix = w.finish(value[0])
                 if (fix != null && !feedback.blocked(w.decoder.model.language, fix.original, fix.replacement) &&
@@ -543,8 +538,6 @@ internal class KeyboardEngine(
     }
     fun enter() {
         edited()
-        // A text replacement that ends the text goes in before the line break or the editor's action.
-        word?.takeIf { canEndWord() }?.textReplacement(before())?.let { replace(it.original, it.replacement) }
         learn(before(), 0)
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
         val info = editor

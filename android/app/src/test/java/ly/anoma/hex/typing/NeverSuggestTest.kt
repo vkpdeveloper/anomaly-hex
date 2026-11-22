@@ -398,29 +398,21 @@ class NeverSuggestTest {
         w.decoder.personal = PersonalWords(w.decoder.model, words, shortcuts)
     }
 
-    // iOS testTextReplacementsGoInAsOnApplesKeyboard, testTextReplacementsTakeTheShortcutsLeadingCapital
-    // and testYourTextReplacementWinsOverShorthand, with the personal dictionary's shortcuts.
-    @Test fun textReplacementsGoInAsOnApplesKeyboard() {
+    // Your shortcuts, as Gboard offers them: the strip's first word is the phrase, cased as the shortcut
+    // was typed (iOS testTextReplacementsTakeTheShortcutsLeadingCapital); space leaves the shortcut as
+    // typed, never autocorrecting it.
+    @Test fun aShortcutOffersItsPhraseAndSpaceLeavesItAlone() {
+        val g = layout("en")
         val w = word()
-        personal(w, emptyList(), mapOf("myem" to "jason@example.com", "ad2" to "second address", "s.o" to "significant other",
-            "home" to "at my house", "brb" to "be right back", "omw" to "On my way!", "mip" to "My iPhone"))
-        for ((before, typed, phrase) in listOf(
-            Triple("hi myem", "myem", "jason@example.com"), Triple("ad2", "ad2", "second address"),
-            Triple("s.o", "s.o", "significant other"), Triple("home", "home", "at my house"),
-            Triple("ok (myem", "myem", "jason@example.com"), Triple("hi,myem", "myem", "jason@example.com"),
-            Triple("ok Brb", "Brb", "Be right back"), Triple("ok brb", "brb", "be right back"),
-            Triple("ok BRB", "BRB", "be right back"), Triple("omw", "omw", "On my way!"), Triple("OMW", "OMW", "On my way!"),
-            Triple("mip", "mip", "My iPhone"), Triple("Mip", "Mip", "My iPhone"), Triple("MIP", "MIP", "My iPhone"),
-        )) assertEquals(before, Correction(typed, phrase), w.textReplacement(before))
-        assertNull("never the end of a longer word", w.textReplacement("xmyem"))
-        assertNull("not once a space follows", w.textReplacement("myem "))
-        // The strip shows it, and space puts it in, before chat shorthand is left alone.
-        w.reset("hi "); w.explicit("myem")
-        assertEquals(listOf(Suggestion("myem", Suggestion.Kind.Typed), Suggestion("jason@example.com", Suggestion.Kind.Fix)), w.strip())
-        w.reset(""); w.explicit("brb")
-        assertEquals("be right back", w.replacement())
-        w.reset(""); w.explicit("idk")
-        assertNull("shorthand without a replacement stays", w.replacement())
+        personal(w, emptyList(), mapOf("addr" to "221B Baker Street", "brb" to "be right back", "omw" to "On my way!",
+            "mip" to "My iPhone"))
+        for ((typed, phrase) in listOf("addr" to "221B Baker Street", "brb" to "be right back", "Brb" to "Be right back",
+            "BRB" to "be right back", "omw" to "On my way!", "Mip" to "My iPhone", "MIP" to "My iPhone")) {
+            w.reset("hi "); w.explicit(typed)
+            assertEquals(typed, listOf(Suggestion(typed, Suggestion.Kind.Typed), Suggestion(phrase, Suggestion.Kind.Word)), w.strip().take(2))
+            assertNull(typed, w.replacement())
+        }
+        assertEquals("shortcuts stay as typed", "addr brb ", w.typed(g, "addr brb "))
     }
 
     // iOS testSpatialAutocorrectKnowsYourOwnWords, testYourCommonWordsStayLowercaseAndYourVocabulary
@@ -442,7 +434,7 @@ class NeverSuggestTest {
         w.reset(""); w.explicit("Dic")
         assertTrue("your own words are offered, even listed ones", w.strip().any { it.text == "Dick" })
         w.reset(""); w.explicit("wtf")
-        assertEquals("what the fuck", w.replacement())
+        assertEquals("what the fuck", w.strip()[1].text)
         // Entries for another language stay out; Bokmål takes Norwegian's.
         assertTrue(PersonalWords.applies(null, "en") && PersonalWords.applies("en_US", "en") && PersonalWords.applies("no_NO", "nb"))
         assertFalse(PersonalWords.applies("es_ES", "en") || PersonalWords.applies("nn_NO", "nb"))
