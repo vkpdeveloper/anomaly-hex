@@ -437,8 +437,10 @@ fn bind(port: u16, remembered: u16) -> Result<TcpListener> {
     let span = FALLBACK_PORTS.end - FALLBACK_PORTS.start;
     candidates.extend(
         random
-            .chunks_exact(2)
-            .map(|pair| FALLBACK_PORTS.start + u16::from_le_bytes([pair[0], pair[1]]) % span),
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| FALLBACK_PORTS.start + u16::from_le_bytes(*pair) % span),
     );
     candidates
         .into_iter()
