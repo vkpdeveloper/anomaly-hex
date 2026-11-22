@@ -3056,6 +3056,12 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   │   only clips saved (owner-only private files)
 │   ├── Copies marked EXTRA_IS_SENSITIVE or made in a password field -> never kept
 │   └── Image -> commitContent through FileProvider when the editor takes it, else copied
+├── Field with saved logins or a texted code -> the autofill service's chips in the strip, in
+│   place of the clipboard chip and next-word guesses; pinned ones last, by the mic; a tap
+│   fills the field (the service's own, no SMS permission); a word being typed takes the
+│   strip back until it is done; another field or an empty response clears them
+│   └── Proof limits: InlineChipsTest (order, late chips, when they show); unit tests only,
+│       no device run
 ├── Strip's chip -> the last copy (10 min) or a screenshot from the last 5 min, in place of
 │   next-word guesses; typing a word or its age ends it, and the clipboard keeps it
 │   (an image only in a field that takes images)
