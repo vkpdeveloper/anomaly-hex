@@ -49,14 +49,21 @@ class RecentImagesTest {
         val photo = shot(1, 60_000)
         val newer = ChipOffer.Text("copied", sensitive = false, at = now - 1_000)
         val older = ChipOffer.Text("copied", sensitive = false, at = now - 120_000)
-        assertEquals(newer, ChipOffer.pick(newer, photo, now))
-        assertEquals(ChipOffer.Photo(photo), ChipOffer.pick(older, photo, now))
-        assertEquals(older, ChipOffer.pick(older, null, now))
-        assertNull(ChipOffer.pick(older, null, now + ChipOffer.COPY_FRESH_MS))
+        assertEquals(newer, ChipOffer.pick(newer, photo, now) { true })
+        assertEquals(ChipOffer.Photo(photo), ChipOffer.pick(older, photo, now) { true })
+        assertEquals(older, ChipOffer.pick(older, null, now) { true })
+        assertNull(ChipOffer.pick(older, null, now + ChipOffer.COPY_FRESH_MS) { true })
     }
 
     @Test fun anUnusedOfferKnowsWhenItGoes() {
         assertEquals(CHIP_MS - 60_000, ChipOffer.Photo(shot(1, 60_000)).staleIn(now))
         assertEquals(ChipOffer.COPY_FRESH_MS - 1_000, ChipOffer.Text("copied", sensitive = false, at = now - 1_000).staleIn(now))
+    }
+
+    @Test fun aScreenshotIsOfferedOnlyWhereTheFieldTakesImages() {
+        val older = ChipOffer.Text("copied", sensitive = false, at = now - 120_000)
+        val photo = shot(1, 60_000)
+        assertEquals(ChipOffer.Photo(photo), ChipOffer.pick(older, photo, now) { it.startsWith("image/") })
+        assertEquals(older, ChipOffer.pick(older, photo, now) { false })
     }
 }

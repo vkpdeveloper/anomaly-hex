@@ -3051,6 +3051,7 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   └── Image -> commitContent through FileProvider when the editor takes it, else copied
 ├── Strip's chip -> the last copy (10 min) or a screenshot from the last 5 min, in place of
 │   next-word guesses; typing a word or its age ends it, and the clipboard keeps it
+│   (an image only in a field that takes images)
 ├── Keyboard > Recent screenshots (off) -> ask for photos; screenshots only, never camera photos
 │   (ClipHistoryTest, RecentImagesTest; unit tests only, no device run)
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip

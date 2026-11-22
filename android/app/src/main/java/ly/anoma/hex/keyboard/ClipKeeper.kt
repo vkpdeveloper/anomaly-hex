@@ -112,7 +112,10 @@ internal class ClipKeeper(
     val offer: ChipOffer?
         get() {
             val now = System.currentTimeMillis()
-            return ChipOffer.pick(copy, RecentImages.chip(photos, now, usedPhotos), now)
+            val types = ime.currentInputEditorInfo?.contentMimeTypes.orEmpty()
+            return ChipOffer.pick(copy, RecentImages.chip(photos, now, usedPhotos), now) { mime ->
+                types.any { ClipDescription.compareMimeTypes(mime, it) }
+            }
         }
     /** The chip was tapped, or typing passed over it: it offers that copy or screenshot no more; the
      * clipboard keeps it. */

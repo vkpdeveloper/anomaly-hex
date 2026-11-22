@@ -43,8 +43,13 @@ internal sealed interface ChipOffer {
     companion object {
         /** A copy older than this no longer gets the chip. */
         const val COPY_FRESH_MS = 10 * 60_000L
-        /** [copy] while it is fresh, or [photo] (already chosen by [RecentImages.chip]) when it is newer. */
-        fun pick(copy: ChipOffer?, photo: RecentImage?, now: Long): ChipOffer? =
-            listOfNotNull(copy?.takeIf { now - it.at < COPY_FRESH_MS }, photo?.let(::Photo)).maxByOrNull { it.at }
+        /** [copy] while it is fresh, or [photo] (already chosen by [RecentImages.chip]) when it is newer.
+         * An image is offered only where the editor [takes] its type, as Gboard's is: a field that can't
+         * take a picture would only get it on the clipboard, where a copy already is. */
+        fun pick(copy: ChipOffer?, photo: RecentImage?, now: Long, takes: (mime: String) -> Boolean): ChipOffer? =
+            listOfNotNull(
+                copy?.takeIf { now - it.at < COPY_FRESH_MS && (it !is Image || (it.clip.content as? ClipContent.Image)?.mime?.let(takes) == true) },
+                photo?.takeIf { takes(it.mime) }?.let(::Photo),
+            ).maxByOrNull { it.at }
     }
 }
