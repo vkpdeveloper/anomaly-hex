@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -20,8 +21,9 @@ import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
 /** Gboard's toolbar above the keys: the grid button for the menu on the left, the mic in its circle on
- * the right, and between them the suggestions (three words, or two and their emoji), the chip for
- * something just copied or a screenshot just taken, or the recording's level while dictating. */
+ * the right, and between them the suggestions (three words, or two and their emoji), the autofill
+ * service's chips ([InlineAutofill]), the chip for something just copied or a screenshot just taken,
+ * or the recording's level while dictating. */
 internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu: () -> Unit) : FrameLayout(context) {
     private companion object {
         const val SUGGESTION = 19.5f
@@ -55,6 +57,14 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private var fitted = 0f
     /** The strip holds only next-word guesses, which a fresh copy or photo replaces. */
     private var guessing = false
+    /** A word is being typed or the caret is in one: its suggestions take the autofill chips' place. */
+    private var typingWord = false
+
+    // The autofill service's chips, which it draws and fills the field from: the rest scroll, the pinned
+    // stay at the end by the mic.
+    private val autofill = LinearLayout(context)
+    private val autofillRest = LinearLayout(context)
+    private val autofillPinned = LinearLayout(context)
 
     private val chip = LinearLayout(context)
     private val chipIcon = ImageView(context)
@@ -113,6 +123,18 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         slots.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitWords() }
         // Gboard's dividers sit at a third and two thirds of the span between the icons' edges.
         addView(slots, LayoutParams(-1, -1).apply { marginStart = px(32.6f); marginEnd = px(34.4f) })
+
+        autofill.apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            addView(HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER
+                addView(autofillRest.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL },
+                    LayoutParams(-2, -1))
+            }, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(autofillPinned.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL },
+                LinearLayout.LayoutParams(-2, -1))
+        }
+        addView(autofill, LayoutParams(-1, -1).apply { marginStart = px(46f); marginEnd = px(48f) })
 
         chip.apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -221,6 +243,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         emoji.forEachIndexed { i, slot -> shown[3 + i] = slot }
         offered = shown
         guessing = words.all { it.kind == Suggestion.Kind.Next }
+        typingWord = wordInProgress(words)
         val emojiShown = emoji.isNotEmpty()
         slotViews[2].visibility = if (emojiShown) GONE else VISIBLE
         dividers[1].visibility = slotViews[2].visibility
@@ -263,6 +286,15 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         if (size == fitted) return
         fitted = size
         for (i in 0..2) words[i].setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
+    }
+
+    /** The autofill service's chips for this field, already inflated; none clears them. */
+    fun autofill(unpinned: List<View>, pinned: List<View>) {
+        autofillRest.removeAllViews(); autofillPinned.removeAllViews()
+        for ((row, chips) in listOf(autofillRest to unpinned, autofillPinned to pinned)) for (chip in chips) {
+            row.addView(chip, LinearLayout.LayoutParams(-2, pill).apply { marginStart = px(3f); marginEnd = px(3f) })
+        }
+        update()
     }
 
     fun dictation(phase: DictationPhase) {
@@ -309,15 +341,19 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         noteText.text = note
         val undoing = idle && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
+        // The field's own saved passwords and codes come before a copy or next-word guesses.
+        val filling = idle && !noting && !undoing && !typingWord &&
+            (autofillRest.childCount > 0 || autofillPinned.childCount > 0)
+        autofill.visibility = if (filling) VISIBLE else GONE
         // A fresh copy or photo takes the place of next-word guesses, as Gboard's does; a word being
         // typed keeps its suggestions.
         // Typing a word passes over the chip: it isn't offered again, and the clipboard keeps it.
         if (idle && !guessing) chipOffer?.let { passed -> chipOffer = null; ime.clips.used(passed) }
-        val offer = if (idle && !noting && !undoing && guessing) ime.clips.offer else null
+        val offer = if (idle && !noting && !undoing && !filling && guessing) ime.clips.offer else null
         // Unused, it goes once it is too old, while the keyboard stays up.
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
-        slots.visibility = if (idle && !noting && !undoing && suggesting && offer == null) VISIBLE else GONE
+        slots.visibility = if (idle && !noting && !undoing && !filling && suggesting && offer == null) VISIBLE else GONE
         chip.visibility = if (offer != null) VISIBLE else GONE
         val fresh = offer != chipOffer
         // Set first: a cached thumbnail arrives at once and checks it is still this offer's.

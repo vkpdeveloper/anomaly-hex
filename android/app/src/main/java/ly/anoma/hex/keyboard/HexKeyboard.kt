@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.inputmethodservice.InputMethodService
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -14,6 +15,7 @@ import android.provider.ContactsContract
 import android.provider.UserDictionary
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InlineSuggestionsResponse
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
@@ -235,7 +237,7 @@ class HexKeyboard : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
-        if (!restarting) { field++; dictation.leave() }
+        if (!restarting) { field++; dictation.leave(); autofill.clear() }
         text.started(attribute.initialSelStart, attribute.initialSelEnd,
             attribute.getInitialTextBeforeCursor(CachedText.INITIAL, 0), attribute.getInitialTextAfterCursor(CachedText.INITIAL, 0))
         engine.startInput(attribute)
@@ -255,6 +257,15 @@ class HexKeyboard : InputMethodService() {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         text.selectionChanged(newSelStart, newSelEnd)
         engine.updateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd)
+    }
+
+    // The autofill service's saved passwords, usernames and codes for the field, in the strip. Android asks
+    // for the request as a field starts and sends a response (empty for none) whenever its offer changes.
+    private val autofill by lazy { InlineAutofill(this) { unpinned, pinned -> view?.autofill(unpinned, pinned) } }
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle) = autofill.request()
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        autofill.offer(response.inlineSuggestions)
+        return true
     }
 
     /** Types the transcript where it was spoken. If that field has gone (another field, or the keyboard

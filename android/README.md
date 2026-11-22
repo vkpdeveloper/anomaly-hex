@@ -114,6 +114,10 @@ A copied image is copied into that folder under its SHA-256 (16 MB at most), sin
 
 `ClipHistoryTest` and `RecentImagesTest` cover expiry, pins, bounds, secret copies, the saved format and which photos are offered; no device has run it yet.
 
+## Autofill
+
+Saved passwords and usernames from the phone's autofill service, and a verification code it found in a text message, show as chips in the strip, as Gboard's do. They use Android's inline suggestions ([InlineAutofill](app/src/main/java/ly/anoma/hex/keyboard/InlineAutofill.kt)): the keyboard asks for chips the height of the clipboard chip in its own light or dark colours, the service draws them, and a tap is the service's to handle, which fills the field. Hex never sees the saved password or the message, reads no SMS and asks for no SMS permission. The chips take the strip's place, ahead of the clipboard chip and next-word guesses, with the service's pinned ones at the end by the mic; the grid button and the mic stay. A word being typed takes the strip back for its suggestions, and the chips return once it is done; they go when the field changes or the service sends none. Without an autofill service, nothing changes. `InlineChipsTest` covers the order and when they show or go.
+
 ## Settings
 
 After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, number row, key pop-ups, haptics, glide typing, recent screenshots, Learn from Hex history and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.

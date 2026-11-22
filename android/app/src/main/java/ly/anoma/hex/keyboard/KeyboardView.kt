@@ -107,6 +107,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         if (vibrates(context, ime.feedback.haptics)) performHapticFeedback(effect)
     }
     fun level(peak: Float) = toolbar.level(peak)
+    fun autofill(unpinned: List<View>, pinned: List<View>) = toolbar.autofill(unpinned, pinned)
     fun note(text: String) = toolbar.note(text)
     /** The fix button was turned on or off in Settings. */
     fun fixChanged() = toolbar.update()
