@@ -95,7 +95,9 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
                 isFocusable = true
                 background = pressable(android.graphics.Color.TRANSPARENT, false)
                 setOnClickListener { offered[i]?.let(ime.engine::pickSuggestion) }
-                addView(words[i], LayoutParams(-2, -1, Gravity.CENTER))
+                // As wide as its slot, so a new word only redraws the strip; a word sized to its text
+                // would measure the whole keyboard again on every key.
+                addView(words[i], LayoutParams(-1, -1, Gravity.CENTER))
             }
             slots.addView(slotViews[i], LinearLayout.LayoutParams(0, -1, 1f))
         }
