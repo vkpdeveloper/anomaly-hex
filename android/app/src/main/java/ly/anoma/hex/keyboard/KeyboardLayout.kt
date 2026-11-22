@@ -95,13 +95,18 @@ internal object KeyboardMetrics {
     const val CURSOR_START = 17f
     const val CURSOR_STEP = 12.6f
     /** A slide left from delete selects a word after this much travel, one more each step; a press
-     * that went further than the cancel distance deletes nothing on its own. Held still, delete
-     * repeats every 50 ms after 400 ms. */
+     * that went further than the cancel distance deletes nothing on its own. Held still (sideways
+     * travel under DELETE_STILL: a held thumb rolls further than the touch slop), delete repeats every
+     * 50 ms after 400 ms, then takes a whole word every 150 ms once 20 characters have gone
+     * ([DeleteRepeat]). */
     const val DELETE_START = 53f
     const val DELETE_STEP = 36f
     const val DELETE_CANCEL = 32f
+    const val DELETE_STILL = 16f
     const val DELETE_REPEAT_DELAY = 400L
     const val DELETE_REPEAT_EVERY = 50L
+    const val DELETE_WORDS_AFTER = 20
+    const val DELETE_WORD_EVERY = 150L
     /** A long press shows row 1's digit and the accents after this long. */
     const val LONG_PRESS = 300L
 

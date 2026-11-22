@@ -15,10 +15,33 @@ internal class DeleteGesture(private val start: Float, private val step: Float, 
         moved = maxOf(moved, kotlin.math.abs(distance))
         return if (distance < start) 0 else ((distance - start) / step).toInt() + 1
     }
-    /** Held still enough to repeat (Gboard stops repeating once the finger moves). */
+    /** Held still enough to start repeating: a press that slides sideways first never repeats. */
     val still get() = moved < stillSlop
     /** Lifted without selecting: whether it still counts as a tap on delete. */
     val tap get() = farthest < cancel
+}
+
+/** Held delete's pace, as Gboard's: the first repeat [KeyboardMetrics.DELETE_REPEAT_DELAY] after the
+ * press, one character every [KeyboardMetrics.DELETE_REPEAT_EVERY], then, once
+ * [KeyboardMetrics.DELETE_WORDS_AFTER] characters have gone, a whole word every
+ * [KeyboardMetrics.DELETE_WORD_EVERY]. */
+internal class DeleteRepeat {
+    private var repeats = 0
+    /** The press went down: how long until the first repeat. */
+    fun start(): Long {
+        repeats = 0
+        return KeyboardMetrics.DELETE_REPEAT_DELAY
+    }
+    /** At least one repeat ran since the press, so lifting deletes nothing more. */
+    val repeating get() = repeats > 0
+    /** A repeat is due: counts it, and says whether it takes a whole word. */
+    fun next(): Boolean {
+        val words = repeats >= KeyboardMetrics.DELETE_WORDS_AFTER
+        repeats++
+        return words
+    }
+    /** How long after the repeat just run the next is due. */
+    val delay get() = if (repeats > KeyboardMetrics.DELETE_WORDS_AFTER) KeyboardMetrics.DELETE_WORD_EVERY else KeyboardMetrics.DELETE_REPEAT_EVERY
 }
 
 /** Selects whole words back from the cursor while a delete slide runs. Words are what Option-Delete

@@ -508,6 +508,16 @@ internal class KeyboardEngine(
         }
         if (w != null && w.token.isNotEmpty()) showSuggestions(w) else surface?.suggestions(emptyList())
     }
+    /** Held delete once it speeds up ([DeleteRepeat]): the word before the cursor with the spaces
+     * after it, as a delete slide counts words, taken one character at a time through [delete]. */
+    fun deleteWord() {
+        val before = if (secure) "" else target.before(64).orEmpty()
+        val word = before.takeLast(DeleteSlide.wordLengths(before).firstOrNull() ?: 0)
+        val characters = java.text.BreakIterator.getCharacterInstance().apply { setText(word) }
+        var count = 0
+        while (characters.next() != java.text.BreakIterator.DONE) count++
+        repeat(maxOf(count, 1)) { delete() }
+    }
     fun enter() {
         edited()
         // A text replacement that ends the text goes in before the line break or the editor's action.
