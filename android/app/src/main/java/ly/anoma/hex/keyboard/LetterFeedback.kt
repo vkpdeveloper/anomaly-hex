@@ -40,12 +40,16 @@ internal class LetterFeedback(private val host: ViewGroup) {
     private var start = 0
     private var originX = Float.NaN
     private var originY = Float.NaN
+    // A pick list's held key (its keycap, widened by [pad] each side) and the list's bottom edge, in the
+    // host's coordinates; null for every other list.
+    private var picking: Rect? = null
+    private var listBottom = 0
     private val pad get() = dp(3)
     private val rowHeight get() = dp(42)
     val choosing get() = holding
     fun selected() = rows.getOrNull(row)?.getOrNull(index)
     fun clear() {
-        panel?.let { host.overlay.remove(it) }; panel = null; rows = emptyList(); holding = false
+        panel?.let { host.overlay.remove(it) }; panel = null; rows = emptyList(); holding = false; picking = null
         if (dimmed) { host.overlay.remove(scrim); dimmed = false }
     }
     /** A key the keys were drawn again without, while its finger was down, has nothing to show a pop-up over. */
@@ -57,14 +61,15 @@ internal class LetterFeedback(private val host: ViewGroup) {
     /** The key's pop-up: one option shows the letter above the finger; more are a held key's list in one
      * row, the first under the finger and the rest reading away from the nearer edge. */
     fun present(key: View, options: List<String>) = show(key, listOf(options), 0, options.size > 1)
-    /** A held key's options in rows, the first row nearest the key, with [default] of it under the finger;
-     * held with a single option, that option still types on lifting. */
-    fun hold(key: View, options: List<List<String>>, default: Int = 0) = show(key, options, default, true)
-    private fun show(key: View, options: List<List<String>>, default: Int, hold: Boolean) {
+    /** A held key's options in rows above it, the first row nearest the key, with [above] of that row over
+     * the key. Nothing is chosen while the finger stays on the key, so lifting there types the key itself;
+     * sliding up or across onto an option chooses the one under the finger ([pickAt]). */
+    fun pick(key: View, options: List<List<String>>, above: Int) = show(key, options, above, true, pick = true)
+    private fun show(key: View, options: List<List<String>>, default: Int, hold: Boolean, pick: Boolean = false) {
         clear()
         if (host.width <= 0 || options.firstOrNull().isNullOrEmpty() || !inHost(key)) return
         val r = Rect(0, 0, key.width, key.height); host.offsetDescendantRectToMyCoords(key, r)
-        val reverse = hold && options.size == 1 && options[0].size > 1 && r.centerX() > host.width * .52
+        val reverse = !pick && hold && options.size == 1 && options[0].size > 1 && r.centerX() > host.width * .52
         rows = if (reverse) listOf(options[0].reversed()) else options
         holding = hold; row = 0
         index = (if (reverse) rows[0].lastIndex - default else default).coerceIn(0, rows[0].lastIndex)
@@ -89,6 +94,7 @@ internal class LetterFeedback(private val host: ViewGroup) {
         panel = bar; highlight()
         bar.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
         bar.layout(left, y, left + w, y + h)
+        if (pick) { picking = Rect(r.left - pad, r.top, r.right + pad, r.bottom); listBottom = y + h; index = -1; highlight() }
         if (hold) { scrim.layout(0, 0, host.width, host.height); host.overlay.add(scrim); dimmed = true }
         host.overlay.add(bar)
     }
@@ -96,6 +102,12 @@ internal class LetterFeedback(private val host: ViewGroup) {
      * opened reaches, one per option's width across and one row per row's height up. */
     fun move(x: Float, y: Float) {
         if (!holding) return
+        picking?.let { key ->
+            val at = pickAt(x, y, key.left, key.right, key.top, left + pad, listBottom - pad, cell, rowHeight, rows.map { it.size })
+            val (nextRow, next) = at ?: (0 to -1)
+            if (row != nextRow || index != next) { row = nextRow; index = next; highlight() }
+            return
+        }
         if (originX.isNaN()) { originX = x; originY = y; return }
         val nextRow = ((originY - y) / rowHeight).roundToInt().coerceIn(0, rows.lastIndex)
         val next = (start + ((x - originX) / cell).roundToInt()).coerceIn(0, rows[nextRow].lastIndex)
@@ -114,6 +126,18 @@ internal class LetterFeedback(private val host: ViewGroup) {
         }
     }
     companion object {
+        /** The (row, column) of a pick list's option a finger at ([x], [y]) is on: none while it is over the
+         * held key (from [keyLeft] to [keyRight], below [keyTop]), else the row it is level with, counted up
+         * from the options' [bottom] (anything lower is the first row), and the option under it in that row,
+         * the end one past either end. [sizes] is each row's count, the first row first. */
+        fun pickAt(x: Float, y: Float, keyLeft: Int, keyRight: Int, keyTop: Int, left: Int, bottom: Int, cell: Int,
+                   rowHeight: Int, sizes: List<Int>): Pair<Int, Int>? {
+            if (y >= keyTop && x >= keyLeft && x <= keyRight) return null
+            val r = if (y >= bottom) 0 else ((bottom - y) / rowHeight).toInt().coerceIn(0, sizes.lastIndex)
+            val i = if (x < left) 0 else ((x - left) / cell).toInt().coerceIn(0, sizes[r] - 1)
+            return r to i
+        }
+
         private val accents = mapOf('e' to "eèéêëēėę", 'a' to "aàáâäæãåā", 'i' to "iìíîïīį",
             'o' to "oôöòóœøōõ", 'u' to "uûüùúū", 'y' to "yÿ", 'n' to "nñń", 'c' to "cçćč",
             's' to "sßśš", 'z' to "zžźż", 'l' to "lł", 'ñ' to "ñn")
@@ -159,10 +183,12 @@ internal class LetterFeedback(private val host: ViewGroup) {
             '%' to "‰℅", '^' to "↑←↓→", '=' to "≠∞≈", '<' to "≤«‹⟨", '>' to "≥⟩»›", '•' to "♪♣♠♥♦")
         fun symbolHolds(c: Char): List<String> = symbols[c].orEmpty().map { it.toString() }
 
-        /** The period key's held punctuation on the letters page, as Gboard's three rows (nearest the key
-         * first), with the comma under the finger. */
-        val periodHolds = listOf(listOf("(", ")", "#", "!", ",", "?"), listOf("-", ":", "@", "'", "/", ";"),
-            listOf("·", "_", "&", "%", "\"", "+"))
-        const val PERIOD_DEFAULT = 4
+        /** The period key's held punctuation on the letters page, the row nearest the key first, as Gboard
+         * shows it on a Pixel: AOSP LatinIME's `morekeys_punctuation` (`!autoColumnOrder!8,\\,,?,!,#,),(,/,;,',@,:,-,\",+,\\%,&`),
+         * which Gboard kept, laid out the way LatinIME's auto column order places it beside the right edge:
+         * the comma over the period, ? right of it, the rest reading left, then the second row the same way. */
+        val periodHolds = listOf(listOf(";", "/", "(", ")", "#", "!", ",", "?"), listOf("&", "%", "+", "\"", "-", ":", "'", "@"))
+        /** The option in the nearest row that sits over the period: the comma. */
+        const val PERIOD_DEFAULT = 6
     }
 }

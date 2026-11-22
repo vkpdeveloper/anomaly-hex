@@ -96,6 +96,10 @@ On space, the Kotlin decoder compares each tap with the measured key centres and
 
 **Keyboard settings and Hex menu → Typing feedback** control key pop-ups and key haptics independently. Both default on; Hex follows system keyboard vibration. Hold a letter, slide to an accent, and release. Turning off pop-ups leaves the deliberate accent picker available.
 
+Hold the period on the letters page for Gboard's punctuation (`; / ( ) # ! , ?` with `& % + " - : ' @` above), slide to one and release; release on the period to type the period. A mark from the list goes through the same spacing and autocorrect as one typed on the symbols page.
+
+**Keyboard › Number row** (off by default) puts 1 to 0 above the letters. Row 1 then drops its small digits and their long press; the accents stay. The keyboard is one row taller on every page (the symbol pages and number pad stretch their rows to fill it), so changing pages never moves the editor. Taps and glides are measured from the letter rows, so the number row changes nothing autocorrect or glide typing sees.
+
 [English/Spanish typing benchmark, model sources and licences](benchmark/typing/README.md)
 
 ## Clipboard
@@ -112,7 +116,7 @@ A copied image is copied into that folder under its SHA-256 (16 MB at most), sin
 
 ## Settings
 
-After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, key pop-ups, haptics, glide typing, recent screenshots, Learn from Hex history and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
+After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, number row, key pop-ups, haptics, glide typing, recent screenshots, Learn from Hex history and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
 
 **Privacy › Privacy policy** opens the [Android policy text](play/policy/privacy-policy.txt) even in airplane mode.
 

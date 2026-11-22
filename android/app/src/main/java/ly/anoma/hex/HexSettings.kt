@@ -82,6 +82,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val autoCapitalize = remember(revision) { typing.autoCapitalize }
     val swearWords = remember(revision) { typing.suggestSwearWords }
     val spatial = remember(revision) { typing.spatial }
+    val numberRow = remember(revision) { typing.numberRow }
     val popups = remember(revision) { typing.popups }
     val haptics = remember(revision) { typing.haptics }
     val glide = remember(revision) { typing.glide }
@@ -204,6 +205,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             // Android's spell checker setting: with Hex, a misspelled word's fixes show on the strip.
                             Rule(); Entry("Spell checker", if (hexChecks) "Hex underlines words it doesn't know" else "Choose Hex to underline mistakes", "↗",
                                 { openSpellCheckers(context) })
+                            Rule(); Toggle("Number row", "1 to 0 above the letters", numberRow) { typing.numberRow = it }
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
                             Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
                             Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }

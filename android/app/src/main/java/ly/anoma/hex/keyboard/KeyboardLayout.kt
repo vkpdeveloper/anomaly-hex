@@ -54,6 +54,19 @@ internal data class KeyboardPage(
     }
 }
 
+/** How tall the key plane's parts are, in px: the number row (Keyboard > Number row, over the letters
+ * only), the three rows, and row 4 below them. The plane is as tall on every page, so changing pages never
+ * moves the editor: with the number row on, the other pages spread their three rows over its height.
+ * Touches, glides and the space bar are measured from the three rows' top, never the plane's, so a number
+ * row above them changes nothing the decoders see. */
+internal data class PlaneRows(val row: Int, val last: Int, val numberRow: Boolean) {
+    val height get() = row * (if (numberRow) 4 else 3) + last
+    /** The number row's height on [page]: a row on the letters, none elsewhere. */
+    fun numbers(page: KeyboardPage) = if (numberRow && !page.symbols) row else 0
+    /** The three rows' height on [page]. */
+    fun rows(page: KeyboardPage) = height - last - numbers(page)
+}
+
 /** Sizes in dp, measured from Gboard's dark theme on a OnePlus Nord (3.5 px per dp, default height):
  * a 52 dp toolbar, keycaps 40.6 dp tall on a 50.6 dp row pitch (row 4's are 41.4 dp), 2 dp from the
  * screen's edges with 4.6 dp between them, and row 4 ending 6 dp above the system's bar. Each row's

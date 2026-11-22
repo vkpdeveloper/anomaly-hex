@@ -3043,6 +3043,12 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Keyboard > Keyboard layout > Hinglish -> Hindi in Latin letters and English, tapped or glided
 │   (HinglishTest; unit tests only, no device run)
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
+├── Hold the period (letters page) -> Gboard's punctuation, `; / ( ) # ! , ?` and
+│   `& % + " - : ' @` above; slide and release types the mark through the engine, release on
+│   the period types the period (PeriodAndNumberRowTest; unit tests only, no device run)
+├── Keyboard > Number row (off) -> 1 to 0 above the letters; row 1 loses its small digits and
+│   their long press, keeps its accents; every page one row taller, letter coordinates unchanged
+│   (PeriodAndNumberRowTest; unit tests only, no device run)
 ├── Strip's grid -> menu in place of the strip and keys: Clipboard, Fix mistakes (only where
 │   the Fix button works), Settings (seen on a Pixel emulator)
 ├── Type a word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
