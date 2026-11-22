@@ -15,7 +15,7 @@
 //! CLI process that saves settings never opens a port.
 //!
 //! A phone's transcript goes through the Output steps of the mode its phone
-//! app picks (`phone_origin`), else Global's, with the same processor the
+//! app picks (`phone::origin`), else Global's, with the same processor the
 //! local API's `process` query uses, before it is sent back ([`process`]).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -33,6 +33,11 @@ use super::http::{HttpRequest, HttpResponse, RequestReadError, read_request, wri
 use crate::app_settings::AppSettings;
 use crate::transcription::models::TranscriptionSelection;
 use crate::transcription::service::{TranscriptionService, TranscriptionServiceHandle};
+
+mod origin;
+mod replacements;
+mod rewrite;
+mod words;
 
 /// The DNS-SD service type the Android app browses for.
 pub const SERVICE_TYPE: &str = "_hex-phone._tcp.local.";
@@ -127,16 +132,17 @@ pub(crate) fn apply(settings: &AppSettings) {
         // the listener runs in its place.
         selection: crate::transcription::custom_models::runnable(&settings.transcription),
     });
-    *super::phone_words::RETENTION
+    *words::RETENTION
         .write()
         .unwrap_or_else(|error| error.into_inner()) = Some(settings.history_retention);
-    *super::phone_replacements::GLOBAL
+    *replacements::GLOBAL
         .write()
         .unwrap_or_else(|error| error.into_inner()) = settings
         .dictation_processing
         .default_mode
         .replacements
         .clone();
+    rewrite::apply(settings);
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
         desired.wanted = wanted;
@@ -614,14 +620,14 @@ fn handle(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Opti
             ))
         }
         ("POST", "/phone/v1/transcriptions") => transcribe(request, stream, shared),
+        ("POST", "/phone/v1/rewrite") => Some(rewrite::handle(request, stream, &shared.stop)),
         ("GET", "/phone/v1/words") => Some(HttpResponse::json(
             200,
-            &super::phone_words::from_history(crate::desktop::events::now_ms()),
+            &words::from_history(crate::desktop::events::now_ms()),
         )),
-        ("GET", "/phone/v1/replacements") => Some(HttpResponse::json(
-            200,
-            &super::phone_replacements::current(),
-        )),
+        ("GET", "/phone/v1/replacements") => {
+            Some(HttpResponse::json(200, &replacements::current()))
+        }
         _ => Some(HttpResponse::code(404, "not_found")),
     }
 }
@@ -652,7 +658,7 @@ fn transcribe(
         return Some(HttpResponse::code(429, "busy"));
     };
     let language = selection.language.clone();
-    let origin = super::phone_origin::Origin::from_path(&request.path);
+    let origin = origin::Origin::from_path(&request.path);
     let upload = super::transcriptions::Upload {
         selection,
         admission,
@@ -967,7 +973,7 @@ mod tests {
         assert_eq!(body["routes"][0]["kind"], "tailscale");
         assert_eq!(body["routes"][0]["host"], "100.64.0.7");
 
-        *super::super::phone_replacements::GLOBAL.write().unwrap() =
+        *super::replacements::GLOBAL.write().unwrap() =
             vec![crate::app_settings::TextReplacement {
                 matched_phrase: "brb".into(),
                 output: "be right back".into(),

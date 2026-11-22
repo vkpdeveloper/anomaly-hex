@@ -321,7 +321,13 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     fun level(peak: Float) = scope.push(peak)
     fun undo(offer: UndoOffer?) {
         undoOffer = offer
-        undoText.setText(if (offer == UndoOffer.Fixes) R.string.keyboard_undo_fixes else R.string.keyboard_undo_dictation)
+        undoText.setText(when (offer) {
+            UndoOffer.Fixes -> R.string.keyboard_undo_fixes
+            UndoOffer.Rewrite -> R.string.keyboard_undo_rewrite
+            else -> R.string.keyboard_undo_dictation
+        })
+        // A new offer is newer than any note (Rewriting), which would hide it.
+        if (offer != null) { removeCallbacks(clearNote); note = null }
         update()
     }
 

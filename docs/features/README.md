@@ -3050,7 +3050,16 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   their long press, keeps its accents; every page one row taller, letter coordinates unchanged
 │   (PeriodAndNumberRowTest; unit tests only, no device run)
 ├── Strip's grid -> menu in place of the strip and keys: Clipboard, Fix mistakes (only where
-│   the Fix button works), Settings (seen on a Pixel emulator)
+│   the Fix button works), Rewrite (a computer paired, not a password field), Settings (seen on
+│   a Pixel emulator)
+├── Grid menu › Rewrite -> the selection, else 1,000 characters each side of the caret, sent
+│   to the paired computer's `POST /phone/v1/rewrite` and rewritten by OpenCode with Global
+│   mode's model (text leaves the phone, and maybe the computer, only on the tap)
+│   ├── The field unchanged when the answer comes -> one edit; Undo rewrite puts it back
+│   ├── The field changed, or another field -> left alone, the strip says so
+│   ├── OpenCode not running, a timeout (30 s at most) or a failure -> a short note, no edit
+│   └── Proof limits: RewriteTest and the route test with a fake rewrite (phone::rewrite);
+│       no device run and no real OpenCode request
 ├── Type a word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
 │   third slot ("medicine" 💊 💉, "chai" ☕ 🫖); a tap ends the word and types the emoji
 │   ├── The emoji you pick for a word come first next time; a panel pick shows once picked twice
@@ -3085,7 +3094,7 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   word; Forget (Computer) clears them (ReplacementsTest; unit tests only, no device run)
 ├── Dictate -> the app in front and the layout's language go with the recording; the
 │   computer applies the mode for that app, else Global (docs/phone-dictation.md;
-│   OriginTest, `phone_origin` tests; no device run)
+│   OriginTest, `phone::origin` tests; no device run)
 ├── Keyboard > Say "send it" to send (off) -> a dictation ending "send it" or "bhej do"
 │   after a pause or a sentence's end types the rest, then presses the field's send or
 │   go action; never mid-sentence or in a password field, no undo (SpokenSendTest;

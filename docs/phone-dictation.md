@@ -47,7 +47,7 @@ accept.
 `POST /phone/v1/transcriptions` with `Content-Type: audio/wav` and a
 `Content-Length` up to 16 MiB. The phone sends 16 kHz mono PCM16, the
 model's own rate; other WAVs are converted. Optional query parameters say
-where it was spoken (`phone_origin`), each URL-encoded, at most 200
+where it was spoken (`phone::origin`), each URL-encoded, at most 200
 characters, and ignored when missing, repeated, or malformed:
 
 ```ts
@@ -97,7 +97,7 @@ turn on Labs › Hindi in Latin letters.
 Android › Keyboard › Learn from Hex history, on by default, fetched at most
 every six hours). Counts of each word and each pair of neighbouring words in
 this computer's History, within its retention, never a dictation itself
-(`phone_words`). Spellings are as said mid-sentence; pairs are lowercase,
+(`phone::words`). Spellings are as said mid-sentence; pairs are lowercase,
 never cross a sentence or clause mark, and are sent only when seen twice.
 
 ```json
@@ -110,7 +110,7 @@ Forget learned words clears both.
 
 `GET /phone/v1/replacements`: Global's text replacements (Settings ›
 Output), as the keyboard's text shortcuts, fetched at most hourly whenever
-a computer is paired (`phone_replacements`). Phrases and outputs are
+a computer is paired (`phone::replacements`). Phrases and outputs are
 trimmed; one that writes nothing is left out. At most 2,000, in Settings'
 order.
 
@@ -140,6 +140,29 @@ it" stay text, and "send" alone never sends. Only a field whose enter key
 sends or goes (`IME_ACTION_SEND`, `IME_ACTION_GO`), never a password field;
 the rest of the dictation goes in first, nothing is sent if it didn't, and
 there is no undo. The floating button never sends.
+
+## Rewrite
+
+`POST /phone/v1/rewrite` with `Content-Type: application/json` and a body up
+to 64 KiB: `{"text": "…"}`, sent only when someone taps the keyboard's
+Rewrite. OpenCode rewrites the text for grammar, spelling, and clarity,
+keeping its meaning, tone, and language (`phone::rewrite`,
+`dictation::processor::rewrite_typed_text`). It uses Global mode's OpenCode
+model, variant, and deadline (cut to 30 s), with Global's instructions too
+while its rewrite is on, through the running OpenCode service; Hex never
+starts or searches for OpenCode. One rewrite runs at a time. The text is
+never logged or kept, and a failure answers a code, never partial text.
+
+```ts
+200 {"text": "…"}           trimmed rewritten text
+400 invalid-request / empty-text   411 length-required   413 resource-exhausted
+415 unsupported-media-type  429 busy
+403 opencode-managed        503 opencode-not-running / opencode-outdated / service-gone
+504 rewrite-timeout         500 rewrite-failed
+```
+
+The text goes to this computer and from there to whatever model OpenCode
+uses, which may be a cloud model.
 
 ## Security
 
