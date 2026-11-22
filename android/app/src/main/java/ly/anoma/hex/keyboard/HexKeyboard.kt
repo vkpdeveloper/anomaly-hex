@@ -125,7 +125,9 @@ class HexKeyboard : InputMethodService() {
     /** A check is running; the toolbar dims the button until it's done. */
     internal var fixing = false
         private set(value) { field = value; view?.fixChanged() }
-    internal val fixShown get() = feedback.fixButton && !engine.secure
+    // tinyfix knows only English: on another layout it would "fix" every word it doesn't know, such as
+    // Hinglish "nahi" into "nazi".
+    internal val fixShown get() = feedback.fixButton && !engine.secure && layoutLanguage == Spoken.English
     internal fun fix() {
         if (fixing || !fixShown) return
         val field = engine.fieldText() ?: return

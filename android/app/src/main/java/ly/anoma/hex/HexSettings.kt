@@ -156,8 +156,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Toggle("Fix button", when (val state = fixState) {
                                 is TinyfixFiles.State.Downloading -> "Downloading, ${state.percent}%"
                                 TinyfixFiles.State.Failed -> "Couldn't download. Try again"
-                                TinyfixFiles.State.Ready -> "Fixes words like \u201Cform\u201D for \u201Cfrom\u201D"
-                                TinyfixFiles.State.Off -> "Fixes words like \u201Cform\u201D for \u201Cfrom\u201D. Downloads 3.5 MB"
+                                TinyfixFiles.State.Ready -> "Fixes English words like \u201Cform\u201D for \u201Cfrom\u201D"
+                                TinyfixFiles.State.Off -> "Fixes English words like \u201Cform\u201D for \u201Cfrom\u201D. Downloads 3.5 MB"
                             }, fixState is TinyfixFiles.State.Ready || fixState is TinyfixFiles.State.Downloading) {
                                 if (it) TinyfixFiles.enable(context, typing) else TinyfixFiles.disable(context, typing)
                             }

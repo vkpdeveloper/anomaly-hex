@@ -36,7 +36,8 @@ spelling; its literal chip accepts what you typed. The filter never changes the 
 **Keyboard › Fix button** is off by default. Turning it on downloads tinyfix's model and word
 lists (3.5 MB, MIT, pinned to one Hugging Face revision and checked by size and SHA-256) into
 the app's files; the APK ships none of it, and turning it off deletes them. The toolbar then
-shows a spellcheck button beside the mic. Tapping it checks up to 1,000 characters on each
+shows a spellcheck button beside the mic on the English layout only (tinyfix knows no other
+language, and on Hinglish it turned "nahi" into "nazi"). Tapping it checks up to 1,000 characters on each
 side of the caret with a [Kotlin port](app/src/main/java/ly/anoma/hex/fix/) of tinyfix 0.1.1
 (misspellings, and real words that don't fit, such as "form" for "from") and rewrites the
 fixed words in one batch, keeping the caret. **Undo fixes** puts them back while the field is
