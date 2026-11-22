@@ -13,11 +13,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::HttpResponse;
 
-/// The app's processor: a raw transcript, its language, and the API's
-/// shutdown flag, and the text a paste in Global mode would use. It reads the
-/// current settings each call and stops at its next stage boundary once
-/// `cancelled` is set.
-pub type Processor = Arc<dyn Fn(&str, &str, &AtomicBool) -> String + Send + Sync>;
+/// The app's processor: a raw transcript, its language, the context that
+/// picks the mode, and the API's shutdown flag, and the text a paste in that
+/// mode would use. The local API passes an empty context, so Global applies;
+/// the phone relay passes the phone app's name. It reads the current settings
+/// each call and stops at its next stage boundary once `cancelled` is set.
+pub type Processor = Arc<
+    dyn Fn(&str, &str, &crate::dictation::context::ContextSnapshot, &AtomicBool) -> String
+        + Send
+        + Sync,
+>;
 
 /// What this local API can process with, read per request so turning the lab
 /// off stops processing at once.
@@ -91,7 +96,12 @@ impl Guard {
     /// The processed text; every failed stage keeps its input. `cancelled`
     /// is the API's shutdown flag, so quitting stops at a stage boundary.
     pub(super) fn text(&self, raw: &str, language: &str, cancelled: &AtomicBool) -> String {
-        (self.processor)(raw, language, cancelled)
+        (self.processor)(
+            raw,
+            language,
+            &crate::dictation::context::ContextSnapshot::default(),
+            cancelled,
+        )
     }
 }
 
@@ -166,7 +176,7 @@ pub(super) fn wanted(path: &str) -> Result<bool, &'static str> {
 pub(crate) fn dictation_processor(
     processing: crate::dictation::modes::ProcessingState,
 ) -> Processor {
-    Arc::new(move |raw, language, cancelled| {
+    Arc::new(move |raw, language, context, cancelled| {
         let modes = processing
             .modes
             .read()
@@ -176,7 +186,7 @@ pub(crate) fn dictation_processor(
             .process_api_cancellable(
                 raw,
                 language,
-                &crate::dictation::context::ContextSnapshot::default(),
+                context,
                 &processing.transformations,
                 cancelled,
                 crate::dictation::processor::Source::Dictation,
@@ -199,18 +209,17 @@ pub(crate) fn profiles_processing(
 pub(crate) fn profiles_processor(
     transformations: Arc<crate::personal_commands::TransformationClient>,
 ) -> Processor {
-    Arc::new(move |raw, language, cancelled| {
-        let context = crate::dictation::context::ContextSnapshot::default();
+    Arc::new(move |raw, language, context, cancelled| {
         let mut processed = crate::dictation::config::dictation_profiles().process_api_cancellable(
             raw,
             language,
-            &context,
+            context,
             cancelled,
             crate::dictation::processor::Source::Dictation,
         );
         processed.apply_transformations(
             &transformations,
-            &context,
+            context,
             cancelled,
             crate::dictation::processor::Source::Dictation,
         );
@@ -255,9 +264,11 @@ mod tests {
     }
 
     fn processor() -> Processor {
-        Arc::new(|raw: &str, language: &str, _cancelled: &AtomicBool| {
-            format!("{raw} [{language}] processed")
-        })
+        Arc::new(
+            |raw: &str, language: &str, _context: &_, _cancelled: &AtomicBool| {
+                format!("{raw} [{language}] processed")
+            },
+        )
     }
 
     /// Sends one request and returns its status and body.

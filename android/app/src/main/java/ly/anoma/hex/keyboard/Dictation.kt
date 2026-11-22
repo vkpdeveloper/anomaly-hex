@@ -34,6 +34,8 @@ internal class Dictation(
     private val insert: (HexClient.Heard) -> Unit,
     /** Why dictation can't start in this field (a password), or null. */
     private val blocked: () -> String?,
+    /** The app and keyboard language the dictation is spoken in, read as it starts. */
+    private val origin: () -> HexClient.Origin = { HexClient.Origin() },
 ) {
     private val store = Store(context)
     /** The keyboard's one route to the computer, shared with the words fetch. */
@@ -42,6 +44,7 @@ internal class Dictation(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var recorder: Recorder? = null
     private var sending: Job? = null
+    private var spokenIn = HexClient.Origin()
     var phase = DictationPhase.Idle
         private set(value) { if (field != value) { field = value; show(value) } }
 
@@ -81,6 +84,7 @@ internal class Dictation(
         )
         if (!next.start()) { note(context.getString(R.string.keyboard_hint_mic_busy)); return false }
         recorder = next
+        spokenIn = origin()
         phase = DictationPhase.Listening
         router.prewarm()
         return true
@@ -92,8 +96,9 @@ internal class Dictation(
         recorder = null
         if (wav == null) { phase = DictationPhase.Idle; return }
         phase = DictationPhase.Sending
+        val from = spokenIn
         sending = scope.launch {
-            val result = runCatching { router.send { host, computer -> HexClient.transcribe(host, computer.port, computer.code, wav) } }
+            val result = runCatching { router.send { host, computer -> HexClient.transcribe(host, computer.port, computer.code, wav, from) } }
             if (result.exceptionOrNull() is CancellationException) return@launch
             sending = null
             phase = DictationPhase.Idle

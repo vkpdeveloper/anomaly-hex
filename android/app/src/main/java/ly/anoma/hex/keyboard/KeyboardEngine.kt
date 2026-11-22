@@ -751,9 +751,25 @@ internal class KeyboardEngine(
     }
 
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
-     * the capital Whisper gave it ([SpokenText.continuing], [language] as dictated or "en" translated). */
+     * the capital Whisper gave it ([SpokenText.continuing], [language] as dictated or "en" translated).
+     * With Say "send it" to send on, a dictation ending in it presses the field's send key ([SpokenSend]). */
     fun insertDictation(text: String, language: String?) {
         if (!target.connected) return
+        val send = spokenSendAction()
+        val body = if (send != null) SpokenSend.strip(text) else null
+        if (send != null && body != null) {
+            // Sent text can't be taken back, so no undo; nothing is sent when the text didn't go in.
+            if (body.isEmpty() || insertSpoken(body, language, offer = false)) target.performEditorAction(send)
+            return
+        }
+        insertSpoken(text, language, offer = true)
+    }
+    // The send key a dictation may press: the enter key's own action when it sends or goes, never in a password field.
+    private fun spokenSendAction(): Int? {
+        if (!feedback.sayToSend || secure) return null
+        return EnterKey.from(editor).action.takeIf { it == EditorInfo.IME_ACTION_SEND || it == EditorInfo.IME_ACTION_GO }
+    }
+    private fun insertSpoken(text: String, language: String?, offer: Boolean): Boolean {
         val before = if (secure) null else target.before(64)
         // The keyboard's own word list for that language, when loaded, knows far more ordinary words than
         // the speech side's short list: a word it has in lowercase and the books rarely capitalise
@@ -762,7 +778,9 @@ internal class KeyboardEngine(
         val shaped = if (model == null) SpokenText.continuing(text, before, language)
             else SpokenText.continuing(text, before, language) { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 50 }
         val result = insertion(shaped, before?.lastOrNull(), target.after(1)?.firstOrNull())
-        if (result.isNotEmpty() && target.commit(result) && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
+        if (result.isEmpty() || !target.commit(result)) return false
+        if (offer && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
+        return true
     }
 
     /** The undo chip. Undo dictation: the last dictation goes, if it is still right before the cursor with

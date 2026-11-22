@@ -88,6 +88,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val glide = remember(revision) { typing.glide }
     val glideTrail = remember(revision) { typing.glideTrail }
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
+    val sayToSend = remember(revision) { typing.sayToSend }
     // On only with the Contacts permission too. Once Android stops asking (a second no), the switch opens
     // Hex's app info instead.
     var contactsAllowed by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
@@ -215,6 +216,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 photos.on) { photos.change(it) }
                             Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
                                 typing.learnFromHistory = it
+                            }
+                            Rule(); Toggle("Say \"send it\" to send", "End a dictation with it to press send", sayToSend) {
+                                typing.sayToSend = it
                             }
                             Rule(); Entry("Forget learned words", if (confirmForget) "Tap again to forget everything the keyboard learned" else null, "", {
                                 if (confirmForget) { typing.forgetLearned(context.filesDir); confirmForget = false } else confirmForget = true

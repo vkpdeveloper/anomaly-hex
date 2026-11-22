@@ -1,9 +1,12 @@
 package ly.anoma.hex.relay
 
+import android.content.Context
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import ly.anoma.hex.speech.Spoken
 
 /** Why the computer didn't hand back a transcript. */
 sealed class HexError(message: String) : Exception(message) {
@@ -64,11 +67,48 @@ object HexClient {
      * didn't say (an older Hex). */
     data class Heard(val text: String, val language: String?)
 
+    /** Where a dictation was spoken: the app's name as the phone shows it, its package, and the
+     * keyboard layout's language. The computer picks the mode for that app; the language is only a
+     * hint. Any of them may be unknown. */
+    data class Origin(val app: String? = null, val packageName: String? = null, val language: String? = null) {
+        /** The query the transcription carries, or "" with nothing known. */
+        fun query(): String = listOf("app" to app, "package" to packageName, "language" to language)
+            .mapNotNull { (name, value) -> value?.trim()?.takeIf { it.isNotEmpty() }?.let { "$name=${URLEncoder.encode(it, "UTF-8")}" } }
+            .joinToString("&")
+            .let { if (it.isEmpty()) "" else "?$it" }
+
+        companion object {
+            /** The app behind [packageName], named as the launcher names it when Android lets Hex see it:
+             * an input method always sees the app it types into; the floating button sees launchable apps. */
+            fun of(context: Context, packageName: String?, language: String?): Origin {
+                val app = packageName?.let {
+                    runCatching {
+                        val pm = context.packageManager
+                        pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString()
+                    }.getOrNull()
+                }
+                return Origin(app?.takeIf { it.isNotBlank() && it != packageName }, packageName, language)
+            }
+
+            /** The language a keyboard layout is spoken in, as the computer names it: Hinglish is Hindi. */
+            internal fun language(layout: Spoken) = if (layout == Spoken.Hinglish) "hi" else layout.code
+        }
+    }
+
     /** Sends a WAV and returns the trimmed transcript. */
-    fun transcribe(host: String, port: Int, code: String, wav: ByteArray): Heard {
-        val json = request(host, port, code, "POST", "/phone/v1/transcriptions", wav, 2_000, 60_000)
+    fun transcribe(host: String, port: Int, code: String, wav: ByteArray, origin: Origin = Origin()): Heard {
+        val json = request(host, port, code, "POST", "/phone/v1/transcriptions" + origin.query(), wav, 2_000, 60_000)
         val language = json.optString("language").takeIf { it.isNotEmpty() && it != "auto" }
         return Heard(json.optString("transcript").trim(), language)
+    }
+
+    /** The computer's text replacements (Settings › Output), each `phrase to output`. */
+    fun replacements(host: String, port: Int, code: String): List<Pair<String, String>> {
+        val json = request(host, port, code, "GET", "/phone/v1/replacements", null, 2_000, 15_000)
+        val rows = json.optJSONArray("replacements")
+        return (0 until (rows?.length() ?: 0)).mapNotNull { i ->
+            rows!!.optJSONArray(i)?.takeIf { it.length() == 2 }?.let { it.optString(0) to it.optString(1) }
+        }
     }
 
     private fun request(

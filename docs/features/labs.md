@@ -303,7 +303,8 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        keeps a rolling 15 s SCClipBufferingOutput screen buffer for hex capture replay and the replay shortcut;
 │                                        macOS keeps its screen-recording dot lit the whole time it is on
 ├── Phone dictation no   labs.phone_dictation + labs.phone_dictation_port (0 = automatic)
-│                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi, with Global's Output steps (docs/phone-dictation.md)
+│                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi, with the Output steps of the mode for the phone's app (else Global),
+│                                        and its keyboard offers Global's one-word replacements as text shortcuts (docs/phone-dictation.md)
 ├── Copy a capture as one file no labs.copy_capture_zip (macOS, Linux, Windows)
 │                                        a finished Annotate capture goes on the clipboard as one file, <stem>.scrawl.slim.zip, written
 │                                        inside its bundle: the manifest, summary (with the bundle's path written as `.`), contact sheet,

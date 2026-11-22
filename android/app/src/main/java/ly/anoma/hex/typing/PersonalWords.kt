@@ -93,10 +93,12 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
             }
 
         /** The personal dictionary's words and shortcuts for the model's language (or every language),
-         * with the words you've written that the model lacks ([learned], `LearnedWords.words`).
+         * with the words you've written that the model lacks ([learned], `LearnedWords.words`) and the
+         * paired computer's [replacements]; your own shortcut wins one the computer also has.
          * Android lets only an enabled input method or spell checker read it, with no permission, and
          * answers anyone else with nothing; any failure reads as nothing. Read it off the main thread. */
-        fun read(resolver: ContentResolver, model: TypingModel, learned: Collection<String> = emptyList()): PersonalWords {
+        fun read(resolver: ContentResolver, model: TypingModel, learned: Collection<String> = emptyList(),
+                 replacements: Replacements = Replacements.None): PersonalWords {
             val words = ArrayList<String>(learned)
             val shortcuts = HashMap<String, String>()
             try {
@@ -113,9 +115,10 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
                     }
                 }
             } catch (_: RuntimeException) {
-                return PersonalWords(model, learned, emptyMap())
+                return PersonalWords(model, learned + replacements.words, replacements.shortcuts)
             }
-            return PersonalWords(model, words, shortcuts)
+            val mine = shortcuts.keys.mapTo(HashSet()) { it.lowercase() }
+            return PersonalWords(model, words + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts)
         }
     }
 }
