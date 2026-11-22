@@ -50,7 +50,6 @@ typedef struct {
 } HexDeviceState;
 
 static os_unfair_lock gStateLock = OS_UNFAIR_LOCK_INIT;
-static AudioServerPlugInHostRef gPlugInHost = NULL;
 static uint32_t gPlugInRefCount = 0;
 static Float64 gHostTicksPerFrame = 0.0;
 
@@ -224,8 +223,8 @@ static ULONG HexRelease(void *inDriver) {
 
 static OSStatus HexInitialize(AudioServerPlugInDriverRef inDriver, AudioServerPlugInHostRef inHost) {
     (void)inDriver;
+    (void)inHost;
     os_unfair_lock_lock(&gStateLock);
-    gPlugInHost = inHost;
 
     mach_timebase_info_data_t timebase = {0, 0};
     mach_timebase_info(&timebase);
