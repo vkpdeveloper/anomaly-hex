@@ -3070,8 +3070,11 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   ├── A word Hex doesn't know (its words, yours and learned ones) -> underlined, no pop-up;
 │   │   addresses, handles, acronyms and camelCase are left alone
 │   ├── Put the caret in it -> its fix in the strip's middle slot, other spellings beside it
-│   └── Proof limits: SpellCheckTest; underline, no pop-up and the fix seen on a Pixel
-│       emulator in a platform text field; Compose fields (Google Messages) ask for no checks
+│   ├── With the Fix button's files, on English or Hinglish -> a real word the sentence says
+│   │   is wrong ("form" for "from") gets the grammar underline; the caret in it offers the fix
+│   └── Proof limits: SpellCheckTest (tinyfix case needs HEX_TINYFIX_DIR); both underlines,
+│       no pop-up and the fixes seen on a Pixel emulator in a platform text field; Compose
+│       fields (Google Messages) ask for no checks
 └── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)
     ├── Tap the toolbar's spellcheck button (English or Hinglish layout) -> fix words
     │   within 1,000 characters of the caret

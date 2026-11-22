@@ -51,7 +51,11 @@ underlines a word the layout's language doesn't know, your personal dictionary a
 included, so Hinglish isn't marked wrong in Hinglish. It asks the app for no pop-up: put the caret in
 the word and its fix shows in the strip's middle slot, with other spellings beside it, as Gboard does.
 A word already in the text is read as each key tapped at its centre, so swapped or slipped letters
-still find it ("wrods" -> "words"). Addresses, handles, acronyms and camelCase are left alone. Apps
+still find it ("wrods" -> "words"). Addresses, handles, acronyms and camelCase are left alone. With
+**Keyboard › Fix button** on (its files downloaded), on English and Hinglish, it also runs the fix
+button's checker over each sentence: a real word the sentence says should be another ("form" for
+"from") gets Android's grammar underline, and with the caret in it the strip offers the fix in the
+middle. The two share one copy of the checker, one check at a time. Apps
 built with Compose (Google Messages) don't ask for spell checks.
 
 **Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;

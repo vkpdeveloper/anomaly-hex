@@ -25,7 +25,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ly.anoma.hex.R
-import ly.anoma.hex.fix.Tinyfix
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.Router
@@ -138,7 +137,7 @@ class HexKeyboard : InputMethodService() {
             TypingPreferences.SUGGEST_SWEAR_WORDS -> engine.swearWordsChanged()
             // Settings deleted the file; this copy goes too.
             TypingPreferences.FIX_BUTTON -> {
-                if (!feedback.fixButton) fixWork.execute { tinyfix = null }
+                if (!feedback.fixButton) fixWork.execute { TinyfixFiles.drop() }
                 view?.fixChanged()
             }
             TypingPreferences.FORGET_LEARNED -> { main.removeCallbacks(saveLearned); learned.clear(); engine.learnedWordsChanged() }
@@ -150,10 +149,9 @@ class HexKeyboard : InputMethodService() {
     }
     internal val previewAllowed get() = !engine.secure
 
-    // The fix button: its checker is read from the downloaded files on first use, on its own thread, and
-    // dropped when the button goes off. One check at a time.
+    // The fix button: its checker ([TinyfixFiles.withFixer], shared with the spell checker) is read from
+    // the downloaded files on first use, on its own thread, and dropped when the button goes off.
     private val fixWork = Executors.newSingleThreadExecutor { Thread(it, "Hex fix") }
-    private var tinyfix: Tinyfix? = null // Only touched on fixWork.
     // Hinglish's Hindi words, those its typing model has and English's lacks: tinyfix knows only English
     // and would "fix" them ("nahi" into "nazi"). Read on first use, on fixWork.
     private val hindiWords: (String) -> Boolean by lazy {
@@ -177,8 +175,7 @@ class HexKeyboard : InputMethodService() {
         val hinglish = layoutLanguage == Spoken.Hinglish
         fixWork.execute {
             val fixes = try {
-                val fixer = tinyfix ?: TinyfixFiles.load(dir).also { tinyfix = it }
-                if (hinglish) fixer.check(field.text, hindiWords) else fixer.check(field.text)
+                TinyfixFiles.withFixer(dir) { if (hinglish) it.check(field.text, hindiWords) else it.check(field.text) }
             } catch (_: Exception) { null } // The files are gone or damaged: Settings downloads them again.
             main.post {
                 fixing = false
@@ -190,7 +187,7 @@ class HexKeyboard : InputMethodService() {
     /** The toolbar's undo chip. Words a fix changed and you put back are left alone from then on. */
     internal fun undo() {
         val restored = engine.undo()
-        if (restored.isNotEmpty()) fixWork.execute { restored.forEach { tinyfix?.ignore(it) } }
+        if (restored.isNotEmpty()) fixWork.execute { TinyfixFiles.ifLoaded { fixer -> restored.forEach(fixer::ignore) } }
     }
 
     override fun onCreate() {

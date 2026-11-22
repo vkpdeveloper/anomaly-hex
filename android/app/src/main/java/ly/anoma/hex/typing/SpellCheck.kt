@@ -1,21 +1,35 @@
 package ly.anoma.hex.typing
 
+import ly.anoma.hex.fix.Fix
+
 /** Hex's spell checker over one language's words: the words of a text Hex doesn't know, each with the
  * spellings the keyboard's strip would offer for it. Not thread safe. */
 internal class SpellCheck(decoder: SpatialDecoder, addsCapitals: Boolean, suggestSwearWords: Boolean) {
-    /** The word at [from] until [to]; [suggestions] is null when Hex knows it, else what to offer, best first. */
-    data class Word(val from: Int, val to: Int, val suggestions: List<String>?)
+    /** The word at [from] until [to]; [suggestions] is null when Hex knows it, else what to offer, best first.
+     * A [wrongWord] is one Hex knows that the sentence says should be another ("form" for "from"). */
+    data class Word(val from: Int, val to: Int, val suggestions: List<String>?, val wrongWord: Boolean = false)
 
     private val word = TypingWord(decoder, spatial = true).also {
         it.addsCapitals = addsCapitals; it.suggestSwearWords = suggestSwearWords
     }
 
-    fun check(text: String): List<Word> = WORD.findAll(text).map { m ->
-        val from = m.range.first
-        val token = m.value.trimEnd('\'', '’')
-        val to = from + token.length
-        Word(from, to, if (checked(text, from, to, token)) misspelled(token, text.substring(maxOf(0, from - 40), from)) else null)
-    }.toList()
+    /** [wrongWords], given the words to leave alone (those Hex doesn't know: they're misspelled already),
+     * finds the known words the sentence says should be others: tinyfix's fixes ([ly.anoma.hex.fix.Tinyfix.check]). */
+    fun check(text: String, wrongWords: ((keep: (String) -> Boolean) -> List<Fix>)? = null): List<Word> {
+        val words = WORD.findAll(text).map { m ->
+            val from = m.range.first
+            val token = m.value.trimEnd('\'', '’')
+            val to = from + token.length
+            Word(from, to, if (checked(text, from, to, token)) misspelled(token, text.substring(maxOf(0, from - 40), from)) else null)
+        }.toList()
+        if (wrongWords == null) return words
+        val unknown = words.filter { it.suggestions != null }.mapTo(HashSet()) { text.substring(it.from, it.to) }
+        val fixes = wrongWords { it in unknown }.associateBy { it.from }
+        return words.map { w ->
+            val fix = fixes[w.from]?.takeIf { it.to == w.to && w.suggestions == null && checked(text, w.from, w.to, it.original) }
+            if (fix == null) w else w.copy(suggestions = listOf(fix.replacement), wrongWord = true)
+        }
+    }
 
     private fun misspelled(token: String, before: String): List<String>? {
         word.reread(token, before)

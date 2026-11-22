@@ -120,6 +120,22 @@ internal object TinyfixFiles {
         }
     }
 
+    // One fixer for the process, read on first use: the fix button and the spell checker share it, one
+    // check at a time (Tinyfix isn't thread safe).
+    private val sharedLock = Any()
+    private var shared: Tinyfix? = null
+
+    /** Runs [block] with the shared fixer, reading the files first if needed. Never on the main thread. */
+    fun <T> withFixer(dir: File, block: (Tinyfix) -> T): T = synchronized(sharedLock) {
+        block(shared ?: load(dir).also { shared = it })
+    }
+
+    /** Runs [block] with the shared fixer only if it's already read. */
+    fun ifLoaded(block: (Tinyfix) -> Unit) = synchronized(sharedLock) { shared?.let(block) }
+
+    /** Drops the shared fixer: the button went off and its files are going. */
+    fun drop() = synchronized(sharedLock) { shared = null }
+
     /** Reads the files into a ready fixer: most of a second (660 ms on a Pixel emulator), so never on the main thread. */
     fun load(dir: File): Tinyfix {
         val model = WrongWordModel(File(dir, "wrong-word.onnx").readBytes())

@@ -202,9 +202,14 @@ internal class KeyboardEngine(
         }
         val start = b.dropLast(left.length)
         w.reread(whole, start.takeLast(40))
-        val strip = w.strip(autocorrect = feedback.autocorrect).map {
+        var strip = w.strip(autocorrect = feedback.autocorrect).map {
             if (it.kind == Suggestion.Kind.Fix && feedback.blocked(w.decoder.model.language, whole, it.text))
                 Suggestion(it.text, Suggestion.Kind.Word) else it
+        }
+        // A word the spell checker underlined as the wrong one ("form" for "from"): its fix in the middle.
+        (if (secure) null else WrongWords.fix(whole, start))?.let { fix ->
+            strip = listOf(Suggestion(whole, Suggestion.Kind.Typed), Suggestion(fix, Suggestion.Kind.Fix)) +
+                strip.filter { it.kind != Suggestion.Kind.Typed && !it.text.equals(fix, ignoreCase = true) }.take(1)
         }
         // At the word's end it is the word in progress again: letters add to it and a pick ends it.
         if (right.isEmpty()) { prefix = start.takeLast(40); w.restored(left, prefix) }
