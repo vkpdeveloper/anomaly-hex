@@ -39,6 +39,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import ly.anoma.hex.MainActivity
 import ly.anoma.hex.R
+import ly.anoma.hex.keyboard.SpeechEnd
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.HexError
 import ly.anoma.hex.relay.Recorder
@@ -107,6 +108,7 @@ class ButtonService : AccessibilityService() {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var recorder: Recorder? = null
+    private var speech: SpeechEnd? = null
     private var settling = false
     /** Whether a text field had focus at the last look. */
     private var typing = false
@@ -267,13 +269,15 @@ class ButtonService : AccessibilityService() {
         }
         if (store.computer == null) return message(HexError.NotPaired.message.orEmpty())
         lateinit var next: Recorder
+        val end = SpeechEnd()
         next = Recorder(
-            onLevel = { peak -> main.post { bubble.level(peak) } },
+            onLevel = { peak -> main.post { if (recorder === next) { end.feed(peak); bubble.level(peak) } } },
             // At the computer's limit: send what there is rather than lose it.
             onFull = { main.post { if (recorder === next) stopAndSend() } },
         )
         if (!next.start()) return message("Microphone is busy")
         recorder = next
+        speech = end
         bubble.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         bubble.show(BubbleView.Mode.RECORDING)
         // Have the route ready by the time speaking ends.
@@ -282,9 +286,12 @@ class ButtonService : AccessibilityService() {
 
     private fun stopAndSend() {
         val wav = recorder?.stop()
-        recorder = null
+        val heard = speech?.heard == true
+        recorder = null; speech = null
         bubble.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         if (wav == null) return idle()
+        // Only the room came through: nothing to send.
+        if (!heard) return message("No speech")
         bubble.show(BubbleView.Mode.THINKING)
         // The app the text goes to picks the computer's mode; the keyboard's layout hints the language.
         val layout = TypingPreferences(this).layout ?: Spoken.system()

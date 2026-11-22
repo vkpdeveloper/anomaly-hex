@@ -1,7 +1,9 @@
 package ly.anoma.hex.keyboard
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpeechEndTest {
@@ -43,5 +45,18 @@ class SpeechEndTest {
         assertNull(end.run(500, 0.01f))
         assertNull(end.run(200, 0.5f))
         assertEquals(SpeechEnd.NO_SPEECH_MS - 700, end.run(10_000, 0.01f))
+    }
+
+    @Test fun onlyARecordingWithAVoiceInItIsHeard() {
+        val room = SpeechEnd().apply { run(4_000, 0.01f) }
+        assertFalse(room.heard)
+        // A fan loud from the start is the room, not a voice.
+        val fan = SpeechEnd().apply { run(4_000, 0.06f) }
+        assertFalse(fan.heard)
+        val click = SpeechEnd().apply { run(500, 0.005f); run(100, 0.5f); run(2_000, 0.005f) }
+        assertFalse(click.heard)
+        // Too quiet to end a tapped recording by itself, but a voice all the same.
+        val quiet = SpeechEnd().apply { run(500, 0.005f); run(1_000, 0.03f) }
+        assertTrue(quiet.heard)
     }
 }

@@ -43,6 +43,7 @@ internal class Dictation(
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var recorder: Recorder? = null
+    private var speech: SpeechEnd? = null
     private var sending: Job? = null
     private var spokenIn = HexClient.Origin()
     var phase = DictationPhase.Idle
@@ -69,14 +70,15 @@ internal class Dictation(
             note(context.getString(R.string.keyboard_hint_microphone)); return false
         }
         if (store.computer == null) { note(HexError.NotPaired.message.orEmpty()); return false }
-        val end = if (stopsItself) SpeechEnd() else null
+        // Listens to every recording, so one of only the room isn't sent; only a tapped one ends by itself.
+        val end = SpeechEnd()
         lateinit var next: Recorder
         next = Recorder(
             onLevel = { peak ->
                 main.post {
                     if (recorder !== next) return@post
                     level(peak)
-                    if (end?.feed(peak) == true) finish()
+                    if (end.feed(peak) && stopsItself) finish()
                 }
             },
             // At the computer's limit: send what there is rather than lose it.
@@ -84,17 +86,21 @@ internal class Dictation(
         )
         if (!next.start()) { note(context.getString(R.string.keyboard_hint_mic_busy)); return false }
         recorder = next
+        speech = end
         spokenIn = origin()
         phase = DictationPhase.Listening
         router.prewarm()
         return true
     }
 
-    /** Stops recording and sends it. One too short to send ends quietly. */
+    /** Stops recording and sends it. One too short to send ends quietly; one where no voice came
+     * through isn't sent, and says so. */
     fun finish() {
         val wav = recorder?.stop()
-        recorder = null
+        val heard = speech?.heard == true
+        recorder = null; speech = null
         if (wav == null) { phase = DictationPhase.Idle; return }
+        if (!heard) { phase = DictationPhase.Idle; note(context.getString(R.string.keyboard_hint_no_speech)); return }
         phase = DictationPhase.Sending
         val from = spokenIn
         sending = scope.launch {
@@ -119,13 +125,13 @@ internal class Dictation(
      * back, and the keyboard decides where it goes. */
     fun leave() {
         if (phase != DictationPhase.Listening) return
-        recorder?.cancel(); recorder = null
+        recorder?.cancel(); recorder = null; speech = null
         phase = DictationPhase.Idle
     }
 
     /** Drops the recording, or the transcript still on its way: nothing reaches the field later. */
     fun cancel() {
-        recorder?.cancel(); recorder = null
+        recorder?.cancel(); recorder = null; speech = null
         sending?.cancel(); sending = null
         phase = DictationPhase.Idle
     }
