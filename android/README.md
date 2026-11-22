@@ -45,6 +45,15 @@ and mein, kya and kiya, bhi and bhai, hai and hain stay apart, and a word Englis
 apps that ask for no personalised learning teach it nothing, and **Forget learned words** clears it.
 There is no setting.
 
+**Spell checker.** Hex is also the phone's spell checker once you choose it (**Keyboard › Spell
+checker** opens Android's page for it). [HexSpellChecker](app/src/main/java/ly/anoma/hex/keyboard/HexSpellChecker.kt)
+underlines a word the layout's language doesn't know, your personal dictionary and learned words
+included, so Hinglish isn't marked wrong in Hinglish. It asks the app for no pop-up: put the caret in
+the word and its fix shows in the strip's middle slot, with other spellings beside it, as Gboard does.
+A word already in the text is read as each key tapped at its centre, so swapped or slipped letters
+still find it ("wrods" -> "words"). Addresses, handles, acronyms and camelCase are left alone. Apps
+built with Compose (Google Messages) don't ask for spell checks.
+
 **Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
 tap it to replace the shortcut. Space, marks and return leave the shortcut as typed.
 

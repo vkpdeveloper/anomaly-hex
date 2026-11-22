@@ -1,5 +1,7 @@
 <resources>
     <!-- The keyboard's own strings, apart from the app's so each can change without the other. -->
+    <!-- A spell checker language's name in Settings: the language alone. -->
+    <string name="spell_checker_subtype" translatable="false">%s</string>
     <string name="keyboard_hint_password">Dictation is off in password fields</string>
     <string name="keyboard_hint_microphone">Allow the microphone in Hex</string>
     <string name="keyboard_hint_no_speech">No speech</string>

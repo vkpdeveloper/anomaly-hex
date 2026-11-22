@@ -3066,6 +3066,12 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   with Keyboard > Suggest contacts' emails (off) and the Contacts permission,
 │   contacts'; first in email fields, last elsewhere (AddressesAndShortcutsTest;
 │   unit tests only, no device run)
+├── Settings › Keyboard › Spell checker -> opens Android's spell checker page; choose Hex
+│   ├── A word Hex doesn't know (its words, yours and learned ones) -> underlined, no pop-up;
+│   │   addresses, handles, acronyms and camelCase are left alone
+│   ├── Put the caret in it -> its fix in the strip's middle slot, other spellings beside it
+│   └── Proof limits: SpellCheckTest; underline, no pop-up and the fix seen on a Pixel
+│       emulator in a platform text field; Compose fields (Google Messages) ask for no checks
 └── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)
     ├── Tap the toolbar's spellcheck button (English or Hinglish layout) -> fix words
     │   within 1,000 characters of the caret

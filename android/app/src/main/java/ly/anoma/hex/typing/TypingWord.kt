@@ -55,8 +55,15 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         pending = null
     }
     fun restored(text: String, before: String) { reset(before); explicit(text) } // No taps: space keeps the undone spelling.
-    /** A word already in the text, read for the strip: unlike [restored] it may be fixed, by its letters alone. */
-    fun reread(text: String, before: String) { reset(before); token = text }
+    /** A word already in the text, read for the strip: unlike [restored] it may be fixed, by its letters alone,
+     * read as each key tapped at its centre, so a slip or swapped letters still find the word ("wrods" ->
+     * "words"). A letter off the QWERTY keys (ø) leaves it untapped: fixed by the tables alone. */
+    fun reread(text: String, before: String) {
+        reset(before); token = text
+        if (!spatial || text.length > MAX_LENGTH) return
+        val centres = text.map { QWERTY.centres[it.lowercaseChar()] ?: QWERTY.centres[base(it)] ?: return }
+        for (p in centres) taps.add(decoder.score(QWERTY, p.x, p.y))
+    }
     /** Up to three words for the strip between words (iOS #2125): at a sentence's start three common
      * first words, after a comma or other mid-sentence mark words that start a clause, after a word
      * the likeliest next words from the word pairs with the language's commonest words filling the
@@ -341,6 +348,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         return if (addsCapitals || text.first().isUpperCase()) choice else choice.lowercase().takeIf { it != text }
     }
 
+    /** The word [reread] read is none Hex knows: not the dictionary's, nor yours, nor a shortcut. */
+    fun unknown() = token.isNotEmpty() && decoder.personal?.shortcut(token) == null && !knows(token)
+
     private fun knows(spelling: String) = spelling.lowercase().let {
         model.index(it) >= 0 || model.known(it) || it in shorthand || (decoder.personal?.index(it) ?: -1) >= 0
     }
@@ -369,6 +379,13 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     }
     companion object {
         const val MAX_LENGTH = 32
+        // R1's reference keys, for a word read without its taps ([reread]).
+        private val QWERTY = KeyGrid(buildMap {
+            for ((row, letters) in listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").withIndex())
+                for ((i, c) in letters.withIndex()) put(c, KeyPoint(201 + (i - (letters.length - 1) / 2.0) * 39.5, 66.5 + 56 * row))
+        }, 39.5, 56.0)
+        private fun base(c: Char) =
+            java.text.Normalizer.normalize(c.lowercase(), java.text.Normalizer.Form.NFD).firstOrNull() ?: c
         /** How far past its own touch area a likelier letter may reach, in dp, and the nats of odds
          * (ln of how many times likelier) it needs for each dp it claims (iOS letterReach, letterOddsPerPoint). */
         const val REACH = 5.0

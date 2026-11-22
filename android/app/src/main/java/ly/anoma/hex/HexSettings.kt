@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.view.textservice.TextServicesManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.button.ButtonPreferences
 import ly.anoma.hex.fix.TinyfixFiles
@@ -95,6 +97,13 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
         contactsRefused = !granted && (context as? android.app.Activity)
             ?.shouldShowRequestPermissionRationale(Manifest.permission.READ_CONTACTS) != true
         if (granted) typing.contactEmails = true
+    }
+    // Whether Android's spell checker is Hex's, read again each time you come back from its settings.
+    var hexChecks by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        val services = context.getSystemService(TextServicesManager::class.java)
+        hexChecks = services?.isSpellCheckerEnabled == true && services.currentSpellCheckerInfo?.packageName == context.packageName
+        onPauseOrDispose {}
     }
     val fixState by TinyfixFiles.state.collectAsState()
     LaunchedEffect(revision) { TinyfixFiles.refresh(context, typing) }
@@ -192,6 +201,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             // The words the keyboard keeps and suggests are Android's own personal dictionary.
                             Rule(); Entry("Personal dictionary", "Words the keyboard always knows", "↗",
                                 { context.startActivity(Intent(Settings.ACTION_USER_DICTIONARY_SETTINGS)) })
+                            // Android's spell checker setting: with Hex, a misspelled word's fixes show on the strip.
+                            Rule(); Entry("Spell checker", if (hexChecks) "Hex underlines words it doesn't know" else "Choose Hex to underline mistakes", "↗",
+                                { openSpellCheckers(context) })
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
                             Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
                             Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }
@@ -289,6 +301,12 @@ private fun reflow(lines: List<String>) = buildString {
         if (note != null) Label(note, size = 13, muted = true, lines = 2)
     }
 }
+/** Android's spell checker page, which has no public action: Settings' own screen, else the keyboards'. */
+private fun openSpellCheckers(context: Context) {
+    val page = Intent().setClassName("com.android.settings", "com.android.settings.Settings\$SpellCheckersSettingsActivity")
+    runCatching { context.startActivity(page) }.onFailure { context.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
+}
+
 @Composable private fun Entry(title: String, note: String? = null, value: String = "›", action: (() -> Unit)? = null) {
     val click = if (action != null) Modifier.clickable(role = Role.Button, onClick = action) else Modifier
     Row(Modifier.fillMaxWidth().then(click).heightIn(min = 52.dp).padding(horizontal = 16.dp, vertical = 10.dp),
