@@ -33,6 +33,7 @@ import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
 import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
+import ly.anoma.hex.typing.Replacements
 import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
@@ -125,11 +126,29 @@ class HexKeyboard : InputMethodService() {
             } finally { fetching = false }
         }
     }
+    private var fetchingReplacements = false
+    /** The computer's text replacements, as shortcuts on the strip, at most hourly while a computer is paired. */
+    private fun fetchReplacements() {
+        if (fetchingReplacements || System.currentTimeMillis() - feedback.replacementsAt < REPLACEMENTS_MS) return
+        fetchingReplacements = true
+        io.launch {
+            try {
+                val got = dictation.router.send { host, computer -> HexClient.replacements(host, computer.port, computer.code) }
+                val stored = Replacements.write(got)
+                if (stored != feedback.replacements) feedback.replacements = stored
+                feedback.replacementsAt = System.currentTimeMillis()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not paired, unreachable, or a computer without the replacements route: try again next time.
+            } finally { fetchingReplacements = false }
+        }
+    }
     // The editor's text, read from a copy kept here while it holds: a read through the InputConnection waits on the app.
     private val text by lazy { CachedText(InputConnectionTarget(this), SystemClock::uptimeMillis) }
     internal val engine by lazy {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
-            readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine) }, learned = learned,
+            readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements)) }, learned = learned,
             learnedChanged = ::learnedChanged, emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
             emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() }, background = words)
     }
@@ -165,6 +184,7 @@ class HexKeyboard : InputMethodService() {
                 if (feedback.learnFromHistory) fetchHistoryWords(force = true)
                 else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
             TypingPreferences.CONTACT_EMAILS -> contactsSettingChanged()
+            TypingPreferences.REPLACEMENTS -> engine.personalWordsChanged()
         }
     }
     internal val previewAllowed get() = !engine.secure
@@ -250,6 +270,7 @@ class HexKeyboard : InputMethodService() {
         engine.configureTyping()
         if (!engine.secure) dictation.prewarm()
         fetchHistoryWords()
+        fetchReplacements()
     }
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
                                    candidatesStart: Int, candidatesEnd: Int) {
@@ -291,5 +312,6 @@ class HexKeyboard : InputMethodService() {
         const val EMOJI_PICKS = "picks"
         const val CONTACTS_DELAY_MS = 2_000L
         const val HISTORY_WORDS_MS = 6 * 60 * 60_000L
+        const val REPLACEMENTS_MS = 60 * 60_000L
     }
 }

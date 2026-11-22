@@ -51,6 +51,16 @@ internal class TypingPreferences(context: Context) {
     var historyWordsAt: Long
         get() = prefs.getLong("historyWordsAt", 0)
         set(value) { prefs.edit().putLong("historyWordsAt", value).apply() }
+    /** The paired computer's text replacements, as [Replacements.write] keeps them; "" for none. */
+    var replacements: String
+        get() = prefs.getString(REPLACEMENTS, "").orEmpty()
+        set(value) { prefs.edit().putString(REPLACEMENTS, value).apply() }
+    /** When the computer's replacements last arrived, in wall-clock milliseconds; 0 for never. */
+    var replacementsAt: Long
+        get() = prefs.getLong("replacementsAt", 0)
+        set(value) { prefs.edit().putLong("replacementsAt", value).apply() }
+    /** The computer was forgotten or another paired: its replacements go, and the next keyboard asks again. */
+    fun forgetReplacements() { prefs.edit().putString(REPLACEMENTS, "").putLong("replacementsAt", 0).apply() }
     /** Forgets every word the keyboard learned: the saved file now, and a running keyboard's copy
      * through [FORGET_LEARNED]. */
     fun forgetLearned(files: java.io.File) {
@@ -75,5 +85,6 @@ internal class TypingPreferences(context: Context) {
         const val FORGET_LEARNED = "forgetLearned"
         const val FIX_BUTTON = "fixButton"
         const val CONTACT_EMAILS = "contactEmails"
+        const val REPLACEMENTS = "replacements"
     }
 }

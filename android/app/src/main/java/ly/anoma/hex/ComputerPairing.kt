@@ -59,6 +59,7 @@ import ly.anoma.hex.relay.isCompleteCode
 import ly.anoma.hex.relay.normalizeCode
 import ly.anoma.hex.relay.parseAddress
 import ly.anoma.hex.relay.routeKind
+import ly.anoma.hex.typing.TypingPreferences
 
 /** The computer the keyboard sends dictation to: pair one, or see, check and forget the one paired. */
 @Composable
@@ -151,6 +152,7 @@ private fun Pairing(store: Store, onChange: (Computer?) -> Unit) {
                                 routes = (hello.routes + Route(routeKind(host), host)).distinct(), model = hello.model,
                             )
                             store.computer = paired
+                            TypingPreferences(context).forgetReplacements()
                             onChange(paired)
                         },
                         onFailure = { error = (it as? HexError)?.message ?: "Can't reach Hex" },
@@ -176,7 +178,7 @@ private fun Paired(store: Store, computer: Computer, onChange: (Computer?) -> Un
             Text(computer.name, style = MaterialTheme.typography.bodyLarge)
             if (computer.model.isNotEmpty()) Note(computer.model)
         }
-        TextButton(onClick = { store.computer = null; onChange(null) }) { Text("Forget") }
+        TextButton(onClick = { store.computer = null; TypingPreferences(context).forgetReplacements(); onChange(null) }) { Text("Forget") }
     }
     val choices = listOf(RoutePreference.AUTOMATIC to "Automatic", RoutePreference.TAILSCALE to "Tailscale", RoutePreference.LAN to "Wi-Fi")
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
