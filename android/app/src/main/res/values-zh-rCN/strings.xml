@@ -1,0 +1,16 @@
+<resources>
+    <!-- 简体中文。与 iPhone 版 Hex 相同的句子沿用其 Localizable.xcstrings 的译文；Android 自有的用语（如“应用”“复制”“点按”“个人字典”）按 Android 的习惯。 -->
+    <string name="full_keyboard">全键盘</string>
+    <string name="dictation_language_automatic_detail">跟随键盘布局，否则跟随手机语言</string>
+    <string name="dictation_lowercase">小写</string>
+    <string name="dictation_lowercase_detail">全部转为小写</string>
+    <string name="dictation_format_lists">整理列表</string>
+    <string name="dictation_format_lists_detail">说“first, second”或“bullet”即可分行列出</string>
+    <string name="dictation_spoken_punctuation">口述标点</string>
+    <string name="dictation_spoken_punctuation_detail">说“comma”或“question mark”即可输入标点</string>
+    <string name="dictation_end_with_period">句末加句号</string>
+    <string name="dictation_end_with_period_detail">关闭后去掉末尾的句号，保留问号和感叹号</string>
+    <string name="dictation_vocabulary">自定词汇</string>
+    <string name="dictation_vocabulary_detail">按你的方式拼写名字和术语</string>
+    <string name="dictation_vocabulary_hint">每行一个名字或术语</string>
+</resources>

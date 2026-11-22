@@ -292,26 +292,49 @@ key is visible before release. `hex settings` takes
 `left-option+right-option`. Settings store `{"keys": [...]}`; files with the
 old `modifiers`/`key` shape load as the same chord and are written back once.
 Windows matches sides through its low-level hook and accepts one modifier
-alone (Right Alt or Right Ctrl, [#508](https://github.com/anomalyco/hex/issues/508))
+alone (left Alt by default, [#2278](https://github.com/anomalyco/hex/issues/2278);
+Right Alt or Right Ctrl too, [#508](https://github.com/anomalyco/hex/issues/508))
 as well as both Alts:
 
 ```ts
 Windows modifier-only shortcut                           // dictate.windows-lone-modifier
+  ├── Default: left Alt alone (the Mac's Option under the thumb)
   ├── Press alone -> Down; release -> Up (hold, lock, Toggle as above)
   ├── Any key or click joins while held -> Chord: Cancel if recording, else nothing
   │   (Escape never: it reaches the app and the capture goes on, #786)
   │   (the key reaches the app; locked and toggle captures keep recording)
+  ├── A modifier the chord doesn't name joins -> Its chord too: Cancel at once,
+  │   a Toggle press locks nothing, and Alt's release is the app's (no mask,
+  │   no 0xE8 tap), so Ctrl+Alt+V still fires Paste Last; if Hex swallows a key
+  │   of that chord (Paste Last's V), the mask comes back (#2278)
+  │   (a modifier the chord names, like Ctrl of Ctrl+Alt, is part of it, in either order)
   ├── Alt or Windows released -> Swallowed, VK 0xE8 tapped, release replayed
   │   -> No menu bar or Start menu; Share shortcut skips the mask
+  ├── AltGr -> A synthesized Left Ctrl and the Right Alt: the left Alt's
+  │   default ignores both, so it types and starts nothing
   └── Hex's own injected keys (paste, mask) -> Skipped by the hook (HEX_INJECTED)
 ```
+
+A modifier the chord does not name is a chord like any key: it cancels the
+hold (`names_modifier`), Toggle's press then locks nothing, and the shortcut's
+Alt release is the app's, with no mask key — unless Hex swallowed a key of
+that chord, as Paste Last's V is, which re-arms the mask so the app never
+reads a lone Alt tap. So Left Alt on the way to Ctrl+Alt+V cancels a
+dictation and Paste Last still fires, and Alt+Shift switches the keyboard
+language. A modifier the chord names is part of it,
+whichever order the keys go down in. Labs › Hold through other keys keeps a
+hold a second or more old, as it does for keys.
 
 On layouts where Right Alt is AltGr, Windows sends a synthesized Left Ctrl
 (scan code 0x21D, not 0x1D), and `GetAsyncKeyState` reports it as a real Ctrl.
 The listener's hook and the recorder's own both leave it out, so Right Alt
 alone fires there and recording it stores `right-option`; it still reaches the
-app, so AltGr keeps typing. A modifier-only binding an AltGr-layout recording
-made before this (`control+option`) still fires on AltGr, while a real Left
+app, so AltGr keeps typing. That is also why the default names the left Alt:
+an either-side Alt matches the masked read (Right Alt with its Ctrl dropped),
+so every AltGr character would press it, start a capture, and cancel it when
+the character joined — a HUD flash and a Started/Cancelled pair per character.
+A modifier-only binding an AltGr-layout recording made before this
+(`control+option`) still fires on AltGr, while a real Left
 Ctrl with Right Alt is a chord and matches only a binding that names Ctrl. On
 AltGr layouts, AltGr plus a typing key (a letter, a digit, or a punctuation
 key) types its character instead of pressing a Ctrl+Alt shortcut, so the key
@@ -319,12 +342,15 @@ reaches the app (#1964): use Left Ctrl+Alt for those shortcuts. A key that
 types nothing keeps its chord, so AltGr+F9 still presses Ctrl+Alt+F9, and
 AltGr never presses an Alt+<key> chord. Any key joining the hold still
 discards it. Checks:
+`default_binding_is_left_alt_alone`,
 `one_modifier_alone_is_a_shortcut_and_alt_or_windows_mask_their_release`,
 `altgr_left_ctrl_is_no_ctrl_for_a_right_alt_shortcut`,
 `an_altgr_recorded_control_option_still_fires`,
 `a_key_chord_on_altgr_is_not_alt_with_that_key`,
 `a_key_joining_a_held_modifier_ends_it_quietly_unless_it_records` in
 [windows/input.rs](../../src/windows/input.rs),
+`ctrl_after_alt_leaves_paste_last_to_fire` in
+[windows/input/tests/chords.rs](../../src/windows/input/tests/chords.rs),
 `left_control_bits_follow_the_hooks_and_heal_a_missed_release`,
 `a_typing_key_is_a_letter_a_digit_or_punctuation` in
 [windows/input/modifiers.rs](../../src/windows/input/modifiers.rs), and
@@ -977,11 +1003,24 @@ overridden; not run with Cohere on real audio).
 its own long-form loop also decoded a near-silent remainder (a 70 ms tail
 zero-padded to 30 s) and invented text: the Turkish
 "İzlediğiniz için teşekkür ederim.", "Altyazı M.K." (once truncated to
-"Altyazı M."), or "abone ol" repeated. A Whisper clip now chunks at Whisper's
-own 30-second window, each window passes the same detector gate as Cohere's,
-and a Whisper clip drops the audio outside its detected speech plus 500 ms
-before transcription (`whisper_audio` in
-[gguf_session.rs](../../src/transcription/gguf_session.rs)). Long Whisper
+"Altyazı M."), or "abone ol" repeated.
+
+Whisper large-v3 and large-v3-turbo do the same in Russian, appending
+"Продолжение следует..." ("to be continued") or a subtitle community's credit:
+"Субтитры сделал DimaTorzok", "Субтитры делал DimaTorzok",
+"Субтитры создавались сообществом Amara.org", "Редактор субтитров А.Семкин
+Корректор А.Егорова", or "Редактор субтитров А.Синецкая
+Корректор А.Егорова". Those join the trailing-credit list
+([subtitle_credits.rs](../../src/transcription/subtitle_credits.rs), checks
+`a_russian_continues_credit_is_removed`,
+`a_russian_subtitle_credit_is_removed`, and
+`russian_credits_later_in_the_speech_are_kept`). Not run with Whisper on real
+Russian audio.
+
+A Whisper clip now chunks at Whisper's own 30-second window, each window
+passes the same detector gate as Cohere's, and a Whisper clip drops the audio
+outside its detected speech plus 500 ms before transcription (`whisper_audio`
+in [gguf_session.rs](../../src/transcription/gguf_session.rs)). Long Whisper
 dictations in every language now go through Hex's own 30 s chunking — each
 window cut at the quietest 100 ms of its last 5 s and decoded independently —
 instead of Whisper's long-form loop; not measured on long continuous speech.
@@ -2332,7 +2371,7 @@ load, a quiet relative-path clip is discarded as before, so only captures at or
 above the fixed threshold reach the model without one.
 Output that only repeats the vocabulary prompt (Whisper, Qwen3-ASR) is dropped as well
 ([models](README.md#get-ready)), and so is a known subtitle credit at the very
-end of the text, Turkish included (#1141, #1770). A Whisper clip also loses the
+end of the text, Turkish and Russian included (#1141, #1770). A Whisper clip also loses the
 audio outside its detected speech plus 500 ms before a whole-clip transcription
 run, and a chunk of a longer one the detector hears no speech in is skipped (see
 [ongoing jobs and output](#ongoing-jobs-and-output)). Other hallucinations
@@ -2610,11 +2649,30 @@ plate; the overlay itself is not natively verified on macOS or Windows. See
 
 **Fixed November 1, 2026 (issue 873):** on macOS the HUD remembered its last
 placement and skipped sending it to Rune again when it matched, so a HUD Rune
-had put in the wrong spot on a second display (offset by the display's origin,
-with a different backing scale) stayed there on every later dictation. Each
-capture's start and each hide now forget the placement, so the next show sends
-the display and rectangle again, as Linux and Windows already do. Not run on a
-two-display Mac; the misplacement inside Rune itself is not addressed here.
+had put in the wrong spot on a second display stayed there on every later
+dictation. Each capture's start and each hide now forget the placement, so the
+next show sends the display and rectangle again, as Linux and Windows already
+do. The misplacement inside Rune itself is not addressed here.
+
+**Fixed November 21, 2026 (issue 1175):** the bottom HUD's 320 x 128 pt window
+used to hang its 27 pt transparent shadow padding below `visibleFrame`. With no
+Dock on that display and another display below it, the window crossed onto the
+display below. The reports have the external 1x display above the laptop; it
+was the primary in one report and not the other. The suspected trigger is that
+crossing a backing-scale boundary in that arrangement could leave the plate at
+the top of the display. The bottom placement now puts the window's bottom on
+`visibleFrame.y` and moves the plate down inside the window with
+`Layout.center`, so its visible 24 pt gap above the Dock or screen edge is
+unchanged and the window stays on its display. macOS also pins the HUD to the
+pointer screen's `NSScreenNumber` (`DisplayTarget::Native`) and sends a rect in
+that screen's own top-down points; in Rune's AppKit path this resolves to the
+same frame as the global `Primary` rect, so the pin is a consistency change, not
+the fix for the jump. The global `Primary` rect remains the fallback when the
+screen number cannot be read. Checks:
+`hud_placement::tests::the_bottom_window_stays_on_its_own_screen` and
+`hud_placement::tests::the_bottom_window_clears_a_dock` cover the geometry. The
+panel is not run on a two-display Mac here, so the native trigger is suspected,
+not observed.
 
 **Fixed November 10, 2026 (issue 1663):** on Linux Wayland the HUD stopped
 appearing after its monitor was removed and added back (a KVM switch, for
@@ -2850,6 +2908,17 @@ and normal Spaces keep their position. Check: `scripts/check
 dictation::indicator::tests::top_capsule` covers the math only; placement over a
 fullscreen app on a notched Mac is not yet observed.
 
+At the bottom position the plate keeps its 24 pt gap above
+`visibleFrame.y` (`rune_hud::hud_placement::BOTTOM_OFFSET`). The whole 320 x 128
+pt window sits on that display, with `Layout.center` moving the plate inside it,
+so its transparent shadow padding never hangs onto a display below. The HUD is
+also pinned to the pointer screen's `NSScreenNumber` with a display-local rect;
+that resolves to the same frame as the global `Primary` rect, so the pin is
+consistency only, and `Primary` remains the fallback when the number is
+unavailable. Checks: `hud_placement::tests::the_bottom_window_stays_on_its_own_screen`
+and `hud_placement::tests::the_bottom_window_clears_a_dock` cover the pure
+geometry; the two-display panel is not yet observed.
+
 ### Dot scope
 
 The HUD is Dot scope on every OS ([rune_hud/dot_scope.rs](../../src/rune_hud/dot_scope.rs),
@@ -3069,7 +3138,9 @@ pointer:
 
 ```ts
 Placement                                     // rune_hud::hud_placement::place
-├── Below the menu bar (default) -> 6 pt under the menu bar, or above the Dock
+├── Below the menu bar (default) -> 6 pt under the menu bar; at the bottom,
+│   24 pt above the Dock or the screen's edge, with the 320×128 pt window's
+│   bottom on the visible bottom and the plate moved down inside it
 ├── In the menu bar -> A plate fitted to the bar's height, centred on a flat
 │   screen, just right of the notch on a notched one
 ├── From the notch -> A black island grows out of the notch, 28 pt wider
@@ -3083,7 +3154,9 @@ Placement                                     // rune_hud::hud_placement::place
 ```
 
 The window is 320×128 pt so the widest plate, its shadow, and the widest
-island fit. Notch metrics come from `safeAreaInsets.top` and
+island fit. At the bottom, the window's bottom edge sits on `visibleFrame.y`
+and `Layout.center` moves the plate down inside it by the shadow padding, so
+the window never crosses onto a display below. Notch metrics come from `safeAreaInsets.top` and
 `auxiliaryTopLeftArea`/`auxiliaryTopRightArea`; the bar's height from
 `NSStatusBar.systemStatusBar.thickness`. HUD Lab tunes it live in debug
 builds, and in release builds while the `playground` experiment is on

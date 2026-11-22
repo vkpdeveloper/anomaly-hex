@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.delay
 import ly.anoma.hex.button.ButtonPreferences
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
@@ -54,6 +55,8 @@ class MainActivity : ComponentActivity() {
     private var page by mutableIntStateOf(0)
     private val typing by lazy { TypingPreferences(this) }
     private val store by lazy { Store(this) }
+    /** Enable was tapped: back from Android's keyboard list with Hex on, the keyboard picker opens by itself. */
+    private var enabling = false
     private val changed = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = refresh()
     }
@@ -73,7 +76,7 @@ class MainActivity : ComponentActivity() {
                 if (page == 3) HexSettings(setup, typing, store, { go(it) },
                     { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) })
                 else SetupScreen(page, setup, store, ::go, ::askForMic,
-                    enable = { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
+                    enable = { enabling = true; startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
                     choose = { imm.showInputMethodPicker() })
             }
         }
@@ -100,7 +103,19 @@ class MainActivity : ComponentActivity() {
         }
     }
     override fun onResume() { super.onResume(); refresh() }
-    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) refresh() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) return
+        refresh()
+        // Android asks for two steps (turn Hex on, then pick it); this saves the second tap. Android only shows
+        // the picker to the window it already treats as focused, which it learns just after this call.
+        if (enabling && page == 1) {
+            enabling = false
+            if (setup.enabled && !setup.chosen) window.decorView.postDelayed({
+                if (hasWindowFocus() && page == 1 && !setup.chosen) imm.showInputMethodPicker()
+            }, 300)
+        }
+    }
     override fun onDestroy() { contentResolver.unregisterContentObserver(changed); super.onDestroy() }
 }
 
@@ -143,6 +158,14 @@ private fun SetupScreen(page: Int, setup: Setup, store: Store, go: (Int) -> Unit
                             Welcome()
                         }
                         1 -> {
+                            // Moves on by itself once the last row is done here, as iPhone Hex's setup does
+                            // (not when Back returns to a page that was already done).
+                            val done = setup.ready && computer != null
+                            var wasDone by remember { mutableStateOf(done) }
+                            LaunchedEffect(done) {
+                                if (done && !wasDone) { delay(800); go(2) }
+                                wasDone = done
+                            }
                             Spacer(Modifier.height(26.dp))
                             Heading("Set up Hex")
                             Detail("Allow the microphone, choose Hex as your keyboard, then connect the computer that transcribes.")

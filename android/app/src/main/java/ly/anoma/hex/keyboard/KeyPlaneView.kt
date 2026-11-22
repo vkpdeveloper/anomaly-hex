@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -24,7 +25,8 @@ import kotlin.math.roundToInt
 
 /** The keys, laid out as Gboard's: three rows from the page's layout (or the number pad), then a
  * bottom row that changes with the page. Every point of the area types a key (KeyRowLayout); space
- * and enter stay mounted across page changes, so a held space keeps its slide. */
+ * and enter stay mounted across page changes, so a held space keeps its slide. Keys that type as they
+ * lift do so in the order the fingers went down ([Rollover]). */
 internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, private val host: KeyboardView,
                             private val feedback: LetterFeedback) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
@@ -43,11 +45,14 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private val letters = LinkedHashMap<Char, KeyCap>()
     private var grid: KeyGrid? = null
     private var pendingAccents: Runnable? = null
+    private val roll = Rollover()
     private val rows = LinearLayout(context)
     private val bottom = KeyRowLayout(context, 10f, side, gap, insetTop, lastHeight - insetTop - (if (landscape) keyHeight else px(KeyboardMetrics.LAST_KEY_HEIGHT)))
     private val modeKey = caps.cap(context.getString(R.string.keyboard_numbers_label), context.getString(R.string.keyboard_numbers),
         KeyFill.Function, KeyboardMetrics.LABEL, pill = true, weight = 500) { ime.engine.mode() }
-    private val comma = caps.cap(",", context.getString(R.string.keyboard_comma), KeyFill.Function) { ime.engine.type(",") }
+    // Gboard's @ in email fields and / in web addresses, else a comma (FieldKind).
+    private var commaText = ","
+    private val comma = caps.cap(",", context.getString(R.string.keyboard_comma), KeyFill.Function) { ime.engine.type(commaText) }
     private val period = caps.cap(".", context.getString(R.string.keyboard_period), KeyFill.Function) { ime.engine.type(".") }
     private val emojiKey = caps.icon(R.drawable.ic_emoji, context.getString(R.string.keyboard_emoji), KeyFill.Letter, { host.openEmoji() })
     // Gboard sets its two lines tight and its digits apart.
@@ -99,6 +104,12 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         spaceKey.setOnTouchListener { v, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    // Another key going down while space is held types the space first, unless it moved the cursor.
+                    roll.down(v) {
+                        removeCallbacks(pickKeyboard); val typing = v.isPressed && cursorSlide == null
+                        v.isPressed = false; cursorSlide = null
+                        if (typing) v.performClick()
+                    }
                     v.isPressed = true; cursorSlide = null; spaceGesture.down(e.x, e.y, e.eventTime)
                     spacePoint = KeyPoint((v.left + e.x).toDouble(), (bottom.top - rows.top + e.y).toDouble())
                     postDelayed(pickKeyboard, ViewConfiguration.getLongPressTimeout().toLong())
@@ -108,16 +119,22 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                     if (!spaceGesture.still) removeCallbacks(pickKeyboard)
                     if (characters != null) (cursorSlide ?: ime.engine.cursorSlide().also { cursorSlide = it }).moveTo(characters)
                 }
-                MotionEvent.ACTION_UP -> {
+                MotionEvent.ACTION_UP -> if (roll.up(v)) {
                     removeCallbacks(pickKeyboard); val pressed = v.isPressed; v.isPressed = false
                     if (pressed && spaceGesture.up()) v.performClick()
                     cursorSlide = null
                 }
-                MotionEvent.ACTION_CANCEL -> { removeCallbacks(pickKeyboard); v.isPressed = false; cursorSlide = null }
+                MotionEvent.ACTION_CANCEL -> { roll.up(v); removeCallbacks(pickKeyboard); v.isPressed = false; cursorSlide = null }
             }
             true
         }
+        spaceKey.sound = AudioManager.FX_KEYPRESS_SPACEBAR
         enterKey = caps.cap("", context.getString(R.string.keyboard_return), KeyFill.Enter, KeyboardMetrics.LABEL, pill = true) { ime.engine.enter() }
+        enterKey.sound = AudioManager.FX_KEYPRESS_RETURN
+        enterKey.textEntry = false
+        modeKey.textEntry = false
+        emojiKey.textEntry = false
+        numpadKey.textEntry = false
         enterIcon.imageTintList = ColorStateList.valueOf(context.getColor(R.color.kb_enter_ink))
         enterKey.face.addView(enterIcon, FrameLayout.LayoutParams(px(27f), px(27f), Gravity.CENTER))
     }
@@ -156,7 +173,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             if (index == 2) {
                 val switch = if (symbols) caps.cap(context.getString(if (page.more) R.string.keyboard_numbers_label else R.string.keyboard_page_symbols),
                     context.getString(R.string.keyboard_more_symbols), KeyFill.Function,
-                    if (page.more) KeyboardMetrics.LABEL else 17f, weight = 500) { ime.engine.shiftUp() }
+                    if (page.more) KeyboardMetrics.LABEL else 17f, weight = 500) { ime.engine.shiftUp() }.also { it.textEntry = false }
                 else shiftKey(page)
                 row.add(switch, 0f, side); at = side
             }
@@ -178,8 +195,8 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         // Shift acts as it goes down and again as it lifts: a chord types capitals.
         key.setOnTouchListener { v, e ->
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { v.isPressed = true; ime.engine.shiftDown() }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (v.isPressed) { v.isPressed = false; ime.engine.shiftUp() } }
+                MotionEvent.ACTION_DOWN -> { roll.down(v); v.isPressed = true; ime.engine.shiftDown() }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { roll.up(v); if (v.isPressed) { v.isPressed = false; ime.engine.shiftUp() } }
             }
             true
         }
@@ -202,14 +219,29 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         if (digit != null) caps.hint(k, digit)
         if (!symbols) { letters[c] = k; caseKeys.add(c to k) }
         fun options(): List<String> {
-            if (symbols) return emptyList()
+            if (symbols) return LetterFeedback.symbolHolds(c)
             val accents = LetterFeedback.options(cased(c).single(), layoutCode)
             return if (digit == null) accents else listOf(digit.toString()) + accents.drop(1)
         }
-        k.setOnTouchListener { v, e ->
+        if (options().isNotEmpty()) k.longClickLabel = context.getString(R.string.keyboard_more_characters)
+        // Types the key as its finger lifts, or earlier when another key goes down first (Rollover).
+        fun finish() {
             val text = downText ?: cased(c)
+            val selected = feedback.selected()
+            val pressed = k.isPressed; k.isPressed = false; clearCallout()
+            if (pressed && selected != null && selected != text) {
+                val g = geometry(); val p = touch
+                if (g != null && p != null && selected.single().isLetter()) ime.engine.letter(selected, p.x, p.y, g, explicit = true)
+                else ime.engine.type(selected)
+            } else if (pressed) k.performClick()
+            touch = null; downText = null
+        }
+        k.setOnTouchListener { v, e ->
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
+                // A second finger on the same key is a second press: the first types now.
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (e.actionMasked == MotionEvent.ACTION_POINTER_DOWN && roll.up(k)) finish()
+                    roll.down(k) { finish() }
                     clearCallout(); v.isPressed = true
                     downText = cased(c)
                     touch = KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble())
@@ -221,22 +253,13 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                     }
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (feedback.choosing) feedback.move(xInHost(row, v, e.x))
+                    if (feedback.choosing) feedback.move(xInHost(row, v, e.x), yInHost(row, v, e.y))
                     else if (e.x < -slop || e.x > v.width + slop || e.y < -slop || e.y > v.height + slop) {
                         clearCallout(); v.isPressed = false
                     }
                 }
-                MotionEvent.ACTION_UP -> {
-                    val selected = feedback.selected()
-                    val pressed = v.isPressed; v.isPressed = false; clearCallout()
-                    if (pressed && selected != null && selected != text) {
-                        val g = geometry(); val p = touch
-                        if (g != null && p != null && selected.single().isLetter()) ime.engine.letter(selected, p.x, p.y, g, explicit = true)
-                        else ime.engine.type(selected)
-                    } else if (pressed) v.performClick()
-                    touch = null; downText = null
-                }
-                MotionEvent.ACTION_CANCEL -> { v.isPressed = false; clearCallout(); touch = null; downText = null }
+                MotionEvent.ACTION_UP -> if (roll.up(k)) finish()
+                MotionEvent.ACTION_CANCEL -> if (roll.up(k)) { v.isPressed = false; clearCallout(); touch = null; downText = null }
             }
             true
         }
@@ -246,9 +269,21 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private fun deleteKey(): KeyCap {
         val key = caps.icon(R.drawable.ic_delete, context.getString(R.string.keyboard_delete), KeyFill.Function, { ime.engine.delete() }, size = 35f)
         deleteKeys += key
+        key.sound = AudioManager.FX_KEYPRESS_DELETE
+        key.textEntry = false
+        fun lift() {
+            removeCallbacks(repeatDelete); key.isPressed = false
+            val slide = deleteSlide
+            when {
+                slide != null -> if (slide.words > 0) ime.engine.deleteSelection()
+                deleting && !repeated && deleteGesture.tap -> key.performClick()
+            }
+            deleting = false; deleteSlide = null
+        }
         key.setOnTouchListener { v, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    roll.down(v) { lift() }
                     repeated = false; deleting = true; v.isPressed = true; deleteSlide = null
                     deleteGesture.down(e.x)
                     postDelayed(repeatDelete, KeyboardMetrics.DELETE_REPEAT_DELAY)
@@ -262,17 +297,9 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                     if (!deleteGesture.still) removeCallbacks(repeatDelete)
                     deleteSlide?.select(words)
                 }
-                MotionEvent.ACTION_UP -> {
-                    removeCallbacks(repeatDelete); v.isPressed = false
-                    val slide = deleteSlide
-                    when {
-                        slide != null -> if (slide.words > 0) ime.engine.deleteSelection()
-                        deleting && !repeated && deleteGesture.tap -> v.performClick()
-                    }
-                    deleting = false; deleteSlide = null
-                }
+                MotionEvent.ACTION_UP -> if (roll.up(v)) lift()
                 MotionEvent.ACTION_CANCEL -> {
-                    removeCallbacks(repeatDelete); deleting = false; v.isPressed = false
+                    roll.up(v); removeCallbacks(repeatDelete); deleting = false; v.isPressed = false
                     deleteSlide?.select(0); deleteSlide = null
                 }
             }
@@ -325,6 +352,10 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         val kind = when { page.numpad -> 3; !page.symbols -> 0; page.more -> 2; else -> 1 }
         modeKey.label?.text = context.getString(if (page.symbols) R.string.keyboard_letters_label else R.string.keyboard_numbers_label)
         modeKey.contentDescription = context.getString(if (page.symbols) R.string.keyboard_letters else R.string.keyboard_numbers)
+        commaText = if (kind == 0) page.kind.mark else ","
+        comma.label?.text = commaText
+        comma.contentDescription = context.getString(when (commaText) {
+            "@" -> R.string.keyboard_at; "/" -> R.string.keyboard_slash; else -> R.string.keyboard_comma })
         if (kind == bottomKind) return
         bottomKind = kind
         // A held space keeps its press: it is re-added, never recreated.
@@ -386,6 +417,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
 
     /** A touch's x in the host's coordinates, where the accent callout is drawn. */
     private fun xInHost(row: View, key: View, x: Float) = left + rows.left + row.left + key.left + x
+    private fun yInHost(row: View, key: View, y: Float) = top + rows.top + row.top + key.top + y
 
     /** Each letter's drawn keycap centre, in the rows' coordinates, which the touches use too. */
     private fun capCentre(cap: KeyCap) = KeyPoint(cap.left + cap.paddingLeft + (cap.width - cap.paddingLeft - cap.paddingRight) / 2.0,
@@ -414,7 +446,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         pendingAccents?.let(::removeCallbacks); pendingAccents = null; feedback.clear()
     }
     fun cancelGestures() {
-        clearCallout()
+        clearCallout(); roll.clear()
         removeCallbacks(repeatDelete); removeCallbacks(pickKeyboard)
         spaceKey.isPressed = false
         deleting = false

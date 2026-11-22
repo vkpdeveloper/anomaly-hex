@@ -239,15 +239,18 @@ private enum HexKeySide: CaseIterable {
     }
 }
 
-/// Settings › Keyboard: Full or Dictation bar (with Auto-start under the bar, On switch by
-/// default, and always on iPad, which shows the bar), the full keyboard's rows (only while it's
+/// Settings › Keyboard: Full or Dictation bar, on an iPhone and an iPad alike (with Auto-start
+/// under the bar, On switch by default), the full keyboard's rows (only while it's
 /// chosen; Auto-capitalization, on by default as Apple's, sits above Autocorrect; Spatial autocorrect only while Autocorrect is on, and Suggest swear words off by
 /// default, as Apple's keyboard never offers them, then Vocabulary, Hex's list of your own
 /// words; Hex key, Right by default, under Languages),
 /// and haptics, which the dictation bar uses too. Below, Swipe typing, which says it needs
 /// the full keyboard while the dictation bar is chosen, and Emoji (on by default, with Clear
-/// emoji history while it's on), the bar's emoji key too.
+/// emoji history while it's on), the bar's emoji key too. The dictation bar and Haptics say
+/// they need Full Access, and say it isn't on yet until a keyboard with it has reported in.
 struct KeyboardSettingsPage: View {
+    /// `KeyboardSetupMonitor.fullAccessOn`.
+    let fullAccessOn: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var fullKeyboard = FullKeyboardSettings().isEnabled
     @State private var autoCapitalization = FullKeyboardSettings().autoCapitalization
@@ -264,9 +267,11 @@ struct KeyboardSettingsPage: View {
     @State private var autoStart = FullKeyboardSettings().dictationBarAutoStart
     @State private var practiceText = ""
 
-    /// The full keyboard is iPhone only: on an iPad the keyboard shows the dictation bar, whichever
-    /// is chosen. Hex runs there as an iPhone app, whose interface idiom says phone, so this reads
-    /// the hardware model (the simulated one in the simulator).
+    /// On an iPad, while Full is chosen, the row says the full keyboard is there too: it shows
+    /// the dictation bar only when that is chosen, as on an iPhone (until build 117 an iPad
+    /// always showed the bar).
+    /// Hex runs there as an iPhone app, whose interface idiom says phone, so this reads the
+    /// hardware model (the simulated one in the simulator).
     private static let runsOnPad: Bool = {
         if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
             return simulated.hasPrefix("iPad")
@@ -279,13 +284,21 @@ struct KeyboardSettingsPage: View {
         return model.hasPrefix("iPad")
     }()
 
+    /// A row's detail for something that needs Full Access: the detail, or while Full Access
+    /// isn't on, that it isn't (as Swipe typing says it needs the full keyboard).
+    private func fullAccessNeed(_ detail: String) -> String {
+        fullAccessOn ? detail : String(localized: "Needs Full Access, which isn't on yet")
+    }
+
     var body: some View {
         SettingsPageScaffold(title: "Keyboard") {
             SettingsCard {
                 HStack(spacing: 12) {
                     SettingsRowLabel(
                         title: String(localized: "Keyboard"),
-                        detail: Self.runsOnPad ? String(localized: "On iPad, Hex shows the dictation bar") : nil
+                        detail: fullKeyboard
+                            ? (Self.runsOnPad ? String(localized: "The full keyboard works on iPad too") : nil)
+                            : fullAccessNeed(String(localized: "The dictation bar needs Full Access"))
                     )
                     Spacer(minLength: 8)
                     SettingsSegments(
@@ -301,7 +314,7 @@ struct KeyboardSettingsPage: View {
                 .padding(.vertical, 10)
                 .frame(minHeight: 50)
 
-                if !fullKeyboard || Self.runsOnPad {
+                if !fullKeyboard {
                     SettingsDivider()
 
                     HStack(spacing: 12) {
@@ -390,7 +403,7 @@ struct KeyboardSettingsPage: View {
 
                 SettingsToggleRow(
                     title: String(localized: "Haptics"),
-                    detail: String(localized: "A light tap as you press Hex's keys"),
+                    detail: fullAccessNeed(String(localized: "A tap as you press Hex's keys. Needs Full Access")),
                     isOn: $haptics
                 )
 
@@ -599,6 +612,8 @@ struct ExperimentsSettingsPage: View {
     @State private var confirmingTouchReset = false
     @State private var germanSpatialAutocorrect = FullKeyboardSettings().germanSpatialAutocorrect
     @State private var emojiLettersUnderEmojiKey = FullKeyboardSettings().emojiLettersUnderEmojiKey
+    @State private var twoThumbSelection = FullKeyboardSettings().twoThumbSelection
+    @State private var hideWordSuggestions = FullKeyboardSettings().hideWordSuggestions
     @State private var learnPerLanguage = TypingJournalSettings().learnsPerLanguage
     @State private var multilingualParakeet = MultilingualParakeetSettings().isEnabled
     private let multilingualParakeetFits = MultilingualParakeetSettings.fits()
@@ -680,6 +695,24 @@ struct ExperimentsSettingsPage: View {
 
                 SettingsDivider()
 
+                // Off by default: a second finger on the trackpad is ignored, as before.
+                SettingsToggleRow(
+                    title: String(localized: "Two-thumb selection"),
+                    detail: String(localized: "With the space bar as a trackpad, a second thumb selects: each thumb moves one end."),
+                    isOn: $twoThumbSelection
+                )
+
+                SettingsDivider()
+
+                // Off by default: the strip above the keys hides its words, not itself.
+                SettingsToggleRow(
+                    title: String(localized: "Hide word suggestions"),
+                    detail: String(localized: "On the full keyboard, the bar above the keys stops suggesting words. Autocorrect still fixes words as you type, and the Hex key and Paste stay."),
+                    isOn: $hideWordSuggestions
+                )
+
+                SettingsDivider()
+
                 // Off by default: one shared list of learned words and fixes, as before.
                 SettingsToggleRow(
                     title: String(localized: "Learn each language separately"),
@@ -718,6 +751,12 @@ struct ExperimentsSettingsPage: View {
         .onChange(of: emojiLettersUnderEmojiKey) { _, enabled in
             FullKeyboardSettings().emojiLettersUnderEmojiKey = enabled
         }
+        .onChange(of: twoThumbSelection) { _, enabled in
+            FullKeyboardSettings().twoThumbSelection = enabled
+        }
+        .onChange(of: hideWordSuggestions) { _, enabled in
+            FullKeyboardSettings().hideWordSuggestions = enabled
+        }
         .onChange(of: learnPerLanguage) { _, enabled in
             TypingJournalSettings().learnsPerLanguage = enabled
         }
@@ -740,6 +779,8 @@ struct ExperimentsSettingsPage: View {
             refreshAdaptiveTouchStatus()
             germanSpatialAutocorrect = FullKeyboardSettings().germanSpatialAutocorrect
             emojiLettersUnderEmojiKey = FullKeyboardSettings().emojiLettersUnderEmojiKey
+            twoThumbSelection = FullKeyboardSettings().twoThumbSelection
+            hideWordSuggestions = FullKeyboardSettings().hideWordSuggestions
             learnPerLanguage = TypingJournalSettings().learnsPerLanguage
             multilingualParakeet = MultilingualParakeetSettings().isEnabled
         }

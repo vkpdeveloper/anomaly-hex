@@ -517,12 +517,12 @@
     "A" : {
       "shouldTranslate" : false
     },
-    "A light tap as you press Hex's keys" : {
+    "A tap as you press Hex's keys. Needs Full Access" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "按下 Hex 的按键时会有轻微触感"
+            "value" : "按下 Hex 的按键时会有触感，需开启完全访问"
           }
         }
       }
@@ -806,6 +806,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "取消听写"
+          }
+        }
+      }
+    },
+    "Paste dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴听写"
           }
         }
       }
@@ -1884,6 +1894,16 @@
         }
       }
     },
+    "Needs Full Access, which isn't on yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需开启完全访问，目前尚未开启"
+          }
+        }
+      }
+    },
     "Needs the full keyboard" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1993,16 +2013,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "开"
-          }
-        }
-      }
-    },
-    "On iPad, Hex shows the dictation bar" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在 iPad 上显示听写栏"
           }
         }
       }
@@ -2730,6 +2740,16 @@
         }
       }
     },
+    "The full keyboard works on iPad too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPad 上也能使用完整键盘"
+          }
+        }
+      }
+    },
     "The microphone is busy. Try again." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3049,6 +3069,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "跳过"
+          }
+        }
+      }
+    },
+    "The dictation bar needs Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写栏需开启完全访问"
           }
         }
       }
@@ -3373,12 +3403,12 @@
         }
       }
     },
-    "Turn on Allow Full Access in Settings." : {
+    "Turn on Allow Full Access in Settings for dictation, haptics and copy and paste in the keyboard." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请在“设置”中打开“允许完全访问”。"
+            "value" : "请在“设置”中打开“允许完全访问”，以便在键盘中使用听写、触感反馈和拷贝粘贴。"
           }
         }
       }
@@ -3719,6 +3749,76 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "每次打开听写栏时"
+          }
+        }
+      }
+    },
+    "Two-thumb selection" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "双拇指选择"
+          }
+        }
+      }
+    },
+    "With the space bar as a trackpad, a second thumb selects: each thumb moves one end." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "空格键作为触控板时，第二根拇指可选择：每根拇指移动一端。"
+          }
+        }
+      }
+    },
+    "Cut" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剪切"
+          }
+        }
+      }
+    },
+    "No text selected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未选择文本"
+          }
+        }
+      }
+    },
+    "Selected: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选择：%@"
+          }
+        }
+      }
+    },
+    "Hide word suggestions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏词语建议"
+          }
+        }
+      }
+    },
+    "On the full keyboard, the bar above the keys stops suggesting words. Autocorrect still fixes words as you type, and the Hex key and Paste stay." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在全键盘上，按键上方的栏不再建议词语。自动改正仍会在你输入时修正词语，Hex 键和粘贴保持原样。"
           }
         }
       }

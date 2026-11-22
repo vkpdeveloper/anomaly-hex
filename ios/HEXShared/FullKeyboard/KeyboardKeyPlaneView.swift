@@ -84,6 +84,7 @@ final class KeyboardKeyPlaneView: UIView {
     /// this view lies over the strip, so it gets those touches before the suggestions.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         engine.layout.touchAreaFrame.contains(point) || engine.takesStripTouch(at: point)
+            || (engine.startsTwoThumbSelection && engine.layout.stripFrame.contains(point))
     }
 
     // MARK: - Drawing
@@ -91,14 +92,15 @@ final class KeyboardKeyPlaneView: UIView {
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         let layout = engine.layout
-        let isLandscape = layout.orientation == .landscape
+        // An iPad's keys are as large turned as upright, so they keep the portrait labels.
+        let isLandscape = layout.orientation == .landscape && layout.metrics.pad == nil
         let radius = layout.metrics.cornerRadius
         var pressed = engine.pressedKinds
         if let lingeringKind { pressed.insert(lingeringKind) }
         pressed.formUnion(lingeringFunctionKinds)
         // Like Apple's spacebar trackpad, key glyphs fade out while sliding the cursor, and the
         // keycaps fade most of the way to blank (`trackpadKeycapAlpha`).
-        let hideGlyphs = engine.isTrackpadActive
+        let hideGlyphs = engine.isTrackpadActive || (engine.isSelectionActive && !engine.selectionActionsShown)
         let glyphAlpha = currentGlyphAlpha()
         let keycapAlpha = 1 - (1 - Self.trackpadKeycapAlpha) * (1 - glyphAlpha)
         let showGlyphs = { () -> Bool in
@@ -221,6 +223,11 @@ final class KeyboardKeyPlaneView: UIView {
                 context.fillKeycap(frame, fill: fill, radius: radius)
                 guard showGlyphs() else { continue }
                 drawEmojiFace(in: labelFrame, diameter: isLandscape ? 18 : 19, context: context, keyFill: fill)
+            case .dismiss:
+                let lit = pressed.contains(.dismiss)
+                context.fillKeycap(frame, fill: lit ? palette.functionHeldFill : palette.keyFill, radius: radius)
+                guard showGlyphs() else { continue }
+                drawSymbol("keyboard.chevron.compact.down", in: labelFrame, color: palette.textBase, pointSize: 19, yOffset: 0)
             }
         }
     }
@@ -485,8 +492,19 @@ final class KeyboardKeyPlaneView: UIView {
     // and after a move, so the line names the key the finger slid onto.
 
     func began(id: Int, sample: TypingLogTouchSample) {
-        // A second finger on the trackpad's blank keys: no click, no key (`touchBegan`).
-        if engine.isTrackpadActive { return }
+        // A second finger on the trackpad: Two-thumb selection takes it, or it's ignored as
+        // before (no click, no key). While its actions show, a touch only dismisses them.
+        if engine.selectionActionsShown {
+            engine.touchBegan(id: id, at: sample.point)
+            return
+        }
+        if engine.isSelectionActive { return }
+        if engine.isTrackpadActive {
+            guard engine.startsTwoThumbSelection else { return }
+            typingLog?.touch(.began, id: id, sample: sample, key: engine.key(at: sample.point), under: engine.layout.hitTest(sample.point))
+            engine.touchBegan(id: id, at: sample.point)
+            return
+        }
         // A swipe still under way types its word before this key's letter.
         swipe?.touchWillBegin()
         // The key's tick and click go first, on touch-down as Apple's do: the press's own work
@@ -556,7 +574,7 @@ final class KeyboardKeyPlaneView: UIView {
         case .delete:
             let repeated = CACurrentMediaTime() - deleteStartedAt >= FullKeyboardEngine.repeatDelay
             return repeated || deleteSwipe?.touchID == id && deleteSwipe?.isActive == true ? nil : .delete
-        case .space, .returnKey, .globe, .emoji:
+        case .space, .returnKey, .globe, .emoji, .dismiss:
             return touch.key.kind
         default:
             return nil
@@ -589,7 +607,7 @@ final class KeyboardKeyPlaneView: UIView {
 
     /// The labels' opacity for this frame, easing toward hidden while the trackpad is on.
     private func currentGlyphAlpha() -> CGFloat {
-        let target: CGFloat = engine.isTrackpadActive ? 0 : 1
+        let target: CGFloat = engine.isTrackpadActive || (engine.isSelectionActive && !engine.selectionActionsShown) ? 0 : 1
         if glyphFade?.to != target, glyphFade != nil || glyphAlpha != target {
             if window == nil || UIAccessibility.isReduceMotionEnabled {
                 endGlyphFade(at: target)

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.media.AudioManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.TypedValue
@@ -12,6 +13,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
@@ -32,9 +34,17 @@ internal class KeyCap(context: Context, fill: KeyFill, description: String, pill
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     var label: TextView? = null
     val face = FrameLayout(context)
+    /** The system's key click this key plays as it goes down, when the system's Touch sounds are on. */
+    var sound = AudioManager.FX_KEYPRESS_STANDARD
+    /** TalkBack types a text entry key as the finger lifts from it (its Typing preference, as for Gboard's
+     * keys); switches and enter take a double tap. */
+    var textEntry = true
+    /** What TalkBack names the key's long press, when it has one. */
+    var longClickLabel: String? = null
     init {
         contentDescription = description
-        isFocusable = true; setOnClickListener { click() }
+        // The key click below replaces View's own, which would sound again as performClick runs on lifting.
+        isFocusable = true; isSoundEffectsEnabled = false; setOnClickListener { click() }
         val corner = KeyboardMetrics.CORNER * resources.displayMetrics.density
         // A pill's radius is half its height; GradientDrawable clamps a large radius to that.
         fun shape(c: Int) = GradientDrawable().apply { cornerRadius = if (pill) 1e4f else corner; setColor(context.getColor(c)) }
@@ -46,10 +56,13 @@ internal class KeyCap(context: Context, fill: KeyFill, description: String, pill
         face.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         addView(face, LayoutParams(-1, -1))
     }
+    // A tap as each key goes down, as on Gboard. The click is the system's own, so it follows Touch
+    // sounds (AudioManager.playSoundEffect checks the setting).
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN && haptics() &&
-            Settings.System.getInt(context.contentResolver, "keyboard_vibration_enabled", 1) != 0)
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            if (vibrates(context, haptics())) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            context.getSystemService(AudioManager::class.java)?.playSoundEffect(sound)
+        }
         return super.dispatchTouchEvent(event)
     }
     // View normally posts its click after UP. Letter gestures commit on UP itself;
@@ -65,8 +78,19 @@ internal class KeyCap(context: Context, fill: KeyFill, description: String, pill
         }
         return true
     }
-    override fun getAccessibilityClassName() = "android.widget.Button"
+    // No "Button" after every key, as Gboard's keys say nothing but their names.
+    override fun getAccessibilityClassName(): CharSequence = View::class.java.name
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.isTextEntryKey = textEntry
+        val label = longClickLabel
+        if (label != null && isLongClickable) info.addAction(AccessibilityNodeInfo.AccessibilityAction(AccessibilityNodeInfo.ACTION_LONG_CLICK, label))
+    }
 }
+
+/** Hex's Haptics setting and the system's Keyboard vibration both on. */
+internal fun vibrates(context: Context, haptics: Boolean) =
+    haptics && Settings.System.getInt(context.contentResolver, "keyboard_vibration_enabled", 1) != 0
 
 /** Builds keys with the keyboard's colours, font and haptics setting. Sizes are in dp, not sp:
  * Gboard's keys keep their size whatever the system's font scale. */

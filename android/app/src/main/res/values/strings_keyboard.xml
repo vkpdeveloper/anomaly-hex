@@ -7,6 +7,9 @@
     <string name="keyboard_dictate">Voice typing</string>
     <string name="keyboard_cancel_dictation">Cancel dictation</string>
     <string name="keyboard_finish_dictation">Finish dictation</string>
+    <string name="keyboard_undo_dictation">Undo dictation</string>
+    <string name="keyboard_pane">Hex keyboard, %1$s</string>
+    <string name="keyboard_more_characters">Show more characters</string>
     <string name="keyboard_transcribing">Transcribing</string>
     <string name="keyboard_recording">Recording</string>
     <string name="keyboard_open_hex">Hex settings</string>
@@ -14,17 +17,19 @@
     <string name="keyboard_keep">Keep %1$s</string>
     <string name="keyboard_suggest">Suggest %1$s</string>
     <string name="keyboard_correction">Correction %1$s</string>
-    <string name="keyboard_numbers_label">\?123</string>
+    <string name="keyboard_numbers_label" translatable="false">\?123</string>
     <string name="keyboard_numbers">Numbers and symbols</string>
-    <string name="keyboard_letters_label">ABC</string>
+    <string name="keyboard_letters_label" translatable="false">ABC</string>
     <string name="keyboard_letters">Letters</string>
     <string name="keyboard_numpad">Number pad</string>
     <string name="keyboard_emoji">Emoji</string>
     <string name="keyboard_space">Space</string>
     <string name="keyboard_period">Period</string>
     <string name="keyboard_comma">Comma</string>
+    <string name="keyboard_at">At sign</string>
+    <string name="keyboard_slash">Slash</string>
     <string name="keyboard_return">Return</string>
-    <string name="keyboard_page_symbols">=\\&lt;</string>
+    <string name="keyboard_page_symbols" translatable="false">=\\&lt;</string>
     <string name="keyboard_more_symbols">More symbols</string>
     <string name="keyboard_caps_lock">Caps lock</string>
     <string name="keyboard_shift">Shift</string>

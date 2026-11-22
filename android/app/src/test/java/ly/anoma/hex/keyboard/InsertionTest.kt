@@ -203,6 +203,7 @@ class InsertionTest {
             override fun commit(text: String) = true
             override fun deleteBefore(length: Int) = true
             override fun deleteCodePointsBefore(count: Int) = true
+            override fun deleteAround(before: Int, after: Int) = true
             override fun beginBatch() {}
             override fun endBatch() {}
             override fun setSelection(start: Int, end: Int) = moves.add(start)
@@ -464,8 +465,64 @@ class InsertionTest {
     @Test fun automaticDictationFollowsTheKeyboardLayout() {
         assertEquals(DictationLanguage.Spanish, DictationLanguage.automatic(Spoken.Spanish, listOf("en")))
         assertEquals(DictationLanguage.Norwegian, DictationLanguage.automatic(Spoken.Norwegian, listOf("en")))
-        assertEquals(DictationLanguage.German, DictationLanguage.automatic(null, listOf("fr", "de", "en")))
+        assertEquals(DictationLanguage.German, DictationLanguage.automatic(null, listOf("ja", "de", "en")))
         assertEquals(DictationLanguage.Norwegian, DictationLanguage.automatic(null, listOf("nb")))
         assertEquals(DictationLanguage.English, DictationLanguage.automatic(null, listOf("ja")))
+    }
+    @Test fun frenchItalianAndDutchAreDictationLanguages() {
+        assertEquals(DictationLanguage.French, DictationLanguage.automatic(Spoken.French, listOf("en")))
+        assertEquals(DictationLanguage.Italian, DictationLanguage.automatic(Spoken.Italian, listOf("en")))
+        assertEquals(DictationLanguage.Dutch, DictationLanguage.automatic(null, listOf("nl", "en")))
+        assertEquals(DictationLanguage.French, DictationLanguage.automatic(null, listOf("fr")))
+        assertEquals(Spoken.French, DictationLanguage.French.layout)
+        assertEquals(null, DictationLanguage.Dutch.layout)
+        fun polished(text: String, language: DictationLanguage) =
+            SpokenText.format(text, SpeechOptions(Style.Polished, language, false, false, spokenPunctuation = true))
+        assertEquals("Bonjour, comment ça va\u202F?", polished("bonjour virgule comment ça va point d'interrogation", DictationLanguage.French))
+        assertEquals("Ciao, come stai?", polished("ciao virgola come stai punto interrogativo", DictationLanguage.Italian))
+        assertEquals("Heel erg bedankt voor je hulp.", polished("heel erg bedankt voor je hulp", DictationLanguage.Dutch))
+        assertEquals("la réunion", SpokenText.continuing("La réunion", "et", "fr"))
+        assertEquals("Paris est", SpokenText.continuing("Paris est", "et", "fr"))
+        assertEquals("il treno", SpokenText.continuing("Il treno", "e", "it"))
+        assertEquals("de trein", SpokenText.continuing("De trein", "en", "nl"))
+    }
+    // Batch 3 (Rollover, holds, field kinds). These belong in a KeyboardTouchTest once new test files are agreed.
+    @Test fun overlappingKeysTypeInTheOrderTheyWentDown() {
+        val typed = StringBuilder()
+        val roll = Rollover()
+        fun down(key: String) = roll.down(key) { typed.append(key) }
+        fun up(key: String) { if (roll.up(key)) typed.append(key) }
+        down("a"); down("s"); up("s"); up("a")              // a down, s down, s up, a up
+        down("d"); up("d")
+        down(" "); down("f"); up(" "); up("f")             // space held, f down: the space first
+        roll.down("shift"); down("g"); up("g"); up("shift") // shift acts as it goes down; it types nothing
+        down("h"); roll.down("shift"); up("h")              // h held, shift down: h types first
+        assertEquals("asd fgh", typed.toString())
+    }
+    @Test fun heldKeysOfferGboardsOptions() {
+        assertEquals(listOf("3", "e", "è", "é"), LetterFeedback.holds('e', "en", KeyboardLetters.digit("en", 'e')).take(4))
+        assertEquals(listOf("1"), LetterFeedback.holds('q', "en", KeyboardLetters.digit("en", 'q')))
+        assertEquals(listOf("0"), LetterFeedback.holds('p', "en", KeyboardLetters.digit("en", 'p')))
+        assertEquals(null, KeyboardLetters.digit("nb", 'å'))             // å, ü: no digit
+        assertEquals(null, KeyboardLetters.digit("en", 'a'))
+        assertEquals("¢", LetterFeedback.symbolHolds('$').first())
+        assertEquals(",", LetterFeedback.periodHolds[0][LetterFeedback.PERIOD_DEFAULT])
+        assertEquals(emptyList<String>(), LetterFeedback.symbolHolds('@'))
+    }
+    @Test fun emailAndWebAddressFieldsSwapTheComma() {
+        val text = android.text.InputType.TYPE_CLASS_TEXT
+        assertEquals("@", FieldKind.of(text or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS).mark)
+        assertEquals("@", FieldKind.of(text or android.text.InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS).mark)
+        assertEquals("/", FieldKind.of(text or android.text.InputType.TYPE_TEXT_VARIATION_URI).mark)
+        assertEquals(",", FieldKind.of(text or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES).mark)
+        assertEquals(",", FieldKind.of(android.text.InputType.TYPE_CLASS_NUMBER).mark)
+    }
+    @Test fun deleteTakesAWholeEmoji() {
+        assertEquals(4, DeleteSlide.lastCharacter("a\uD83D\uDC4D\uD83C\uDFFD"))                  // 👍🏽
+        assertEquals(4, DeleteSlide.lastCharacter("\uD83C\uDDEB\uD83C\uDDF7"))                   // 🇫🇷
+        assertEquals(8, DeleteSlide.lastCharacter("\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67")) // 👨‍👩‍👧
+        assertEquals(7, DeleteSlide.lastCharacter("\uD83D\uDE4B\uD83C\uDFFC\u200D\u2640\uFE0F")) // 🙋🏼‍♀️
+        assertEquals(1, DeleteSlide.lastCharacter("ab"))
+        assertEquals(0, DeleteSlide.lastCharacter(""))
     }
 }

@@ -4,6 +4,11 @@ import UIKit
 /// through the text in two dimensions, faster the faster the finger.
 @MainActor
 extension FullKeyboardEngine {
+    /// Whether the space bar's trackpad is moving the cursor now.
+    var isTrackpadActive: Bool {
+        touches.values.contains(where: \.isTrackpad)
+    }
+
     /// The space bar held `trackpadHoldDelay` without sliding: the trackpad starts where the
     /// finger is, as Apple's does, so letting go types no space (a press held to move the
     /// cursor used to type one beside the space already there).
@@ -72,6 +77,7 @@ extension FullKeyboardEngine {
     /// It may show more of the text, or that the cursor is at the text's start or a line's end,
     /// so the cursor goes where the point is once more.
     func trackpadFieldChanged() {
+        guard trackpadSelectionState.session == nil else { return }
         guard let (id, found) = touches.first(where: { $0.value.isTrackpad }), var state = found.trackpad else { return }
         var touch = found
         if state.nearsEdge { _ = catchUp(&state) }
@@ -81,10 +87,13 @@ extension FullKeyboardEngine {
     }
 
     /// The trackpad finger lifts: the cursor goes where the point is, among the rows known.
-    func liftTrackpad(_ touch: inout ActiveTouch) {
+    /// `movingCursor` false settles the state without moving the host: the two-thumb
+    /// selection has taken over the anchor the host should stay on.
+    func liftTrackpad(_ touch: inout ActiveTouch, movingCursor: Bool = true) {
         guard var state = touch.trackpad else { return }
         let offset = state.settle(at: clock(), lifting: true)
         touch.trackpad = state
+        guard movingCursor else { return }
         log(&touch, offset)
         if offset != 0 { trackpadMovedCursor(by: offset) }
     }

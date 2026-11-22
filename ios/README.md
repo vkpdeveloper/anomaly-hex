@@ -113,7 +113,10 @@ never at a launch by itself.
     (`hex-dictation://keyboard/record?...`) with a 10-second
     handoff window and starts recording. Hex never opens another app: the
     handoff screen shows a quiet "Swipe bar to return" cue over the home
-    indicator, and you swipe back to the app you were typing in.
+    indicator, and you swipe back to the app you were typing in. The text goes in
+    once the keyboard is on screen there again: iOS often starts a new keyboard on
+    the way back, and one that inserted while it loaded, before its field was
+    connected, lost the text (iPad mini, iPadOS 18, TestFlight build 115).
   - **GPU Dot Scope (`HEXShared/DotScope.swift`, `DotScopeShader.metal`):**
     Both `HEXMobile` and `HEXKeyboard` render Hex's desktop menu-bar braided
     oscilloscope (`src/dot_scope.rs`, `src/rune_hud.wgsl`) at native display
@@ -288,7 +291,12 @@ never at a launch by itself.
     while the bar shows the Full Access hint or a notice. A tap there does nothing,
     a slide cancels it, and a word's slot keeps its tap and its hold (Add to
     vocabulary). The bar's Paste is plain text on the words' line, and Paste and
-    Next keyboard centre on the keyboard's middle, not the strip's.
+    Next keyboard centre on the keyboard's middle, not the strip's. Paste shows
+    only while the field is empty, as Apple's keyboard offers a copy, and Code
+    from Messages only in an empty one-time-code field with a number pad or with
+    autocorrection set either way (as WebKit sets it on Safari's
+    `autocomplete="one-time-code"`): a chat box that marks itself one-time-code
+    keeps its suggestions.
   - **Apple Intelligence cleanup (Settings › Experiments › Clean up with
     Apple Intelligence, iOS 26+):** Off by default. For every style but `Verbatim`,
     one on-device FoundationModels pass before formatting fixes clearly
@@ -665,9 +673,9 @@ never at a launch by itself.
     as `FullKeyboardSettings.isEnabled`, App Group key `experiments.fullKeyboard`
     from when the full keyboard was an experiment: unset or true is Full, false
     the dictation bar, so testers who turned that experiment off keep the bar;
-    on an iPad, where the keyboard always shows the dictation bar, the row says so:
-    "On iPad, Hex shows the dictation bar"), Auto-start (Never, On switch by default, or
-    Always) while the dictation bar is chosen or on an iPad, then Languages, Auto-capitalization, Autocorrect (with Spatial autocorrect below it while it's
+    an iPad follows the same choice, and there, while Full is chosen, the row says "The full
+    keyboard works on iPad too", since until build 117 an iPad always showed the bar), Auto-start (Never, On
+    switch by default, or Always) while the dictation bar is chosen, then Languages, Auto-capitalization, Autocorrect (with Spatial autocorrect below it while it's
     on), Suggest swear words, Vocabulary (Hex's custom vocabulary list, how many words it
     holds) and Key pop-ups only while Full is chosen, Haptics (the dictation bar uses it too),
     then Swipe typing and Emoji (Clear emoji history while it's on), which say they need the
@@ -677,8 +685,8 @@ never at a launch by itself.
     by default) with its Typing logs viewer while it's on.
   - **Experiments:** Hinglish (Hindi in Latin letters), Clean up with Apple
     Intelligence, Adaptive touch (its status and Reset touch learning below the switch),
-    German spatial autocorrect, ABC under the emoji key, and Multilingual model
-    (Parakeet).
+    German spatial autocorrect, ABC under the emoji key, Two-thumb selection, Hide word
+    suggestions, and Multilingual model (Parakeet).
 
   Simulator scenes: `--snap-state settings-home` (ready), `setup` (keyboard
   added, Full Access not confirmed yet), `setup-sheet`, `setup-sheet-microphone`
@@ -1064,26 +1072,45 @@ never at a launch by itself.
   same), and a keyboard can't tell which, so the strip carries its own room: the 27 pt
   strip it replaces left the words 9 pt under the edge whenever iOS added nothing.
   Turned, the strip is 42 pt and the keyboard 204 pt.
+  Where iOS gives the keyboard a shorter view than it asks for (Spotlight on an iPhone
+  17 Pro Max, iOS 27.3, TestFlight: about 20 pt short), the rows fit the height it has:
+  the strip keeps its size and the keycaps and the gaps between rows shrink alike
+  (`KeyboardMetrics.fitted`), instead of row 4 falling under iOS's globe band.
   Dictating no longer grows the keyboard. On the iPhone Duo (`KeyboardPosture`,
   model `iPhone19,4`) iOS sets third-party keyboards in an inset platter with a band
   of its own above them, so the strip has no gap there, and the keys follow Apple's
   for each screen: 56 pt rows folded, 59.7 pt unfolded and turned, 51.7 pt unfolded
   upright, starting as far in from the screen's side as Apple's. Measured in the
   simulator; unverified on a Duo.
-- **Background (full keyboard and dictation bar):** Under its keys Hex draws a thin
-  blurred material (`KeyboardBackdropView`: the system's ultra-thin material, shaded 22%
-  in dark mode, with the panel's 26 pt top corners) instead of a fixed colour, so the
-  keyboard takes most of the colour of iOS's glass panel behind it. On an iPhone 17 Pro
-  (iOS 27.2, dark mode) the glass reads 31 of 255 over Notes and 54 over a light web
-  page; Hex's area reads 36 and 46, where the opaque 34,34,35 panel it replaces was a
-  slab 20 darker than the glass over light pages, with a hard top edge and square corners,
-  which read as a clipped top bar. It isn't clear, as SwiftKey's is, because iOS can leave
-  Apple's keyboard under a third-party one: in a field that takes focus as its screen
-  appears and has an input accessory view, switching from Hex to Apple's keyboard and back
-  keeps Apple's key plane in the app's view tree under Hex (every switch in the iOS 27.0
-  and 27.2 simulators, under a bare clear keyboard extension too; one TestFlight report,
-  build 56, iPhone 17, iOS 27.0.1; not in Notes or Safari on an iPhone 17 Pro on 27.2).
-  Through the material's blur those keys are an even, slightly lighter tone with no shapes.
+- **Word suggestions (full keyboard):** The strip above the keys shows the words the engine
+  offers as you type, and after a space the finished word's emoji. Settings › Experiments ›
+  Hide word suggestions (off by default, `experiments.hideWordSuggestions`, App Group) stops
+  the suggestions: the strip keeps its height, the Hex key, Undo, status, notices and the Paste
+  chip, but shows no typing or next-word suggestions, swipe readings, finished-word emoji, or
+  the chip that keeps what you typed while a correction is still ahead (keep literal).
+  Autocorrect still corrects on space, and the chip that puts back what it replaced (`.revert`)
+  stays after Delete. With no words offered, tapping the left slot to keep what you typed
+  mid-word and holding a word to add it to Custom vocabulary are gone. Off, the strip suggests
+  exactly as it did.
+- **Background (full keyboard and dictation bar):** Hex draws nothing behind its keys, so
+  the keyboard's background is iOS's own glass panel: the same colour as the band iOS adds
+  above a third-party keyboard and the globe row under it, over any app or wallpaper, with
+  or without that band (no step at Hex's edges on an iPhone 17 Pro, iOS 27.2, in Notes,
+  Safari on a light page and Spotlight over a wallpaper, and in the iOS 27.0 and 27.2
+  simulators, light and dark). One case gets a cover, because iOS can leave Apple's keyboard
+  under a third-party one. In a field that takes focus as its screen appears and has an
+  input accessory view, opened with Hex, switching to Apple's keyboard never tells Hex it
+  disappeared and keeps its view; switching back puts a new Hex over both, and Apple's keys
+  show through Hex's translucent ones (every switch in the iOS 27.0 and 27.2 simulators,
+  under a bare clear keyboard extension too; one TestFlight report, build 56, iPhone 17,
+  iOS 27.0.1; never in Notes, Safari or Spotlight on an iPhone 17 Pro). Hex can't see the
+  app's views, but it can see its own earlier keyboard still on screen in the same field
+  (`KeyboardsOnScreen`), and only then draws a thin blurred material under itself
+  (`KeyboardBackdropView`), through which Apple's keys are an even, slightly lighter tone
+  with no shapes. Opened with Apple's keyboard, or focused by a tap, the same field frees
+  Hex as usual and nothing is left behind. Until build 117 the material was always on: 5 to
+  9 off the glass in dark mode and neutral grey where the glass takes a wallpaper's tint, so
+  Hex showed as a panel of another colour inside iOS's panel, with a seam under iOS's band.
 - **Split keyboard (iPhone Duo):** Unfolded and held upright (the inner screen wider than
   tall), the full keyboard splits as Apple's does there (`SplitGeometry`): each half at
   the keyboard's side with Apple's 46.3 pt keys on a 57 pt pitch, row 2 half a key in
@@ -1097,6 +1124,30 @@ never at a launch by itself.
   setting: Apple's split follows its own Split Keyboard preference, which a keyboard
   extension can't read, so Hex splits whenever the Duo is in that posture (the iOS
   27.2 simulator has Apple's off until `KeyboardShouldSplitInDefaultContext` is set).
+- **iPad:** The app is iPhone-only (`TARGETED_DEVICE_FAMILY` 1), but iPadOS runs its keyboard
+  extension as an iPad keyboard across the screen, so the full keyboard shows there too
+  (Settings › Keyboard picks it or the dictation bar, as on an iPhone). It keeps the
+  iPhone's rows and takes Apple's iPad key sizes (`KeyboardPadSize`, `KeyboardPadPlacement`,
+  `KeyboardMetrics.pad`), measured beside Apple's keyboard in the iPadOS 27.2 simulator:
+  docked, Apple's key heights, row pitch, gaps and side inset for the iPad mini (under 800 pt
+  across), 11-inch and 13-inch (1,000 pt and up), upright or turned, so its four rows sit
+  exactly on Apple's bottom four (letters and the bottom row; the 13-inch's number row and
+  the 11- and 13-inch's tab, caps lock and extra keys are a later step), counted from the
+  screen's bottom, where iPadOS leaves 20 pt empty under a third-party keyboard (3 pt under
+  Apple's). Which way up comes from the keyboard's width against the screen, not the size
+  classes, which an iPad keeps regular either way. Above the rows the strip is Apple's 44 pt
+  bar with the words centred, and above it 44 pt stay clear, as the dictation bar keeps them:
+  iPadOS always adds its own 55 pt bar above a docked keyboard (undo, redo, paste; empty in
+  Windowed Apps), and in some apps it draws that bar over the keyboard's top instead (Notes on
+  an iPad mini, iPadOS 26.6, TestFlight). So Hex is taller than Apple's (353 against 282 pt
+  on the mini and 11-inch upright). Docked, the bottom row ends in Apple's hide-keyboard key,
+  the labels keep their upright sizes turned, and keys show no balloons, as Apple's don't.
+  Floating (iPadOS makes every keyboard 320 pt wide, with no bar above and its own globe and
+  dictation band below), Hex is Apple's floating keyboard: 26 × 38.25 pt keys on a 54.3 pt
+  pitch, 35.5 pt shift and delete, 123, space and return on row 3's columns, and the strip
+  where Apple's bar is, 271 pt in all as Apple's; it shows no globe of its own there.
+  iPadOS grants a custom keyboard any height it asks for (up to 900 pt tried); one that asks
+  for none gets 258 pt (343 turned) on the 11-inch.
 - **Touch targets (full keyboard):** Every point of the key area types a key: gaps
   split down the middle, the outer keys reach the screen's edges, and row 1 also
   takes the 8 pt gap under the strip (on the Duo, the strip's bottom 4 pt below its
@@ -1145,10 +1196,35 @@ never at a launch by itself.
   only the cursor's sentence or line and a little before it, so at that text's edge the cursor
   waits for the host to show more, and past its first or last line it steps just past it in
   one move, which the host makes only if there's text there. The keys blank to keycaps 60%
-  of the way to the backdrop, as Apple's, with no haptic while it moves. Apple's
-  second-finger tap to select text has no counterpart: `UITextDocumentProxy` (iOS 27.2 SDK)
-  can read the selection but not make one, so a second finger does nothing. The dictation bar's
-  space bar is the same trackpad along the line (the same still hold or a 10 pt slide, a
+  of the way to the backdrop, as Apple's, with no haptic while it moves. Apple's second-finger
+  tap to select text has no host counterpart: `UITextDocumentProxy` (iOS 27.2 SDK) can read the
+  selection but not make one. Off (the default), a second finger does nothing. Settings ›
+  Experiments › Two-thumb selection (off by default, `experiments.twoThumbSelection`, App Group)
+  gives it one: while the space bar is the trackpad, a second finger starts a selection from
+  the cursor, and the finger further left moves the start of the range, the other the end, each
+  with its own `TrackpadCursor.State` (the trackpad's gain, acceleration and rows). Settling the
+  trackpad at the start can move the host cursor once; after that, no host cursor moves. The
+  strip shows the text around the range with the selected part highlighted,
+  within the text the host shares: the range is clamped to what the field shares around the
+  cursor when the selection starts (the field shares only the cursor's sentence or line). If
+  the host's context hasn't caught up at the start the whole span is kept; either way an
+  action runs only while the host still shares the whole range, and otherwise dismisses
+  without acting. Both thumbs up shows Delete · Cut · Copy · Dictate · Cancel (Cut and
+  Copy only with Full Access, as the strip's clipboard; without it they aren't offered): Delete
+  puts the cursor at the range's end with `adjustTextPosition` and deletes its characters one by
+  one (a 👍🏽 is one); Cut copies then deletes; Copy copies and puts the cursor at the end;
+  Delete and Cut leave it at the range's start; Cancel changes nothing; and any other key
+  dismisses the actions without acting. Dictate leaves the range in place and starts the
+  keyboard's usual dictation there (the warm Hex session or in-keyboard dictation). When its
+  words are about to insert and the field still shows the range unchanged (the same field, and
+  the text around it), they replace it; otherwise they insert at the cursor as any dictation
+  would, with the range left alone. Cancelling or hearing nothing leaves the range untouched.
+  Where dictation would open Hex instead (no Full Access, or the keyboard can't dictate here),
+  tapping Dictate dismisses the actions and opens Hex (or shows the Full Access hint) with the
+  text left in place. An empty range ends like a normal
+  trackpad lift. Delete and Cut ask the host to delete once per Character: in a script whose
+  host removes one code point per call (some Devanagari and Thai clusters), the last code
+  points of a cluster can stay behind. The dictation bar's space bar is the same trackpad along the line (the same still hold or a 10 pt slide, a
   character per 7.5 pt, the keys' glyphs blanking, a selection tick per step; TestFlight
   build 56 asked for it), and a tap still types a space.
 - **Smart punctuation (full keyboard):** As on Apple's keyboard (black box, iOS 27.2), the
@@ -1244,8 +1320,9 @@ never at a launch by itself.
     recording or transcription whose heartbeat is more than 6 s old as over
     (`KeyboardSnapshot.isOrphanedJob`): a Hex that ended, crashed or was
     suspended mid-job used to hold every keyboard in recording for good. A
-    result that missed its 30 s to go in by itself stays offered in the full
-    keyboard's strip as **Paste dictation** for 10 minutes. A failure or note
+    result that missed its 30 s to go in by itself stays offered as **Paste
+    dictation** for 10 minutes, in the full keyboard's strip and in the dictation
+    bar's top row (on an iPad it once offered nothing). A failure or note
     from Hex ("Another app is using the microphone. Try again.") shows for 8 s
     after Hex wrote it (`KeyboardSnapshot.messageAt`), not for as long as it
     stays in the App Group; meanwhile both keyboards dictate in the keyboard, and
@@ -1373,6 +1450,88 @@ The cleanup tagger's model (`HEXKeyboard/CleanupTagger/HexCleanupTagger.mlpackag
 `fetch-cleanup-model.sh` downloads it and checks its SHA-256; Xcode Cloud runs it
 from `ci_scripts/ci_post_clone.sh`. A new model gets a new release tag and hash.
 
+### Replaying real typing
+
+`TypingReplayTests` runs recordings of real fingers through the keyboard as it runs: the
+key plane, Swipe typing or taps with Spatial autocorrect, then the engine's spacing. It is
+opt-in, one test per mode, and the datasets below are not vendored, so convert a recording
+to one of the two JSON shapes first. `xcodebuild` passes environment variables to the test
+runner only when they are prefixed with `TEST_RUNNER_`, and strips the prefix, so
+`TEST_RUNNER_HEX_SWIPE_REPLAY` becomes `HEX_SWIPE_REPLAY`:
+
+```sh
+TEST_RUNNER_HEX_SWIPE_REPLAY=/path/swipes.json xcodebuild test \
+  -project HEXMobile.xcodeproj -scheme HEXMobile -destination "id=<SIM_UDID>" \
+  -only-testing:HEXMobileTests/TypingReplayTests
+```
+
+Swipe recordings are `{"sentences":[{"source":String,"session":String,"words":[String],
+"gestures":[{"x":[Double],"y":[Double],"t":[Double],"start":Double?}]}]}`: one gesture per
+word, x 0…1 across the ten columns of the top letter row, from q's left edge to p's right
+edge (their centres at 0.05 and 0.95), y 0…1 from the top of the first letter row to the
+bottom of the third (row centres at 1/6, 1/2 and 5/6), t milliseconds since the finger
+landed, and the optional `start` milliseconds from the sentence's first landing to that
+one, so gestures keep the person's gaps; without it each begins 0.5 s after the previous
+lift, longer than the two windows the replay's clock drives that a lift leaves open (the
+double-space period and the strip's touch guard). A start that would put a finger down before
+the previous one came up is moved to that lift, in both modes, and `clamped` counts those. A
+gesture recorded as one point is a tap. Hex's second and third letter rows are offset half a
+column and one and a half columns, as the format assumes. Tap recordings replace `gestures`
+with `taps`, one `{x, y, t}` per touch, each array holding that touch's samples (a tap is
+usually one) on the sentence's clock; y > 1 is the space bar, x 0.25…0.75 across it.
+`TEST_RUNNER_HEX_TAP_REPLAY=/path/taps.json` does the same for taps, with Spatial
+autocorrect reading each word on its space.
+
+Both report a line per source inside `TYPING-REPLAY … TYPING-REPLAY-END`: total words,
+words outside the dictionary and their share (a word is in the dictionary when the decoder's
+model has it or English's contractions in `AutocorrectEngine.englishContractions` do; the
+model lookup gets only the word's ASCII a–z letters and apostrophes, so accented, hyphenated
+and numeric tokens normally count as outside), and accuracy among the in-dictionary words.
+Scoring lowercases, straightens curly `’`, trims leading and trailing apostrophes, and keeps
+ASCII letters: a tap compares letters, and an apostrophe only when the recorded word has one;
+a swipe compares letters only. Taps report that as `accuracy` over every in-dictionary word and
+also `all-words-accuracy` over every word, so the gap between the two is what the
+out-of-dictionary words contribute. Swipes report `accuracy` and `typed-or-offered` over the
+swipe attempts (`attempts`): gestures that became swipes, ones whose path left the key by a
+swipe's pitch and weren't promoted, and ones that read nothing. They also report
+`in-dictionary-accuracy` over every in-dictionary word — taps included, a skipped gesture
+counted wrong — and `all-words-accuracy` over every word, which is the end-to-end number:
+what the person reading the field saw, with an out-of-dictionary word now able to count as
+right when the field has it. `taps` and `taps-right` are the recordings whose path never
+leaves its key by a swipe's pitch: the keyboard types that key's letter, and the field keeps
+it, as for a person typing a one-letter word. Tap mode keeps Swipe typing attached as the
+keyboard runs it, so a recorded tap whose samples drift can be promoted to a swipe;
+`read-as-swipes` counts the recorded taps the plane took that way. `not-swipes` counts swipe
+attempts the plane never took as swipes or that read nothing; `skipped` counts gestures that
+began off the letter keys, and `clamped` the touches moved forward to the previous lift;
+unlike `taps` and `taps-right`, which count in-dictionary words, those three count every
+recorded touch, and `read-as-swipes` also counts every delivered tap, whatever its word. A
+tap's words compare an apostrophe only when the recorded word has one; a swipe's by letters
+only, because a swipe's path runs over letter keys and cannot draw one. The decoder's own
+median and p90 milliseconds close the line, though a swipe's preview decode can overlap its
+timed final decode, so a `decode-ms` sample may include that overlap; the words are
+unaffected. `HEX_REPLAY_LIMIT` caps sentences per source; `HEX_REPLAY_OUT` writes each
+sentence's intended and typed words (prefix both with `TEST_RUNNER_` too).
+
+The test with no recording checks Hex's key geometry against the grid and runs clean
+gestures through the same mapping to type the right words; it cannot catch a converter that
+emits wrong coordinates.
+
+Numbers can move between simulator iOS versions because autocorrect also consults the system
+text checker for word validity and names, and its dictionary changes with iOS.
+
+Public datasets of real typing it is meant for:
+
+- [FUTO swipe dataset](https://huggingface.co/datasets/futo-org/swipe.futo.org) (MIT).
+- [How We Swipe](https://osf.io/sj67f) (Leiva et al., MobileHCI 2021; MIT).
+- [Noisy Typing on QWERTY Keyboards](https://zenodo.org/records/24225302) (Vertanen and
+  Kristensson, IUI 2023; CC-BY-4.0).
+- [Tap Typing with Touch Sensing Images](https://github.com/google-research-datasets/tap-typing-with-touch-sensing-images)
+  (CC-BY-4.0).
+
+See [`benchmark/typing-replay/README.md`](benchmark/typing-replay/README.md) for each
+dataset's download and its `convert.py` command.
+
 ## Simulator vs. Physical iPhone Proof Limits
 
 - **Verified in Simulator (`HEXMobileTests` + `--snap-state` scenes):** Compilation
@@ -1467,7 +1626,9 @@ from `ci_scripts/ci_post_clone.sh`. A new model gets a new release tag and hash.
 - **Keyboard layouts:** `KeyboardLayoutTests` check every language's rows,
   widths, hit frames (tiling the key area and row 1's band above it with no gaps
   or overlaps), balloons
-  and accent menus at 320–440 pt, in landscape and in the iPhone Duo's postures; `AutocorrectEngineTests` and
+  and accent menus at 320–440 pt, in landscape and in the iPhone Duo's postures, and the
+  iPad's (`testPad…`: each size docked either way up against Apple's rows, floating, the
+  hide-keyboard key, targets); `AutocorrectEngineTests` and
   `FullKeyboardEngineTests` check typing, dictionaries and English-only fixes.
   Whether the simulator or an iPhone has a `UITextChecker` dictionary for
   `nb` decides Norwegian autocorrect; how good those corrections are is
@@ -1601,8 +1762,9 @@ the tag `ios-beta-appstore-<version>` (e.g. `ios-beta-appstore-1.0.0`) on that `
 it matches the Xcode Cloud start condition, and `ci_scripts/ci_post_clone.sh` stamps that
 version into `project.yml` before generating the project. Once Apple approves a
 version, later uploads must be higher than it. Hex Mobile is iPhone only (`TARGETED_DEVICE_FAMILY` 1).
-An iPad still installs it (as an iPhone app) and runs its keyboard, which there is always the
-dictation bar (the full keyboard is iPhone only). Docked, the bar keeps its top 44 pt clear:
+An iPad still installs it (as an iPhone app) and runs its keyboard as an iPad keyboard: the full
+keyboard or the dictation bar, as Settings › Keyboard chooses (see **iPad** under the full
+keyboard; until build 117 an iPad always showed the bar). Docked, the bar keeps its top 44 pt clear:
 iPadOS adds its shortcut bar (undo, redo, paste) to a custom keyboard, usually above it but
 in some apps over its top (Notes, iPadOS 26.6), where it covered the bar's top row. A
 floating keyboard (iPhone-wide) has no shortcut bar and no strip. The bar's top row is

@@ -1,5 +1,6 @@
 package ly.anoma.hex.keyboard
 
+import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import ly.anoma.hex.speech.Spoken
 
@@ -15,8 +16,24 @@ internal data class EnterKey(val label: String?, val action: Int) {
     }
 }
 
-/** What the keys show: one page of one layout, with shift and the enter key. [symbols] is any page
- * but the letters; [more] is the second symbols page and [numpad] the number pad. */
+/** What the key beside ?123 types on the letters page: Gboard's @ in email fields and / in web
+ * addresses, else a comma. */
+internal enum class FieldKind(val mark: String) {
+    Text(","), Email("@"), Url("/");
+    companion object {
+        fun of(inputType: Int): FieldKind {
+            if (inputType and InputType.TYPE_MASK_CLASS != InputType.TYPE_CLASS_TEXT) return Text
+            return when (inputType and InputType.TYPE_MASK_VARIATION) {
+                InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS -> Email
+                InputType.TYPE_TEXT_VARIATION_URI -> Url
+                else -> Text
+            }
+        }
+    }
+}
+
+/** What the keys show: one page of one layout, with shift, the enter key and the field's kind.
+ * [symbols] is any page but the letters; [more] is the second symbols page and [numpad] the number pad. */
 internal data class KeyboardPage(
     val language: Spoken,
     val symbols: Boolean,
@@ -25,6 +42,7 @@ internal data class KeyboardPage(
     val locked: Boolean,
     val enter: EnterKey,
     val numpad: Boolean = false,
+    val kind: FieldKind = FieldKind.Text,
 ) {
     val lines: List<String> get() {
         val code = language.layoutCode

@@ -61,6 +61,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     private val chip = LinearLayout(context)
     private val chipText = TextView(context)
     private val noteText = TextView(context)
+    private val undo = LinearLayout(context)
+    private var undoShown = false
     private val well = FrameLayout(context)
     private val scope = DotScopeView(context)
     private val wellText = TextView(context)
@@ -114,6 +116,23 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
             setOnClickListener { clip?.let { ime.engine.paste(it) }; clip = null; update() }
         }
         addView(chip, LayoutParams(px(CHIP_WIDTH), pill, Gravity.CENTER))
+
+        // Undo dictation, in place of the suggestions until the next edit (KeyboardEngine.UNDO_MS).
+        undo.apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = pressable(color(R.color.kb_key), false, pill / 2f)
+            setPadding(px(12f), 0, px(14f), 0); isFocusable = true
+            addView(ImageView(context).apply {
+                setImageResource(R.drawable.ic_undo); imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+                importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(px(20.2f), px(20.2f)).apply { marginEnd = px(8.2f) })
+            addView(TextView(context).apply {
+                text(this, 16.5f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
+                setText(R.string.keyboard_undo_dictation)
+            }, LinearLayout.LayoutParams(-2, -2))
+            setOnClickListener { ime.engine.undoDictation() }
+        }
+        addView(undo, LayoutParams(-2, pill, Gravity.CENTER))
 
         noteText.apply {
             text(this, 15f); setTextColor(color(R.color.kb_quiet)); gravity = Gravity.CENTER
@@ -213,6 +232,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
     }
     fun level(peak: Float) = scope.push(peak)
     /** A short line in the toolbar's middle, such as why dictation couldn't start. */
+    fun undo(shown: Boolean) { undoShown = shown; update() }
+
     fun note(text: String) {
         note = text; removeCallbacks(clearNote); postDelayed(clearNote, NOTE_MS); update()
     }
@@ -226,8 +247,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard) : FrameLa
         grid.visibility = if (idle) VISIBLE else GONE
         noteText.visibility = if (noting) VISIBLE else GONE
         noteText.text = note
-        slots.visibility = if (idle && !noting && suggesting) VISIBLE else GONE
-        val clipShown = idle && !noting && !suggesting && clip != null &&
+        val undoing = idle && !noting && undoShown
+        undo.visibility = if (undoing) VISIBLE else GONE
+        slots.visibility = if (idle && !noting && !undoing && suggesting) VISIBLE else GONE
+        val clipShown = idle && !noting && !undoing && !suggesting && clip != null &&
             System.currentTimeMillis() - clipAt < CLIP_FRESH_MS
         chip.visibility = if (clipShown) VISIBLE else GONE
     }

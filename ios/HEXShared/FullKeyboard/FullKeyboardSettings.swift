@@ -29,6 +29,7 @@ struct FullKeyboardSettings {
     static let emojiLaunchArgument = "--experiment-emoji"
     static let emojiLettersLaunchArgument = "--experiment-emoji-letters"
     static let swipeLaunchArgument = "--experiment-swipe"
+    static let twoThumbSelectionLaunchArgument = "--experiment-two-thumb-selection"
     /// Simulator scenes pass `--hex-key left` (or `right`) for Settings › Keyboard › Hex key.
     static let hexKeyLaunchArgument = "--hex-key"
     /// Simulator scenes pass `--keyboard dictation-bar` (or `full`) to pick the keyboard.
@@ -47,6 +48,8 @@ struct FullKeyboardSettings {
         static let emoji = "experiments.emoji"
         static let emojiLettersUnderEmojiKey = "experiments.emojiLettersUnderEmojiKey"
         static let swipeTyping = "experiments.swipeTyping"
+        static let twoThumbSelection = "experiments.twoThumbSelection"
+        static let hideWordSuggestions = "experiments.hideWordSuggestions"
         static let hexKeyOnLeft = "settings.keyboardHexKeyLeft"
         static let dictationBarAutoStart = "settings.dictationBarAutoStart"
     }
@@ -161,6 +164,27 @@ struct FullKeyboardSettings {
         nonmutating set { defaults?.set(newValue, forKey: Key.emojiLettersUnderEmojiKey) }
     }
 
+    /// Settings › Experiments › Two-thumb selection: while the space bar is the trackpad, a
+    /// second thumb selects — each thumb moves one end, shown in the strip, with Delete, Cut,
+    /// Copy, Dictate and Cancel once both lift. Off by default. Stored as
+    /// `experiments.twoThumbSelection`; off, a second finger is ignored as it always was.
+    var twoThumbSelection: Bool {
+        get { defaults?.object(forKey: Key.twoThumbSelection) as? Bool ?? false }
+        nonmutating set { defaults?.set(newValue, forKey: Key.twoThumbSelection) }
+    }
+
+    /// Settings › Experiments › Hide word suggestions: the strip above the keys stops suggesting
+    /// words (typing and next-word suggestions, swipe readings, the finished word's emoji, and
+    /// the chip that keeps what you typed while a correction is still ahead), while the Hex key,
+    /// Undo, status, notices and the Paste chip stay. Autocorrect still corrects on space, and
+    /// the chip that puts back what a correction replaced stays after Delete; holding a strip
+    /// word to add it to Custom vocabulary needs a suggestion, so it goes. Off by default.
+    /// Stored as `experiments.hideWordSuggestions`; off, the strip suggests exactly as it did.
+    var hideWordSuggestions: Bool {
+        get { defaults?.object(forKey: Key.hideWordSuggestions) as? Bool ?? false }
+        nonmutating set { defaults?.set(newValue, forKey: Key.hideWordSuggestions) }
+    }
+
     /// Settings › Keyboard › Swipe typing: slide through a word's letters to type it, on the
     /// English and Spanish layouts (`SwipeTyping`). On by default. Stored as
     /// `experiments.swipeTyping`, from when it was an experiment (off by default): unset or
@@ -217,6 +241,9 @@ struct FullKeyboardSettings {
         }
         if arguments.contains(Self.swipeLaunchArgument) {
             swipeTyping = true
+        }
+        if arguments.contains(Self.twoThumbSelectionLaunchArgument) {
+            twoThumbSelection = true
         }
         if let index = arguments.firstIndex(of: Self.hexKeyLaunchArgument), index + 1 < arguments.count {
             switch arguments[index + 1] {

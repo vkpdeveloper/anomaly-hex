@@ -1,7 +1,9 @@
 package ly.anoma.hex
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -35,19 +37,25 @@ import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
 
 private enum class Page(val title: String) {
-    Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"), Experiments("Experiments"),
-    Layout("Keyboard layout"), Policy("Privacy policy"), Licences("Open-source licences");
+    Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"),
+    Layout("Keyboard layout"), Policy("Privacy policy"), Licences("Open-source licences"), Licence("Open-source licences");
     val parent get() = when (this) {
         Layout -> Keyboard
         Policy, Licences -> Privacy
+        Licence -> Licences
         else -> Home
     }
 }
+
+/** Licence files the credits name, in the order they appear in assets/licenses. */
+private fun licenceFiles(context: Context) =
+    context.assets.list("licenses").orEmpty().filter { it != "credits.txt" }.sorted()
 
 @Composable
 internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                          setupPage: (Int) -> Unit, systemSettings: () -> Unit) {
     var page by rememberSaveable { mutableStateOf(Page.Home) }
+    var licence by rememberSaveable { mutableStateOf("") }
     var practice by remember { mutableStateOf("") }
     var computer by remember { mutableStateOf(store.computer) }
     val context = LocalContext.current
@@ -89,7 +97,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 colorFilter = ColorFilter.tint(colorResource(R.color.ink)))
                         }
                         if (page == Page.Home) Spacer(Modifier.width(10.dp))
-                        Label(page.title, size = 26, weight = FontWeight.SemiBold, mod = Modifier.semantics { heading() })
+                        Label(if (page == Page.Licence) licence else page.title, size = 26, weight = FontWeight.SemiBold,
+                            lines = 2, mod = Modifier.semantics { heading() })
                     }
                     if (page == Page.Home) {
                         val steps = listOf(setup.mic, setup.chosen, computer != null).count { !it }
@@ -107,7 +116,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                     Page.Home -> {
                         Card {
                             Entry("Computer", computer?.name ?: "Not connected", action = { open(Page.Computer) })
-                            listOf(Page.Keyboard, Page.Privacy, Page.Experiments).forEach { dest ->
+                            listOf(Page.Keyboard, Page.Privacy).forEach { dest ->
                                 Rule(); Entry(dest.title, action = { open(dest) })
                             }
                         }
@@ -132,9 +141,14 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                         Card {
                             Entry("Keyboard layout", if (selectedLayout == null) automatic.label else null,
                                 selectedLayout?.label ?: "Automatic", { open(Page.Layout) })
-                            Rule(); Toggle("Autocorrect", "Fix typos when you press space", autocorrect) { typing.autocorrect = it }
                             Rule(); Toggle("Auto-capitalization", "Capitalize the first word of each sentence", autoCapitalize) { typing.autoCapitalize = it }
+                            Rule(); Toggle("Autocorrect", "Fix typos when you press space", autocorrect) { typing.autocorrect = it }
+                            // Shown under Autocorrect while it is on, as on iPhone.
+                            if (autocorrect) { Rule(); Toggle("Spatial autocorrect", "Use where taps land to fix typos", spatial) { typing.spatial = it } }
                             Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
+                            // The words the keyboard keeps and suggests are Android's own personal dictionary.
+                            Rule(); Entry("Personal dictionary", "Words the keyboard always knows", "↗",
+                                { context.startActivity(Intent(Settings.ACTION_USER_DICTIONARY_SETTINGS)) })
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
                             Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
                         }
@@ -158,10 +172,6 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Entry("Open-source licences", action = { open(Page.Licences) })
                         }
                     }
-                    Page.Experiments -> Card {
-                        Toggle("Spatial autocorrect", if (autocorrect) "Use where taps land to fix typos" else "Turn on Autocorrect in Keyboard",
-                            spatial, enabled = autocorrect) { typing.spatial = it }
-                    }
                     Page.Layout -> Card {
                         (listOf(null) + Spoken.entries).forEachIndexed { i, it ->
                             if (i != 0) Rule()
@@ -169,10 +179,17 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 if (it == selectedLayout) "✓" else "", { typing.layout = it; open(page.parent) })
                         }
                     }
-                    Page.Policy, Page.Licences -> {
-                        val asset = if (page == Page.Policy) "privacy-policy.txt" else "licenses/credits.txt"
+                    Page.Policy, Page.Licences, Page.Licence -> {
+                        val asset = when (page) { Page.Policy -> "privacy-policy.txt"; Page.Licences -> "licenses/credits.txt"; else -> "licenses/$licence" }
                         val text = remember(asset) { context.assets.open(asset).bufferedReader().use { it.readText() } }
-                        SelectionContainer { Label(text.trim(), size = 14, lines = Int.MAX_VALUE) }
+                        SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(14.dp)) { Document(text) } }
+                        // The credits name these files; each opens here.
+                        if (page == Page.Licences) Card {
+                            licenceFiles(context).forEachIndexed { i, file ->
+                                if (i != 0) Rule()
+                                Entry(file, action = { licence = file; open(Page.Licence) })
+                            }
+                        }
                     }
                 }
             }
@@ -186,6 +203,26 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
         lineHeight = (size + 5).sp, color = colorResource(if (inverted) R.color.page else if (muted) R.color.quiet else R.color.ink)),
         maxLines = lines, overflow = TextOverflow.Ellipsis)
 }
+/** Plain text as paragraphs: hard-wrapped lines joined so they wrap to the screen, and a short first line
+ * with no closing punctuation (the policy's section names) set as a heading. */
+@Composable private fun Document(text: String) {
+    for (block in text.trim().split(Regex("\\n\\s*\\n"))) {
+        val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) continue
+        val titled = lines.size > 1 && lines[0].length <= 40 && lines[0].last() !in ".,:;!?)"
+        if (titled) Column { Label(lines[0], size = 15, weight = FontWeight.SemiBold); Label(reflow(lines.drop(1)), size = 14, lines = Int.MAX_VALUE) }
+        else Label(reflow(lines), size = 14, lines = Int.MAX_VALUE)
+    }
+}
+/** Joins a line to the next unless it ends a sentence or a list entry, or ends with an address. */
+private fun reflow(lines: List<String>) = buildString {
+    for ((i, line) in lines.withIndex()) {
+        append(line)
+        if (i == lines.lastIndex) break
+        val ends = line.last() in ".:;!?)" || line.substringAfterLast(' ').startsWith("http")
+        append(if (ends) "\n" else " ")
+    }
+}
 @Composable private fun Card(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colorResource(R.color.sheet)), content = content)
 }
@@ -195,7 +232,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
 @Composable private fun RowScope.RowTitle(title: String, note: String?) {
     Column(Modifier.weight(1f)) {
         Label(title, weight = FontWeight.Medium)
-        if (note != null) Label(note, size = 13, muted = true)
+        if (note != null) Label(note, size = 13, muted = true, lines = 2)
     }
 }
 @Composable private fun Entry(title: String, note: String? = null, value: String = "›", action: (() -> Unit)? = null) {

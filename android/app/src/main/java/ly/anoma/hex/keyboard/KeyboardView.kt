@@ -1,6 +1,8 @@
 package ly.anoma.hex.keyboard
 
 import android.content.Context
+import android.os.Build
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowInsets
 import android.widget.LinearLayout
@@ -14,6 +16,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     private val toolbar = Toolbar(context, ime)
     private val keys = KeyPlaneView(context, ime, this, feedback)
     private val emoji = EmojiPanel(context, ime, ::closeEmoji)
+    private var phase = DictationPhase.Idle
 
     init {
         orientation = VERTICAL
@@ -34,8 +37,14 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         addView(emoji, LayoutParams(LayoutParams.MATCH_PARENT, (EmojiPanel.HEIGHT * resources.displayMetrics.density).roundToInt()))
     }
 
-    override fun showPage(page: KeyboardPage) = keys.showPage(page)
+    override fun showPage(page: KeyboardPage) {
+        keys.showPage(page)
+        // What TalkBack names the keyboard as it appears, as Gboard's "English (US) (QWERTY)".
+        val title = context.getString(R.string.keyboard_pane, page.language.label)
+        if (accessibilityPaneTitle != title) accessibilityPaneTitle = title
+    }
     override fun suggestions(slots: List<Suggestion>) = toolbar.suggestions(slots)
+    override fun undoDictation(shown: Boolean) = toolbar.undo(shown)
 
     fun openEmoji() {
         keys.cancelGestures(); ime.engine.leave()
@@ -50,8 +59,21 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         ime.engine.configureTyping(keepWord = true)
     }
     fun dictation(phase: DictationPhase) {
+        cue(this.phase, phase); this.phase = phase
         if (phase != DictationPhase.Idle) closeEmoji()
         toolbar.dictation(phase)
+    }
+    /** A light tap as the microphone opens and a lighter tick as it closes, so someone using TalkBack,
+     * which is quiet while Hex records, feels both ends. Android's own pair for a gesture's start and end. */
+    private fun cue(from: DictationPhase, to: DictationPhase) {
+        fun recording(p: DictationPhase) = p == DictationPhase.Listening
+        val modern = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        val effect = when {
+            !recording(from) && recording(to) -> if (modern) HapticFeedbackConstants.GESTURE_START else HapticFeedbackConstants.CONFIRM
+            recording(from) && !recording(to) -> if (modern) HapticFeedbackConstants.GESTURE_END else HapticFeedbackConstants.CONTEXT_CLICK
+            else -> return
+        }
+        if (vibrates(context, ime.feedback.haptics)) performHapticFeedback(effect)
     }
     fun level(peak: Float) = toolbar.level(peak)
     fun note(text: String) = toolbar.note(text)

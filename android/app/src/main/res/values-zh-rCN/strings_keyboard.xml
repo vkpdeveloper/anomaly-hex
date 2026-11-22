@@ -1,0 +1,33 @@
+<resources>
+    <!-- 键盘自己的字符串（简体中文），与应用的分开。 -->
+    <string name="keyboard_hint_password">密码框中不能听写</string>
+    <string name="keyboard_hint_microphone">请在 Hex 中允许使用麦克风</string>
+    <string name="keyboard_cancel_dictation">取消听写</string>
+    <string name="keyboard_finish_dictation">完成听写</string>
+    <string name="keyboard_undo_dictation">撤销听写</string>
+    <string name="keyboard_pane">Hex 键盘，%1$s</string>
+    <string name="keyboard_more_characters">显示更多字符</string>
+    <string name="keyboard_transcribing">正在转录</string>
+    <string name="keyboard_recording">正在录音</string>
+    <string name="keyboard_keep">保留 %1$s</string>
+    <string name="keyboard_suggest">建议 %1$s</string>
+    <string name="keyboard_numbers">数字和符号</string>
+    <string name="keyboard_letters">字母</string>
+    <string name="keyboard_emoji">表情符号</string>
+    <string name="keyboard_space">空格</string>
+    <string name="keyboard_period">句点</string>
+    <string name="keyboard_comma">逗号</string>
+    <string name="keyboard_at">@ 符号</string>
+    <string name="keyboard_slash">斜杠</string>
+    <string name="keyboard_correction">改正为 %1$s</string>
+    <string name="keyboard_return">换行</string>
+    <string name="keyboard_more_symbols">更多符号</string>
+    <string name="keyboard_caps_lock">大写锁定</string>
+    <string name="keyboard_shift">Shift</string>
+    <string name="keyboard_delete">删除</string>
+    <string name="keyboard_action_done">完成</string>
+    <string name="keyboard_action_go">前往</string>
+    <string name="keyboard_action_next">下一项</string>
+    <string name="keyboard_action_search">搜索</string>
+    <string name="keyboard_action_send">发送</string>
+</resources>

@@ -24,6 +24,8 @@ internal interface KeyboardSurface {
     /** The strip, in the typing model's order: what was typed first when it shows, then the fix or the
      * likeliest word, then the rest. Next words after a space are [Suggestion.Kind.Next]. */
     fun suggestions(slots: List<Suggestion>)
+    /** Offer Undo dictation, or stop offering it. */
+    fun undoDictation(shown: Boolean)
 }
 
 /** Keys in, text out: the current word, autocorrection and its undo, spaces, shift and the key pages.
@@ -45,6 +47,8 @@ internal class KeyboardEngine(
         const val CHIP_PAUSE_MS = 100L
         /** A selection change this long after the keyboard's last edit is the person's: a tap in the text. */
         const val OWN_EDIT_MS = 500L
+        /** Undo dictation stays this long unless something else happens first (iPhone Hex: 12 s). */
+        const val UNDO_MS = 12_000L
     }
     private var editedAt = Long.MIN_VALUE / 2
     // Every edit goes through here, so the selection changes that follow can be told from a tap in the text.
@@ -62,6 +66,11 @@ internal class KeyboardEngine(
     /** The word the caret was tapped into, split at the caret, while the strip shows its suggestions. */
     private class Tapped(val left: String, val right: String)
     private var tapped: Tapped? = null
+    // Undo dictation, as iPhone Hex's: the dictation just inserted and the text after it then, offered
+    // back until the next edit, 12 s, or the cursor leaving its end, so the chip never does nothing.
+    private data class Dictated(val text: String, val after: String)
+    private var dictated: Dictated? = null
+    private val dropDictation = Runnable { offerUndo(null) }
     private var pendingChip: Runnable? = null
     var surface: KeyboardSurface? = null
     private val models = HashMap<String, SpatialDecoder>()
@@ -89,6 +98,7 @@ internal class KeyboardEngine(
         private set
 
     fun startInput(attribute: EditorInfo) {
+        edited()
         editor = attribute
         val kind = attribute.inputType and InputType.TYPE_MASK_CLASS
         val variation = attribute.inputType and InputType.TYPE_MASK_VARIATION
@@ -114,6 +124,7 @@ internal class KeyboardEngine(
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
+        dictated?.let { if (!undoable(it)) offerUndo(null) }
         val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) {
             if (expectedCaret >= 0 && (newSelStart != expectedCaret || newSelEnd != expectedCaret)) {
@@ -170,7 +181,7 @@ internal class KeyboardEngine(
         background.execute { decoder.personal = read(decoder.model) }
     }
 
-    /** Whether the field asks for a capital here, or caps lock is on: what shift would show. */
+    /** Whether the field asks for a capital here (with Auto-capitalisation on), or caps lock is on: what shift would show. */
     private fun capsWanted(): Boolean {
         if (shift.locked) return true
         if (!feedback.autoCapitalize) return false
@@ -184,7 +195,8 @@ internal class KeyboardEngine(
         if (force || was != shift.uppercase) showPlane()
     }
     private fun showPlane() {
-        surface?.showPage(KeyboardPage(layoutLanguage(), symbols, more, shift.uppercase, shift.locked, EnterKey.from(editor), numpad))
+        surface?.showPage(KeyboardPage(layoutLanguage(), symbols, more, shift.uppercase, shift.locked, EnterKey.from(editor), numpad,
+            FieldKind.of(editor?.inputType ?: 0)))
     }
     /** The keyboard came up: it starts in lowercase, whatever shift or caps lock was when it went away. */
     fun opened() { shift.reset(); refreshCaps(force = true) }
@@ -219,13 +231,14 @@ internal class KeyboardEngine(
         val active = word
         if (ordinaryField && keepWord && active != null && active.decoder.model.language == language && active.spatial == feedback.spatial &&
             active.token.isNotEmpty() && endsWith(prefix + active.token)) {
+            active.addsCapitals = feedback.autoCapitalize
             showPlane(); showSuggestions(active); return
         }
         resetTyping()
         word = if (ordinaryField) {
             try {
                 TypingWord(models.getOrPut(language) { loadDecoder(language).also(::loadPersonal) }, feedback.spatial)
-                    .also { it.suggestSwearWords = feedback.suggestSwearWords }
+                    .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize }
             } catch (_: java.io.IOException) { null } // The editor can still type if its assets cannot be read.
         } else null
         showPlane()
@@ -281,6 +294,7 @@ internal class KeyboardEngine(
 
     fun letter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) {
         if (!target.connected) return
+        edited()
         val w = word
         if (w == null || symbols || !text.single().isLetter()) { type(text); return }
         undo = null
@@ -322,6 +336,7 @@ internal class KeyboardEngine(
      * key that starts a word. A space right after a picked word is swallowed (it still counts towards
      * double-space), and a closing mark takes its place. */
     fun pickSuggestion(text: String) {
+        edited()
         tapped?.let { pickForTapped(it, text); return }
         val w = word ?: return
         if (symbols || !canEndWord()) return
@@ -353,6 +368,7 @@ internal class KeyboardEngine(
     /** The space bar, tapped at [point] in [grid]'s coordinates (null off the letters page). */
     fun space(point: KeyPoint? = null, grid: KeyGrid? = null) {
         if (!target.connected) return
+        edited()
         val now = clock()
         val b = before()
         when {
@@ -391,6 +407,7 @@ internal class KeyboardEngine(
 
     fun type(value: String) {
         if (!target.connected) return
+        edited()
         if (value == " ") { space(); return }
         val b = before()
         val mark = value.length == 1 && TypingWord.endsWord(value[0])
@@ -417,6 +434,7 @@ internal class KeyboardEngine(
     }
     fun delete() {
         if (!target.connected) return
+        edited()
         // Right after a pick held its space, delete takes that space back and deletes nothing.
         if (heldAnchor != null && heldAnchor == before()) { clearSpaces(); surface?.suggestions(emptyList()); return }
         clearSpaces()
@@ -435,12 +453,15 @@ internal class KeyboardEngine(
             (!secure && target.selected()?.isNotEmpty() == true)
         if (selected) { target.commit(""); resetTyping() }
         else {
-            if (!target.deleteCodePointsBefore(1)) target.sendKey(KeyEvent.KEYCODE_DEL)
+            // A whole character as people see it: 👍🏽, a flag or a family is one, as on Gboard.
+            val cluster = if (track || secure) 1 else DeleteSlide.lastCharacter(target.before(32).orEmpty())
+            if (!(if (cluster > 1) target.deleteBefore(cluster) else target.deleteCodePointsBefore(1))) target.sendKey(KeyEvent.KEYCODE_DEL)
             if (track) { w!!.pop(); if (expectedCaret >= 0) expectedCaret-- } else resetTyping()
         }
         if (w != null && w.token.isNotEmpty()) showSuggestions(w) else surface?.suggestions(emptyList())
     }
     fun enter() {
+        edited()
         // A text replacement that ends the text goes in before the line break or the editor's action.
         word?.takeIf { canEndWord() }?.textReplacement(before())?.let { replace(it.original, it.replacement) }
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
@@ -468,20 +489,21 @@ internal class KeyboardEngine(
     /** The delete slide lifted with words selected: they go. */
     fun deleteSelection() {
         if (!target.connected) return
+        edited()
         target.commit(""); resetTyping(); surface?.suggestions(emptyList())
     }
 
     /** The toolbar's clipboard chip: the clip goes in as it is, never autocorrected. */
     fun paste(text: String) {
         if (!target.connected) return
-        resetTyping(); clearSpaces(); target.commit(text); surface?.suggestions(emptyList()); refreshCaps()
+        edited(); resetTyping(); clearSpaces(); target.commit(text); surface?.suggestions(emptyList()); refreshCaps()
     }
 
     /** Dictation starts: the word in progress is left as typed. */
-    fun clearForDictation() { resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
+    fun clearForDictation() { edited(); resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
 
     /** The editor or the keyboard went away: forget the word, never carry it to the next field. */
-    fun leave() { resetTyping(); clearSpaces(); word = null; surface?.suggestions(emptyList()) }
+    fun leave() { edited(); resetTyping(); clearSpaces(); word = null; surface?.suggestions(emptyList()) }
 
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
      * the capital Whisper gave it ([SpokenText.continuing], [language] as dictated or "en" translated). */
@@ -495,6 +517,27 @@ internal class KeyboardEngine(
         val shaped = if (model == null) SpokenText.continuing(text, before, language)
             else SpokenText.continuing(text, before, language) { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 50 }
         val result = insertion(shaped, before?.lastOrNull(), target.after(1)?.firstOrNull())
-        if (result.isNotEmpty()) target.commit(result)
+        if (result.isNotEmpty() && target.commit(result) && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
     }
+
+    /** Undo dictation: the last dictation goes, if it is still right before the cursor with nothing selected. */
+    fun undoDictation() {
+        val d = dictated ?: return
+        offerUndo(null)
+        if (undoable(d) && replace(d.text, "")) { resetTyping(); clearSpaces(); showPredictions(before()) }
+    }
+    private fun undoable(d: Dictated): Boolean {
+        if (secure || !target.connected || target.selected()?.isNotEmpty() == true || !endsWith(d.text)) return false
+        val after = target.after(d.after.length).orEmpty()
+        return after.startsWith(d.after) || d.after.startsWith(after)
+    }
+    private fun offerUndo(next: Dictated?) {
+        main.removeCallbacks(dropDictation)
+        val shown = dictated != null
+        dictated = next
+        if (next != null) main.postDelayed(dropDictation, UNDO_MS)
+        if (shown || next != null) surface?.undoDictation(next != null)
+    }
+    /** Any edit through the keys ends the Undo dictation offer. */
+    private fun edited() { if (dictated != null) offerUndo(null) }
 }

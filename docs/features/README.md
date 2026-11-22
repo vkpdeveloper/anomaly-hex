@@ -412,7 +412,9 @@ Choose a supported language              // setup.language-conditioning; macOS +
 │   de, es, pt, it, ja it hears, so it is offered under Auto too (#1252)
 ├── Whisper -> Use selected language to guide decoding; accuracy is not guaranteed
 ├── Whisper (ivrit.ai's, NB-Whisper's, and KB-Whisper's too), Qwen3-ASR 0.6B, QwenCleo-ASR 1.7B -> Vocabulary ->
-│   context prompt (vocabulary.md); output that only repeats it is dropped
+│   context prompt (vocabulary.md); output that only repeats it is dropped,
+│   and its listed "sounds like" spellings are corrected whole-word after
+│   the run
 ├── Hebrew -> ivrit.ai Whisper large-v3-turbo, always with the `he` hint (it
 │   lost Whisper's language detection); stock Whisper turbo also offers it
 ├── Russian -> GigaAM v3 (Russian only, no language input); Parakeet v3 and
@@ -448,11 +450,14 @@ Checks: `prompt_echo_is_dropped`, `speech_containing_the_hints_is_kept`,
 
 Models trained on subtitled video can end a clip with a subtitle credit nobody
 said, such as "Sous-titrage Société Radio-Canada" from Cohere Transcribe in
-French after a trailing pause (#1141), or "İzlediğiniz için teşekkür ederim"
-and "Altyazı M.K." from Whisper in Turkish (#1770). Every GGUF run and live
-stream drops a known credit only when it is the very end of the text (letters
-and digits compared, case and punctuation ignored, Turkish dotted and dotless
-`i` folded together), with its segment and words, in
+French after a trailing pause (#1141), "İzlediğiniz için teşekkür ederim" and
+"Altyazı M.K." from Whisper in Turkish (#1770), or "Продолжение следует",
+"Субтитры сделал DimaTorzok" ("делал" too), and "Редактор субтитров
+А.Семкин Корректор А.Егорова" from Whisper large-v3 and large-v3-turbo in
+Russian. Every GGUF run and live stream drops a known credit only when it is
+the very end of the text (letters and digits compared, case and punctuation
+ignored, Unicode lowercasing so Cyrillic case folds and Turkish dotted and
+dotless `i` fold together), with its segment and words, in
 dictation, meetings, and the local API alike; the same words elsewhere stay.
 A credit spoken mid-chunk and followed by more speech is kept. A dictation that
 genuinely ends with a listed phrase, such as the Turkish thanks, loses it: the
@@ -463,6 +468,9 @@ precomposed one is unchanged. The list is in
 Checks: `a_trailing_subtitle_credit_is_removed`,
 `a_turkish_thanks_for_watching_is_removed`,
 `a_truncated_turkish_credit_is_removed`,
+`a_russian_continues_credit_is_removed`,
+`a_russian_subtitle_credit_is_removed`,
+`russian_credits_later_in_the_speech_are_kept`,
 `the_same_words_mid_sentence_are_kept`,
 `a_combining_mark_inside_a_word_does_not_split_it`,
 `speech_without_a_trailing_credit_is_kept`, and
@@ -2370,7 +2378,7 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 │   │   while hidden, and make both at each show (Rune release_gpu_when_hidden);
 │   │   the HUD gives its surface back at each hide too (release_gpu_after, a
 │   │   zero idle on Windows; Linux keeps it 5 minutes), then the device goes
-│   │   ├── Dictation shortcut's modifiers down (Ctrl of Ctrl+Space) -> Rune
+│   │   ├── Dictation shortcut's modifiers down (the left Alt) -> Rune
 │   │   │   makes the device and the HUD's pipeline on a thread (warm_gpu_with,
 │   │   │   unclaimed for 30 s they go), so the HUD shows without them; this
 │   │   │   first call also makes the DX12-or-Vulkan choice
@@ -2437,10 +2445,17 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 │   ├── Insert, Home, End, Page Up, Page Down alone -> Labs › Special keys
 │   │   alone; off, a saved one goes back to its default
 │   └── Any other key -> the recorder says "Unsupported key" and starts over
-├── Ctrl+Space -> Hold or Toggle -> Capture -> Stream (GPU) -> Paste
+├── Left Alt -> Hold or Toggle -> Capture -> Stream (GPU) -> Paste
 ├── Toggle's cancel shortcut (Escape by default) -> Discards a toggled recording;
 │   the hook takes it only while one records. Otherwise Escape -> Nothing (#786)
-├── One modifier alone (Right Alt, Right Ctrl) -> Shortcut; Alt/Win release masked (no menu, Start)
+├── One modifier alone (left Alt by default, #2278) -> Shortcut; Alt/Win release masked (no menu, Start)
+│   ├── AltGr (a synthesized Left Ctrl plus Right Alt) -> Never presses the default;
+│   │   an either-side Alt would press on every AltGr character
+│   ├── Another key joining the hold -> Its chord; the press cancels at once
+│   │   (Labs › Hold through other keys keeps a hold a second or more old)
+│   └── Another modifier the chord doesn't name -> Its chord too: cancels, and
+│       Toggle's press locks nothing; Alt's release goes unmasked, unless Hex
+│       swallowed a key of that chord (Paste Last's V re-arms the mask)
 ├── Microphone switched off in Settings › Privacy -> Onboarding Microphone row -> Allow opens it
 ├── Microphone -> System default or a saved device
 │   ├── Windows default input changes -> Switch once capture is idle // cpal's default-device report
@@ -2876,7 +2891,7 @@ Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
 iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 ├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary,
 │   Hinglish, Adaptive touch, German spatial autocorrect, ABC under the emoji key,
-│   Learn each language separately
+│   Two-thumb selection, Hide word suggestions, Learn each language separately
 ├── Full keyboard's languages (Settings › Keyboard › Languages, with Full chosen): one or
 │   more layouts, the space bar names the current one and a slide switches letters, accents
 │   and autocorrect, and the input mode reports the language typing
@@ -2902,6 +2917,41 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   Abend"), and Auto-capitalization off adds none.
 │   Off, German keeps the dictionary engine and has no word list, so no letter odds,
 │   model completions or bilingual partner model
+├── Two-thumb selection (off by default, `experiments.twoThumbSelection`): while
+│   the space bar is the trackpad, a second finger starts a selection from the cursor;
+│   the finger further left moves the range's start and the other its end, each with its
+│   own `TrackpadCursor.State` (the trackpad's gain, acceleration and rows). Settling the
+│   trackpad at the start can move the host cursor once; after that it doesn't move while
+│   selecting. `UITextDocumentProxy` can read a selection but
+│   not set one, so the strip shows the text around the range with the selected part
+│   highlighted, within the text the host shares (`documentContextBeforeInput`/
+│   `AfterInput`). Both thumbs up shows Delete · Cut · Copy · Dictate · Cancel: Delete
+│   moves to the range's end with `adjustTextPosition` and deletes its characters one by
+│   one (an emoji is one), Cut copies then deletes, Copy copies and puts the cursor at the
+│   end, Cancel changes nothing, and any other key dismisses them without typing. Cut and
+│   Copy appear only with Full Access (the strip's clipboard rule). The range is clamped to
+│   the text the host shares around the cursor when the selection starts; if that context
+│   hasn't caught up yet the whole span is kept. An action runs only while the host still
+│   shares the whole range (a smaller or different text dismisses it, with a reason in the
+│   log). Dictate leaves the range in place and starts the keyboard's warm or in-keyboard
+│   dictation there; when its words are about to insert and the field still shows the range
+│   unchanged (same document and surrounding text), they replace it, otherwise they insert
+│   at the cursor as any dictation would and the range stays. Cancelling or hearing nothing
+│   leaves the range untouched. Where dictation would open Hex instead (no Full Access, or
+│   the keyboard can't dictate here), tapping Dictate dismisses the actions and opens Hex or
+│   shows the Full Access hint, leaving the text. An empty range ends like a
+│   normal trackpad lift. Delete and Cut call the host's delete once per Character, so a
+│   host that removes one code point per call (some Devanagari and Thai clusters) can leave
+│   fragments. Off, a second finger is ignored exactly as before.
+│   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
+├── Hide word suggestions (off by default, `experiments.hideWordSuggestions`): the full
+│   keyboard's strip keeps its height, the Hex key, Undo, status, notices and the Paste chip,
+│   but stops suggesting words: no typing or next-word suggestions, swipe readings, finished
+│   word emoji, or the chip that keeps what you typed while a correction is still ahead.
+│   Autocorrect still corrects on space, and after Delete the chip that puts back what it
+│   replaced (`.revert`) stays. With nothing suggested above it, holding a strip word to add it
+│   to Custom vocabulary is gone. Off, the strip suggests exactly as it did.
+│   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
 ├── Learn each language separately (off by default, `experiments.learnPerLanguage`):
 │   every typing correction and dictation fix is tagged with the language it was typed
 │   or dictated in; on, the keys learn a language's typos and rejections from that
