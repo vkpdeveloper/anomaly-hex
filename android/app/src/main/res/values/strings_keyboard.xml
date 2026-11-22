@@ -5,6 +5,8 @@
     <string name="keyboard_hint_password">Dictation is off in password fields</string>
     <string name="keyboard_hint_microphone">Allow the microphone in Hex</string>
     <string name="keyboard_hint_no_speech">No speech</string>
+    <string name="keyboard_dictation">Dictation</string>
+    <string name="keyboard_dictation_copied">The text box changed, so your dictation was copied</string>
     <string name="keyboard_hint_mic_busy">Microphone is busy</string>
     <string name="keyboard_dictate">Voice typing</string>
     <string name="keyboard_cancel_dictation">Cancel dictation</string>

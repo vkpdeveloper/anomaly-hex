@@ -31,12 +31,12 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import ly.anoma.hex.MainActivity
 import ly.anoma.hex.R
 import ly.anoma.hex.relay.HexClient
@@ -285,27 +285,14 @@ class ButtonService : AccessibilityService() {
         if (wav == null) return idle()
         bubble.show(BubbleView.Mode.THINKING)
         scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { send(wav) } }
+            val result = runCatching { router.send { host, computer -> HexClient.transcribe(host, computer.port, computer.code, wav).text } }
+            if (result.exceptionOrNull() is CancellationException) return@launch
             result.fold(
                 onSuccess = { transcript ->
                     if (transcript.isEmpty()) message("No speech") else if (insert(transcript)) done()
                 },
                 onFailure = { error -> message((error as? HexError)?.message ?: HexError.Unreachable.message.orEmpty()) },
             )
-        }
-    }
-
-    private suspend fun send(wav: ByteArray): String {
-        val (computer, route, cached) = router.resolve()
-        return try {
-            HexClient.transcribe(route.host, computer.port, computer.code, wav)
-        } catch (error: HexError.ConnectFailed) {
-            // A cached route that went away (Wi-Fi switch, Tailscale down): pick again once. Nothing
-            // reached the computer, so resending is safe; any later failure may mean it still transcribes.
-            if (!cached) throw error
-            router.invalidate()
-            val (again, next) = router.resolve()
-            HexClient.transcribe(next.host, again.port, again.code, wav)
         }
     }
 

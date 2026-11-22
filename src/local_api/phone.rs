@@ -656,6 +656,9 @@ fn transcribe(
         &serde_json::json!({
             "transcript": transcript,
             "durationMs": heard.duration_ms,
+            // The language this computer is set to hear ("auto" when its model
+            // chooses), so the phone shapes the text for that language.
+            "language": language,
         }),
     ))
 }

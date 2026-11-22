@@ -60,10 +60,15 @@ object HexClient {
         )
     }
 
+    /** A transcript and the language the computer was set to hear, or null when it chose ("auto") or
+     * didn't say (an older Hex). */
+    data class Heard(val text: String, val language: String?)
+
     /** Sends a WAV and returns the trimmed transcript. */
-    fun transcribe(host: String, port: Int, code: String, wav: ByteArray): String {
+    fun transcribe(host: String, port: Int, code: String, wav: ByteArray): Heard {
         val json = request(host, port, code, "POST", "/phone/v1/transcriptions", wav, 2_000, 60_000)
-        return json.optString("transcript").trim()
+        val language = json.optString("language").takeIf { it.isNotEmpty() && it != "auto" }
+        return Heard(json.optString("transcript").trim(), language)
     }
 
     private fun request(

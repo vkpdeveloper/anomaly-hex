@@ -8,13 +8,13 @@ import android.net.LinkProperties
 import android.net.Network
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import ly.anoma.hex.R
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.HexError
@@ -31,12 +31,13 @@ internal class Dictation(
     private val show: (DictationPhase) -> Unit,
     private val level: (Float) -> Unit,
     private val note: (String) -> Unit,
-    private val insert: (String) -> Unit,
+    private val insert: (HexClient.Heard) -> Unit,
     /** Why dictation can't start in this field (a password), or null. */
     private val blocked: () -> String?,
 ) {
     private val store = Store(context)
-    private val router = Router(context, store)
+    /** The keyboard's one route to the computer, shared with the words fetch. */
+    val router = Router(context, store)
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var recorder: Recorder? = null
@@ -92,11 +93,12 @@ internal class Dictation(
         if (wav == null) { phase = DictationPhase.Idle; return }
         phase = DictationPhase.Sending
         sending = scope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { send(wav) } }
+            val result = runCatching { router.send { host, computer -> HexClient.transcribe(host, computer.port, computer.code, wav) } }
+            if (result.exceptionOrNull() is CancellationException) return@launch
             sending = null
             phase = DictationPhase.Idle
             result.fold(
-                onSuccess = { text -> if (text.isBlank()) note(context.getString(R.string.keyboard_hint_no_speech)) else insert(text) },
+                onSuccess = { heard -> if (heard.text.isBlank()) note(context.getString(R.string.keyboard_hint_no_speech)) else insert(heard) },
                 onFailure = { error -> note((error as? HexError)?.message ?: HexError.Unreachable.message.orEmpty()) },
             )
         }
@@ -108,18 +110,12 @@ internal class Dictation(
         DictationPhase.Sending -> Unit
     }
 
-    private suspend fun send(wav: ByteArray): String {
-        val (computer, route, cached) = router.resolve()
-        return try {
-            HexClient.transcribe(route.host, computer.port, computer.code, wav)
-        } catch (error: HexError.ConnectFailed) {
-            // A cached route that went away (Wi-Fi switch, Tailscale down): pick again once. Nothing
-            // reached the computer, so resending is safe; any later failure may mean it still transcribes.
-            if (!cached) throw error
-            router.invalidate()
-            val (again, next) = router.resolve()
-            HexClient.transcribe(next.host, again.port, again.code, wav)
-        }
+    /** The field went away: a recording stops unsent, but a transcript already on its way still comes
+     * back, and the keyboard decides where it goes. */
+    fun leave() {
+        if (phase != DictationPhase.Listening) return
+        recorder?.cancel(); recorder = null
+        phase = DictationPhase.Idle
     }
 
     /** Drops the recording, or the transcript still on its way: nothing reaches the field later. */

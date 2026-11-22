@@ -49,7 +49,9 @@ accept.
 model's own rate; other WAVs are converted.
 
 ```ts
-200 {"transcript": "…", "durationMs": 4048}    trimmed transcript after Global's Output steps; no History or paste
+200 {"transcript": "…", "durationMs": 4048, "language": "en"}
+                     trimmed transcript after Global's Output steps; no History or paste;
+                     language is this computer's setting ("auto" when the model chooses)
 401 wrong-code       411 length-required        413 resource-exhausted
 415 unsupported-audio 400 invalid-audio          408 upload-timeout
 409 model-not-ready  429 busy / queue-full       503 service-gone
@@ -67,7 +69,9 @@ app or website mode. A step that fails or misses its deadline keeps the text
 before it, as on the desktop.
 
 The phone sends no language, so the computer's model and language decide
-what is heard. For Hindi typed in Latin letters, set this computer's
+what is heard. The keyboard shapes the text (a capital the model gave the
+first word mid-sentence) with the language the reply names, and leaves the
+text as it came when that is "auto" or missing. For Hindi typed in Latin letters, set this computer's
 language to Hindi (a model that writes Hindi, such as Qwen3-ASR 0.6B) and
 turn on Labs › Hindi in Latin letters.
 

@@ -66,6 +66,21 @@ class Router(context: Context, private val store: Store) {
         Resolved(updated, route, cached = false)
     }
 
+    /** Runs [call] (blocking, on [Dispatchers.IO]) against the paired computer. A cached route that
+     * refuses before anything was sent (Wi-Fi switch, Tailscale down) is dropped and [call] runs once
+     * more on a fresh pick; any later failure may mean the computer still has the request, so it isn't resent. */
+    suspend fun <T> send(call: (host: String, computer: Computer) -> T): T {
+        val first = resolve()
+        return try {
+            withContext(Dispatchers.IO) { call(first.route.host, first.computer) }
+        } catch (error: HexError.ConnectFailed) {
+            if (!first.cached) throw error
+            invalidate()
+            val again = resolve()
+            withContext(Dispatchers.IO) { call(again.route.host, again.computer) }
+        }
+    }
+
     private suspend fun probe(computer: Computer, preference: RoutePreference): Pair<Route, Hello>? {
         val candidates = ordered(computer.routes, preference)
         if (candidates.isEmpty()) return null

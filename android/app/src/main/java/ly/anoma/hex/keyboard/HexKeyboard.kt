@@ -1,6 +1,8 @@
 package ly.anoma.hex.keyboard
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
@@ -23,12 +25,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import ly.anoma.hex.R
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
-import ly.anoma.hex.relay.Router
-import ly.anoma.hex.relay.Store
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
@@ -106,7 +105,6 @@ class HexKeyboard : InputMethodService() {
         main.removeCallbacks(readContacts); readContacts.run()
     }
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val router by lazy { Router(this, Store(this)) }
     private var fetching = false
     /** The computer's words, at most every few hours, while Learn from Hex history is on and a computer is paired. */
     private fun fetchHistoryWords(force: Boolean = false) {
@@ -115,10 +113,7 @@ class HexKeyboard : InputMethodService() {
         fetching = true
         io.launch {
             try {
-                val got = withContext(Dispatchers.IO) {
-                    val resolved = router.resolve()
-                    HexClient.words(resolved.route.host, resolved.computer.port, resolved.computer.code)
-                }
+                val got = dictation.router.send { host, computer -> HexClient.words(host, computer.port, computer.code) }
                 if (!feedback.learnFromHistory) return@launch
                 learned.seed(got.words, got.pairs)
                 feedback.historyWordsAt = System.currentTimeMillis()
@@ -140,7 +135,10 @@ class HexKeyboard : InputMethodService() {
     }
     internal val dictation by lazy {
         Dictation(this,
-            show = { phase -> if (phase == DictationPhase.Listening) engine.clearForDictation(); view?.dictation(phase) },
+            show = { phase ->
+                if (phase == DictationPhase.Listening) { engine.clearForDictation(); dictatedFor = field }
+                view?.dictation(phase)
+            },
             level = { view?.level(it) },
             note = { view?.note(it) },
             insert = ::commitSpeech,
@@ -230,9 +228,14 @@ class HexKeyboard : InputMethodService() {
     override fun onEvaluateFullscreenMode() = false
     override fun onCreateInputView(): View = KeyboardView(this, this).also { view = it; engine.surface = it }
 
+    // Each field gets a number as it starts; an app restarting the same field (chat apps do) keeps it.
+    // A transcript comes back to the field it was spoken for, or is copied ([commitSpeech]).
+    private var field = 0
+    private var dictatedFor = -1
+
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
-        dictation.cancel() // Even a different field in the same app must not receive an old result.
+        if (!restarting) { field++; dictation.leave() }
         text.started(attribute.initialSelStart, attribute.initialSelEnd,
             attribute.getInitialTextBeforeCursor(CachedText.INITIAL, 0), attribute.getInitialTextAfterCursor(CachedText.INITIAL, 0))
         engine.startInput(attribute)
@@ -254,11 +257,19 @@ class HexKeyboard : InputMethodService() {
         engine.updateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd)
     }
 
-    private fun commitSpeech(text: String) {
-        if (currentInputConnection == null || engine.secure || !isInputViewShown) return
-        engine.insertDictation(text, layoutLanguage.code)
+    /** Types the transcript where it was spoken. If that field has gone (another field, or the keyboard
+     * hidden), it's copied instead, so the strip's chip offers it, rather than typed somewhere else or lost. */
+    private fun commitSpeech(heard: HexClient.Heard) {
+        if (dictatedFor == field && currentInputConnection != null && !engine.secure && isInputViewShown) {
+            engine.insertDictation(heard.text, heard.language)
+            return
+        }
+        runCatching {
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(getString(R.string.keyboard_dictation), heard.text))
+        }
+        view?.note(getString(R.string.keyboard_dictation_copied))
     }
-    private fun leaveEditor() { view?.cancelGestures(); engine.leave(); dictation.cancel() }
+    private fun leaveEditor() { view?.cancelGestures(); engine.leave(); dictation.leave() }
     override fun onFinishInputView(finishingInput: Boolean) { leaveEditor(); super.onFinishInputView(finishingInput) }
     override fun onFinishInput() { leaveEditor(); super.onFinishInput() }
     override fun onWindowHidden() { leaveEditor(); super.onWindowHidden() }
