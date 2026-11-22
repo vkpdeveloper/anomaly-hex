@@ -130,6 +130,7 @@ pub(crate) fn apply(settings: &AppSettings) {
     *super::phone_words::RETENTION
         .write()
         .unwrap_or_else(|error| error.into_inner()) = Some(settings.history_retention);
+    super::phone_rewrite::apply(settings);
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
         desired.wanted = wanted;
@@ -600,6 +601,9 @@ fn handle(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Opti
             ))
         }
         ("POST", "/phone/v1/transcriptions") => transcribe(request, stream, shared),
+        ("POST", "/phone/v1/rewrite") => {
+            Some(super::phone_rewrite::handle(request, stream, &shared.stop))
+        }
         ("GET", "/phone/v1/words") => Some(HttpResponse::json(
             200,
             &super::phone_words::from_history(crate::desktop::events::now_ms()),

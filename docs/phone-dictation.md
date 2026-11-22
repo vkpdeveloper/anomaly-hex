@@ -90,6 +90,29 @@ At most 5,000 words and 10,000 pairs, commonest first. The keyboard keeps
 them on the phone, beside the words you type there (`LearnedWords`), and
 Forget learned words clears both.
 
+## Rewrite
+
+`POST /phone/v1/rewrite` with `Content-Type: application/json` and a body up
+to 64 KiB: `{"text": "…"}`, sent only when someone taps the keyboard's
+Rewrite. OpenCode rewrites the text for grammar, spelling, and clarity,
+keeping its meaning, tone, and language (`phone_rewrite`,
+`dictation::processor::rewrite_typed_text`). It uses Global mode's OpenCode
+model, variant, and deadline (cut to 30 s), with Global's instructions too
+while its rewrite is on, through the running OpenCode service; Hex never
+starts or searches for OpenCode. One rewrite runs at a time. The text is
+never logged or kept, and a failure answers a code, never partial text.
+
+```ts
+200 {"text": "…"}           trimmed rewritten text
+400 invalid-request / empty-text   411 length-required   413 resource-exhausted
+415 unsupported-media-type  429 busy
+403 opencode-managed        503 opencode-not-running / opencode-outdated / service-gone
+504 rewrite-timeout         500 rewrite-failed
+```
+
+The text goes to this computer and from there to whatever model OpenCode
+uses, which may be a cloud model.
+
 ## Security
 
 Anyone holding the code on a reachable network can transcribe with this
