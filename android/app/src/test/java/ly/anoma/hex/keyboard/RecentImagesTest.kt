@@ -1,0 +1,57 @@
+package ly.anoma.hex.keyboard
+
+import ly.anoma.hex.keyboard.RecentImages.CHIP_MS
+import ly.anoma.hex.keyboard.RecentImages.PANEL_MAX
+import ly.anoma.hex.keyboard.RecentImages.PANEL_MS
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+/** Which new photos the keyboard offers, and what the toolbar's chip shows. */
+class RecentImagesTest {
+    private val now = 10 * PANEL_MS
+    private fun shot(id: Long, ago: Long, path: String = "Pictures/Screenshots/", mime: String = "image/png") =
+        RecentImage(id, now - ago, mime, path)
+
+    @Test fun onlyCameraPhotosAndScreenshotsAreOffered() {
+        val rows = listOf(
+            shot(1, 0, "DCIM/Camera/", "image/jpeg"),
+            shot(2, 0, "Pictures/Screenshots/"),
+            shot(3, 0, "DCIM/Screenshots/"),
+            shot(4, 0, "Pictures/WhatsApp/"),
+            shot(5, 0, "Download/"),
+            shot(6, 0, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/", "image/jpeg"),
+            shot(7, 0, "DCIM/Camera/", "video/mp4"),
+        )
+        assertEquals(setOf(1L, 2L, 3L), RecentImages.select(rows, now).map { it.id }.toSet())
+    }
+
+    @Test fun thePanelShowsTheLastHourNewestFirst() {
+        val rows = listOf(shot(1, PANEL_MS), shot(2, PANEL_MS - 1), shot(3, 0), shot(4, -30_000), shot(5, -10 * 60_000))
+        // A clock a little behind still shows a photo; one far ahead isn't believed.
+        assertEquals(listOf(4L, 3L, 2L), RecentImages.select(rows, now).map { it.id })
+    }
+
+    @Test fun thePanelShowsAtMostEight() {
+        val rows = (1..PANEL_MAX + 4L).map { shot(it, ago = it * 1_000) } + shot(1, 1_000)
+        assertEquals((1..PANEL_MAX.toLong()).toList(), RecentImages.select(rows, now).map { it.id })
+    }
+
+    @Test fun theChipOffersTheNewestWhileFreshAndUntilUsed() {
+        val photos = listOf(shot(1, 60_000), shot(2, 10_000))
+        assertEquals(2L, RecentImages.chip(photos, now, used = emptySet())?.id)
+        assertNull(RecentImages.chip(photos, now, used = setOf(2L)))
+        assertNull(RecentImages.chip(photos, now + CHIP_MS, used = emptySet()))
+        assertNull(RecentImages.chip(emptyList(), now, used = emptySet()))
+    }
+
+    @Test fun theChipOffersTheNewerOfAFreshCopyAndAPhoto() {
+        val photo = shot(1, 60_000)
+        val newer = ChipOffer.Text("copied", sensitive = false, at = now - 1_000)
+        val older = ChipOffer.Text("copied", sensitive = false, at = now - 120_000)
+        assertEquals(newer, ChipOffer.pick(newer, photo, now))
+        assertEquals(ChipOffer.Photo(photo), ChipOffer.pick(older, photo, now))
+        assertEquals(older, ChipOffer.pick(older, null, now))
+        assertNull(ChipOffer.pick(older, null, now + ChipOffer.COPY_FRESH_MS))
+    }
+}
