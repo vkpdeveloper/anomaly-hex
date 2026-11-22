@@ -33,7 +33,7 @@ import ly.anoma.hex.R
 internal enum class PhotoAccess { None, Chosen, All }
 
 /** The keyboard's clipboard: it watches what is copied, keeps the history ([ClipHistory]) and the image
- * files clips hold, reads new photos when Keyboard › Recent photos allows, and puts images into the editor.
+ * files clips hold, reads new screenshots when Keyboard › Recent screenshots allows, and puts images into the editor.
  * Files, the history and MediaStore are touched only on one worker thread, in order, so a file is never
  * pruned while a clip is being added; the views read the snapshots it posts to the main thread. */
 internal class ClipKeeper(
@@ -96,7 +96,7 @@ internal class ClipKeeper(
     /** The history as last published: pinned first, newest first. */
     var clips: List<Clip> = emptyList()
         private set
-    /** New photos and screenshots, newest first, while Recent photos is on. */
+    /** New screenshots, newest first, while Recent screenshots is on. */
     var photos: List<RecentImage> = emptyList()
         private set
     // The last copy, for the chip until it is used; [copyAt] is its clipboard timestamp, so the same
@@ -114,7 +114,8 @@ internal class ClipKeeper(
             val now = System.currentTimeMillis()
             return ChipOffer.pick(copy, RecentImages.chip(photos, now, usedPhotos), now)
         }
-    /** The chip was tapped: it offers that copy or photo no more. */
+    /** The chip was tapped, or typing passed over it: it offers that copy or screenshot no more; the
+     * clipboard keeps it. */
     fun used(offer: ChipOffer) {
         if (offer is ChipOffer.Photo) usedPhotos += offer.photo.id else copy = null
         changed()
@@ -268,7 +269,7 @@ internal class ClipKeeper(
         }
         if (on) queryPhotos() else if (photos.isNotEmpty()) { photos = emptyList(); changed() }
     }
-    /** The hour's newest camera photos and screenshots, read on worker: a bounded query on DATE_ADDED. */
+    /** The hour's newest images, of which [RecentImages.select] keeps screenshots, read on worker: a bounded query on DATE_ADDED. */
     private fun queryPhotos() = worker.execute {
         val now = System.currentTimeMillis()
         val args = Bundle().apply {

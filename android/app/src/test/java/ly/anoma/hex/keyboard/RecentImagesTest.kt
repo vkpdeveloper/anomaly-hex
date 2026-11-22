@@ -7,13 +7,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** Which new photos the keyboard offers, and what the toolbar's chip shows. */
+/** Which new screenshots the keyboard offers, and what the toolbar's chip shows. */
 class RecentImagesTest {
     private val now = 10 * PANEL_MS
     private fun shot(id: Long, ago: Long, path: String = "Pictures/Screenshots/", mime: String = "image/png") =
         RecentImage(id, now - ago, mime, path)
 
-    @Test fun onlyCameraPhotosAndScreenshotsAreOffered() {
+    @Test fun onlyScreenshotsAreOffered() {
         val rows = listOf(
             shot(1, 0, "DCIM/Camera/", "image/jpeg"),
             shot(2, 0, "Pictures/Screenshots/"),
@@ -23,7 +23,7 @@ class RecentImagesTest {
             shot(6, 0, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/", "image/jpeg"),
             shot(7, 0, "DCIM/Camera/", "video/mp4"),
         )
-        assertEquals(setOf(1L, 2L, 3L), RecentImages.select(rows, now).map { it.id }.toSet())
+        assertEquals(setOf(2L, 3L), RecentImages.select(rows, now).map { it.id }.toSet())
     }
 
     @Test fun thePanelShowsTheLastHourNewestFirst() {
@@ -53,5 +53,10 @@ class RecentImagesTest {
         assertEquals(ChipOffer.Photo(photo), ChipOffer.pick(older, photo, now))
         assertEquals(older, ChipOffer.pick(older, null, now))
         assertNull(ChipOffer.pick(older, null, now + ChipOffer.COPY_FRESH_MS))
+    }
+
+    @Test fun anUnusedOfferKnowsWhenItGoes() {
+        assertEquals(CHIP_MS - 60_000, ChipOffer.Photo(shot(1, 60_000)).staleIn(now))
+        assertEquals(ChipOffer.COPY_FRESH_MS - 1_000, ChipOffer.Text("copied", sensitive = false, at = now - 1_000).staleIn(now))
     }
 }

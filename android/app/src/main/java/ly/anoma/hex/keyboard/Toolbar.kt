@@ -23,7 +23,7 @@ import kotlin.math.roundToInt
 
 /** Gboard's toolbar above the keys: the grid and clipboard buttons on the left, the mic in its circle on
  * the right (with the fix button before it, when that is on), and between them the three suggestions,
- * the chip for something just copied or a photo just taken, or the recording's level while dictating. */
+ * the chip for something just copied or a screenshot just taken, or the recording's level while dictating. */
 internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipboard: () -> Unit) : FrameLayout(context) {
     private companion object {
         const val SUGGESTION = 19.5f
@@ -55,6 +55,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
     private val words = List(3) { TextView(context) }
     private val dividers = List(2) { View(context) }
     private var offered = arrayOfNulls<String>(3)
+    /** The strip holds only next-word guesses, which a fresh copy or photo replaces. */
+    private var guessing = false
 
     private val chip = LinearLayout(context)
     private val chipIcon = ImageView(context)
@@ -72,6 +74,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
     private var phase = DictationPhase.Idle
     private var note: String? = null
     private val clearNote = Runnable { note = null; update() }
+    private val expire = Runnable { update() }
 
     // The mic: a tap starts and a second tap finishes; a hold of 350 ms is push to talk, finishing on lift.
     private var held = false
@@ -208,6 +211,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
         if (list.any { it.kind == Suggestion.Kind.Typed }) list.take(3).forEachIndexed { i, slot -> shown[i] = slot }
         else { shown[1] = list.getOrNull(0); shown[0] = list.getOrNull(1); shown[2] = list.getOrNull(2) }
         offered = Array(3) { shown[it]?.text }
+        guessing = list.all { it.kind == Suggestion.Kind.Next }
         for (i in 0..2) {
             val slot = shown[i]
             val s = slot?.text.orEmpty()
@@ -276,8 +280,15 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
         noteText.text = note
         val undoing = idle && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
-        slots.visibility = if (idle && !noting && !undoing && suggesting) VISIBLE else GONE
-        val offer = if (idle && !noting && !undoing && !suggesting) ime.clips.offer else null
+        // A fresh copy or photo takes the place of next-word guesses, as Gboard's does; a word being
+        // typed keeps its suggestions.
+        // Typing a word passes over the chip: it isn't offered again, and the clipboard keeps it.
+        if (idle && !guessing) chipOffer?.let { passed -> chipOffer = null; ime.clips.used(passed) }
+        val offer = if (idle && !noting && !undoing && guessing) ime.clips.offer else null
+        // Unused, it goes once it is too old, while the keyboard stays up.
+        removeCallbacks(expire)
+        if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
+        slots.visibility = if (idle && !noting && !undoing && suggesting && offer == null) VISIBLE else GONE
         chip.visibility = if (offer != null) VISIBLE else GONE
         val fresh = offer != chipOffer
         // Set first: a cached thumbnail arrives at once and checks it is still this offer's.
@@ -314,7 +325,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openClipb
     }
 
     override fun onDetachedFromWindow() { cancelGestures(); super.onDetachedFromWindow() }
-    fun cancelGestures() { removeCallbacks(hold); held = false; mic.isPressed = false }
+    fun cancelGestures() { removeCallbacks(hold); removeCallbacks(expire); held = false; mic.isPressed = false }
 
     private fun endMargin(view: View, dp: Float) {
         val params = view.layoutParams as LayoutParams

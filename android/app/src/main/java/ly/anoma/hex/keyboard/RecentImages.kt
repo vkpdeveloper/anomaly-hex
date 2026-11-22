@@ -4,24 +4,24 @@ package ly.anoma.hex.keyboard
  * RELATIVE_PATH, such as `DCIM/Camera/` or `Pictures/Screenshots/`. */
 internal data class RecentImage(val id: Long, val addedAt: Long, val mime: String, val path: String)
 
-/** Which new photos and screenshots the keyboard offers, as Gboard offers a screenshot just taken. */
+/** Which new screenshots the keyboard offers, as Gboard offers a screenshot just taken. */
 internal object RecentImages {
     /** The toolbar's chip offers the newest one this fresh, until it is used. */
     const val CHIP_MS = 5 * 60_000L
     /** The clipboard panel shows those from the last hour, as copies stay there an hour. */
     const val PANEL_MS = ClipHistory.KEEP_MS
     const val PANEL_MAX = 8
-    /** The most rows one query reads: the hour's newest images, before [taken] filters them. */
+    /** The most rows one query reads: the hour's newest images, before [screenshot] filters them. */
     const val QUERY_LIMIT = 40
     /** A clock that went back a little doesn't hide a photo; one far in the future is not believed. */
     private const val SKEW_MS = 60_000L
 
-    /** Pictures the camera took and screenshots, never what other apps saved, such as a chat's downloads. */
-    fun taken(path: String) = path.startsWith("DCIM/", ignoreCase = true) || path.contains("Screenshots/", ignoreCase = true)
+    /** Screenshots only: never camera photos, nor what other apps saved, such as a chat's downloads. */
+    fun screenshot(path: String) = path.contains("Screenshots/", ignoreCase = true)
 
-    /** The panel's photos, newest first: images the camera or a screenshot made in the last [PANEL_MS]. */
+    /** The panel's screenshots, newest first: those made in the last [PANEL_MS]. */
     fun select(rows: List<RecentImage>, now: Long): List<RecentImage> = rows
-        .filter { it.mime.startsWith("image/") && taken(it.path) && now - it.addedAt in -SKEW_MS until PANEL_MS }
+        .filter { it.mime.startsWith("image/") && screenshot(it.path) && now - it.addedAt in -SKEW_MS until PANEL_MS }
         .distinctBy { it.id }.sortedByDescending { it.addedAt }.take(PANEL_MAX)
 
     /** The photo the toolbar offers: the newest of [photos] while it is fresh and hasn't been [used]. */
@@ -36,6 +36,9 @@ internal sealed interface ChipOffer {
     data class Text(val text: String, val sensitive: Boolean, override val at: Long) : ChipOffer
     data class Image(val clip: Clip) : ChipOffer { override val at get() = clip.at }
     data class Photo(val photo: RecentImage) : ChipOffer { override val at get() = photo.addedAt }
+
+    /** How long until this offer is too old for the chip. */
+    fun staleIn(now: Long) = (if (this is Photo) RecentImages.CHIP_MS else COPY_FRESH_MS) - (now - at)
 
     companion object {
         /** A copy older than this no longer gets the chip. */

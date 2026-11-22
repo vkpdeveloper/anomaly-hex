@@ -48,7 +48,7 @@
     <string name="keyboard_clipboard">Clipboard</string>
     <string name="keyboard_clear">Clear</string>
     <string name="keyboard_clipboard_empty">Copied text and images stay here for an hour. Touch and hold one to pin it.</string>
-    <string name="keyboard_recent_photos">Recent photos</string>
+    <string name="keyboard_recent_photos">Recent screenshots</string>
     <string name="keyboard_pinned">Pinned</string>
     <string name="keyboard_recent">Recent</string>
     <string name="keyboard_pin">Pin</string>

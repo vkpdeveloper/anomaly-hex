@@ -17,7 +17,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.keyboard.ClipKeeper
 import ly.anoma.hex.keyboard.PhotoAccess
 
-/** Keyboard › Recent photos: on while it was turned on and Android lets Hex read photos. [partial] is
+/** Keyboard › Recent screenshots: on while it was turned on and Android lets Hex read photos. [partial] is
  * Android 14's "selected photos" grant, which leaves out the screenshots taken after it. */
 internal class RecentPhotos(val on: Boolean, val partial: Boolean, val change: (Boolean) -> Unit)
 
