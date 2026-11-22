@@ -59,11 +59,17 @@ A clip up to 30 s runs on the dictation engine's loaded model when it is the
 selected one; otherwise the transcription service loads its own.
 
 The transcript then goes through the same Output steps as a desktop
-dictation, in the same order on each OS (`phone::process`): replacements,
-Labs' spoken formatting and filler words, the OpenCode rewrite, and
-transformations. No desktop app or page is behind the phone's text field, so
-the Global mode applies, never an app or website mode. A step that fails or
-misses its deadline keeps the text before it, as on the desktop.
+dictation, in the same order on each OS (`phone::process`): Labs' Hindi in
+Latin letters, spoken formatting, spoken symbols, and filler words, then
+replacements, the OpenCode rewrite, and transformations. No desktop app or
+page is behind the phone's text field, so the Global mode applies, never an
+app or website mode. A step that fails or misses its deadline keeps the text
+before it, as on the desktop.
+
+The phone sends no language, so the computer's model and language decide
+what is heard. For Hindi typed in Latin letters, set this computer's
+language to Hindi (a model that writes Hindi, such as Qwen3-ASR 0.6B) and
+turn on Labs › Hindi in Latin letters.
 
 `GET /phone/v1/words`: the words the phone's keyboard starts from (Hex for
 Android › Keyboard › Learn from Hex history, on by default, fetched at most
