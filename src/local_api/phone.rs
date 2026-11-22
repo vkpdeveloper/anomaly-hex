@@ -14,9 +14,9 @@
 //! and settings loads and saves hand it the wanted state ([`apply`]), so a
 //! CLI process that saves settings never opens a port.
 //!
-//! A phone's transcript goes through Global mode's Output steps, with the
-//! same processor the local API's `process` query uses, before it is sent
-//! back ([`process`]).
+//! A phone's transcript goes through the Output steps of the mode its phone
+//! app picks (`phone_origin`), else Global's, with the same processor the
+//! local API's `process` query uses, before it is sent back ([`process`]).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -130,6 +130,13 @@ pub(crate) fn apply(settings: &AppSettings) {
     *super::phone_words::RETENTION
         .write()
         .unwrap_or_else(|error| error.into_inner()) = Some(settings.history_retention);
+    *super::phone_replacements::GLOBAL
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = settings
+        .dictation_processing
+        .default_mode
+        .replacements
+        .clone();
     let mut desired = lock(&DESIRED);
     if desired.wanted != wanted {
         desired.wanted = wanted;
@@ -138,14 +145,19 @@ pub(crate) fn apply(settings: &AppSettings) {
     }
 }
 
-/// The app's Global-mode processor, installed by [`PhoneDictation::start`].
+/// The app's mode processor, installed by [`PhoneDictation::start`].
 static PROCESSOR: RwLock<Option<super::processing::Processor>> = RwLock::new(None);
 
 /// Runs a phone transcript through what a desktop dictation gets before it
-/// pastes: replacements, the OpenCode rewrite, and transformations. No
-/// desktop app or page is behind a phone's text field, so the Global mode
-/// applies. Any step that fails keeps the text before it.
-fn process(raw: &str, language: &str, cancelled: &AtomicBool) -> String {
+/// pastes: replacements, the OpenCode rewrite, and transformations, in the
+/// mode `context` picks (the phone app's name, else Global). Any step that
+/// fails keeps the text before it.
+fn process(
+    raw: &str,
+    language: &str,
+    context: &crate::dictation::context::ContextSnapshot,
+    cancelled: &AtomicBool,
+) -> String {
     let raw = raw.trim();
     if raw.is_empty() {
         return String::new();
@@ -155,7 +167,9 @@ fn process(raw: &str, language: &str, cancelled: &AtomicBool) -> String {
         .unwrap_or_else(|error| error.into_inner())
         .clone();
     match processor {
-        Some(processor) => processor(raw, language, cancelled).trim().to_owned(),
+        Some(processor) => processor(raw, language, context, cancelled)
+            .trim()
+            .to_owned(),
         None => raw.to_owned(),
     }
 }
@@ -207,8 +221,8 @@ pub struct PhoneDictation {
 }
 
 impl PhoneDictation {
-    /// `processor` is the app's Global-mode processing, the one its local
-    /// API installs.
+    /// `processor` is the app's mode processing, the one its local API
+    /// installs.
     pub fn start(processor: super::processing::Processor) -> Option<Self> {
         *PROCESSOR.write().unwrap_or_else(|error| error.into_inner()) = Some(processor);
         let stop = Arc::new(AtomicBool::new(false));
@@ -604,6 +618,10 @@ fn handle(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Opti
             200,
             &super::phone_words::from_history(crate::desktop::events::now_ms()),
         )),
+        ("GET", "/phone/v1/replacements") => Some(HttpResponse::json(
+            200,
+            &super::phone_replacements::current(),
+        )),
         _ => Some(HttpResponse::code(404, "not_found")),
     }
 }
@@ -634,6 +652,7 @@ fn transcribe(
         return Some(HttpResponse::code(429, "busy"));
     };
     let language = selection.language.clone();
+    let origin = super::phone_origin::Origin::from_path(&request.path);
     let upload = super::transcriptions::Upload {
         selection,
         admission,
@@ -650,7 +669,12 @@ fn transcribe(
         Ok(heard) => heard,
         Err(response) => return response,
     };
-    let transcript = process(&heard.transcript.text, &language, &shared.stop);
+    let transcript = process(
+        &heard.transcript.text,
+        origin.output_language(&language),
+        &origin.context(),
+        &shared.stop,
+    );
     Some(HttpResponse::json(
         200,
         &serde_json::json!({
@@ -942,6 +966,21 @@ mod tests {
         assert_eq!(body["port"], port);
         assert_eq!(body["routes"][0]["kind"], "tailscale");
         assert_eq!(body["routes"][0]["host"], "100.64.0.7");
+
+        *super::super::phone_replacements::GLOBAL.write().unwrap() =
+            vec![crate::app_settings::TextReplacement {
+                matched_phrase: "brb".into(),
+                output: "be right back".into(),
+            }];
+        let replacements = request(
+            port,
+            "GET /phone/v1/replacements HTTP/1.1\r\nAuthorization: Bearer 7KQ2M9XD4FTA\r\n\r\n",
+            b"",
+        );
+        assert!(replacements.starts_with("HTTP/1.1 200"), "{replacements}");
+        let body: serde_json::Value =
+            serde_json::from_str(replacements.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["replacements"][0][1], "be right back");
 
         let text = request(
             port,

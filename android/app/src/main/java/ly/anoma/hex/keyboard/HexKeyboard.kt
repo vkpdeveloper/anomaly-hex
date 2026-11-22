@@ -142,7 +142,8 @@ class HexKeyboard : InputMethodService() {
             level = { view?.level(it) },
             note = { view?.note(it) },
             insert = ::commitSpeech,
-            blocked = { if (engine.secure) getString(R.string.keyboard_hint_password) else null })
+            blocked = { if (engine.secure) getString(R.string.keyboard_hint_password) else null },
+            origin = { HexClient.Origin.of(this, currentInputEditorInfo?.packageName, HexClient.Origin.language(layoutLanguage)) })
     }
     internal val clips by lazy { ClipKeeper(this, changed = { view?.clipsChanged() }, note = { view?.note(it) }) }
     private val clipsChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->

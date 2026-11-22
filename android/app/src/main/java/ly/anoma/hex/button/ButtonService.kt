@@ -44,6 +44,8 @@ import ly.anoma.hex.relay.HexError
 import ly.anoma.hex.relay.Recorder
 import ly.anoma.hex.relay.Router
 import ly.anoma.hex.relay.Store
+import ly.anoma.hex.speech.Spoken
+import ly.anoma.hex.typing.TypingPreferences
 
 /** The floating button's saved choices, shared by the service and the settings page. */
 internal class ButtonPreferences(context: Context) {
@@ -284,8 +286,11 @@ class ButtonService : AccessibilityService() {
         bubble.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         if (wav == null) return idle()
         bubble.show(BubbleView.Mode.THINKING)
+        // The app the text goes to picks the computer's mode; the keyboard's layout hints the language.
+        val layout = TypingPreferences(this).layout ?: Spoken.system()
+        val origin = HexClient.Origin.of(this, focusedField()?.packageName?.toString(), HexClient.Origin.language(layout))
         scope.launch {
-            val result = runCatching { router.send { host, computer -> HexClient.transcribe(host, computer.port, computer.code, wav).text } }
+            val result = runCatching { router.send { host, computer -> HexClient.transcribe(host, computer.port, computer.code, wav, origin).text } }
             if (result.exceptionOrNull() is CancellationException) return@launch
             result.fold(
                 onSuccess = { transcript ->
