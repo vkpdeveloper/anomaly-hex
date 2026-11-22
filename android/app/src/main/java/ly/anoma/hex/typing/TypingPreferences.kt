@@ -51,6 +51,10 @@ internal class TypingPreferences(context: Context) {
     var historyWordsAt: Long
         get() = prefs.getLong("historyWordsAt", 0)
         set(value) { prefs.edit().putLong("historyWordsAt", value).apply() }
+    /** Off by default: a dictation that ends with "send it" presses the field's send key ([ly.anoma.hex.keyboard.SpokenSend]). */
+    var sayToSend: Boolean
+        get() = prefs.getBoolean(SAY_TO_SEND, false)
+        set(value) { prefs.edit().putBoolean(SAY_TO_SEND, value).apply() }
     /** The paired computer's text replacements, as [Replacements.write] keeps them; "" for none. */
     var replacements: String
         get() = prefs.getString(REPLACEMENTS, "").orEmpty()
@@ -85,6 +89,7 @@ internal class TypingPreferences(context: Context) {
         const val FORGET_LEARNED = "forgetLearned"
         const val FIX_BUTTON = "fixButton"
         const val CONTACT_EMAILS = "contactEmails"
+        const val SAY_TO_SEND = "sayToSend"
         const val REPLACEMENTS = "replacements"
     }
 }
