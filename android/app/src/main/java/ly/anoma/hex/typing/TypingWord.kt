@@ -203,7 +203,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * the strip shows them: a name with its capital, your own word your way, and the spelling you write
      * of a word written several ways ("nhi" for "nahi"). */
     fun glide(path: List<KeyPoint>, grid: KeyGrid, before: String): List<String> =
-        glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal, decoder.learned)
+        glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal, decoder.learned,
+            beforePrevious = LearnedWords.wordBeforeGap(before)?.let { LearnedWords.wordBeforeGap(it.second) }?.first?.lowercase())
             .map { c ->
                 val yours = decoder.preferred(c.text)?.takeUnless(::blocked)
                 if (yours != null) learnedSpelling(yours) ?: displayed(yours)
@@ -211,7 +212,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
             }.distinct()
     // How you write a model word when you give it capitals it doesn't have ("hex" -> "Hex").
     private fun learnedSpelling(word: String) = decoder.learned?.spelling(word)?.takeIf { it != word && it.lowercase() == word }
-    private fun decision() = decision ?: decoder.decide(token.lowercase(), taps, previous, suggestSwearWords).also { decision = it }
+    private fun decision() = decision ?: decoder.decide(token.lowercase(), taps, previous, suggestSwearWords, beforePreviousText).also { decision = it }
     // Your own words are always yours to offer, as iOS offers UILexicon terms.
     private fun blocked(spelling: String) = model.neverSuggest.blocks(spelling.lowercase(), suggestSwearWords, previous) &&
         decoder.personal?.owns(spelling) != true

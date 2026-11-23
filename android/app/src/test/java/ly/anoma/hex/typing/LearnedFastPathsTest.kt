@@ -7,6 +7,8 @@ import org.junit.Test
 
 /** The shortcuts [LearnedWords] takes on a big store must give what the plain definitions give. */
 class LearnedFastPathsTest {
+    // A file's lines but the `h` one, which carries when it was saved.
+    private fun body(file: String) = file.lines().filter { !it.startsWith("h\t") }.sorted()
     private fun LearnedWords.use(word: String, times: Int) = repeat(times) { learn(word, null, false) }
 
     @Test fun completionsAreYourPrefixedWordsMostUsedFirst() {
@@ -42,10 +44,10 @@ class LearnedFastPathsTest {
         learned.seed(listOf("seeded" to 5), listOf(Triple("a", "b", 3)))
         val text = learned.write()
         val again = LearnedWords().also { it.read(text) }
-        assertEquals(text.lines().sorted(), again.write().lines().sorted())
+        assertEquals(body(text), body(again.write()))
         // Windows line ends and stray lines read like the rest.
         val crlf = LearnedWords().also { it.read(text.replace("\n", "\r\n") + "\nx\ty\n\tw\t1\t1\n") }
-        assertEquals(text.lines().sorted(), crlf.write().lines().sorted())
+        assertEquals(body(text), body(crlf.write()))
         assertEquals(learned.completions("a"), again.completions("a"))
     }
 

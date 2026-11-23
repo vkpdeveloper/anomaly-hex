@@ -86,7 +86,7 @@ class PersonalWordsLearningTest {
     @Test fun aWordFixedLaterByTappingIntoItTeachesThePickInstead() {
         val k = Keyboard()
         k.chars("going their now ")
-        assertTrue(k.learned.write().lines().any { it == "p\tgoing\ttheir\t1" })
+        assertTrue(k.learned.write().lines().any { it == "p\tgoing\ttheir\t1\t100" })
         val end = k.field.text.length; val inside = "going th".length
         k.field.setSelection(inside, inside); k.now = 10_000
         k.engine.updateSelection(end, end, inside, inside)
@@ -94,7 +94,7 @@ class PersonalWordsLearningTest {
         assertEquals("going there now ", k.field.text)
         val lines = k.learned.write().lines()
         assertTrue(lines.toString(), lines.none { it.startsWith("p\tgoing\ttheir") || it.startsWith("w\ttheir") })
-        assertTrue(lines.toString(), "p\tgoing\tthere\t1" in lines)
+        assertTrue(lines.toString(), "p\tgoing\tthere\t1\t100" in lines)
     }
 
     @Test fun aSearchBoxWithItsOwnCompletionsLearnsButNotWhenPrivate() {

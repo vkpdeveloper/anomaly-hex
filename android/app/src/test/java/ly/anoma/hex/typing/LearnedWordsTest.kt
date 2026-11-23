@@ -49,7 +49,7 @@ class LearnedWordsTest {
         learned.seed(listOf("Orukeet" to 2), emptyList())
         assertEquals(setOf("Orukeet"), learned.words().toSet())
         val copy = LearnedWords().apply { read(learned.write()) }
-        assertEquals(learned.write().lines().sorted(), copy.write().lines().sorted())
+        assertEquals(learned.write().lines().filter { !it.startsWith("h\t") }.sorted(), copy.write().lines().filter { !it.startsWith("h\t") }.sorted())
         assertTrue(copy.cost("typed", null).isFinite())
         copy.clear()
         assertTrue(copy.words().isEmpty())

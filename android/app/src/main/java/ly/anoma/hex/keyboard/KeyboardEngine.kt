@@ -260,6 +260,7 @@ internal class KeyboardEngine(
         edited()
         forgetSteps(); batches = 0
         editor = attribute
+        learned.app = attribute.packageName
         val kind = attribute.inputType and InputType.TYPE_MASK_CLASS
         val variation = attribute.inputType and InputType.TYPE_MASK_VARIATION
         secure = when (kind) {

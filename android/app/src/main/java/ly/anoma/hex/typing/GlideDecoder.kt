@@ -23,18 +23,18 @@ internal class GlideDecoder(private val model: TypingModel) {
     /** The likeliest words for [path] (in [grid]'s coordinates), best first, at most [limit].
      * [previous] is the word before as the model's context index (-1 for none). */
     fun decode(path: List<KeyPoint>, grid: KeyGrid, previous: Int, swears: Boolean,
-               personal: PersonalWords?, learned: LearnedWords? = null, limit: Int = 3): List<Candidate> {
+               personal: PersonalWords?, learned: LearnedWords? = null, limit: Int = 3, beforePrevious: String? = null): List<Candidate> {
         // A path that strays far from its keys still gets an answer: read again with twice the reach.
         for (reach in REACHES) {
             val read = Reading.of(path, grid, model, reach) ?: return emptyList()
-            val found = candidates(read, previous, swears, personal, learned, limit)
+            val found = candidates(read, previous, swears, personal, learned, limit, beforePrevious)
             if (found.isNotEmpty()) return found
         }
         return emptyList()
     }
 
     private fun candidates(read: Reading, previous: Int, swears: Boolean, personal: PersonalWords?, learned: LearnedWords?,
-                           limit: Int): List<Candidate> {
+                           limit: Int, beforePrevious: String?): List<Candidate> {
         val found = HashMap<String, Candidate>()
         fun offer(text: String, cost: Double, yours: Boolean) {
             val key = text.lowercase()
@@ -45,12 +45,12 @@ internal class GlideDecoder(private val model: TypingModel) {
         for ((word, spatial) in walk(read, model)) {
             if (model.neverSuggest.blocks(word, swears, context)) continue
             val text = model.text(word)
-            val lm = model.languageCost(previous, word).let { learned?.mixed(it, text, before) ?: it }
+            val lm = model.languageCost(previous, word).let { learned?.mixed(it, text, before, beforePrevious) ?: it }
             offer(text, spatial + LM_WEIGHT * lm, false)
         }
         if (personal != null && personal.size > 0) for ((word, spatial) in walk(read, personal)) {
             val text = personal.text(word)
-            val lm = minOf(USER_WORD_COST, learned?.mixed(Double.POSITIVE_INFINITY, text, before) ?: USER_WORD_COST)
+            val lm = minOf(USER_WORD_COST, learned?.mixed(Double.POSITIVE_INFINITY, text, before, beforePrevious) ?: USER_WORD_COST)
             offer(text, spatial + LM_WEIGHT * lm, true)
         }
         return found.values.sortedWith(compareBy<Candidate> { it.cost }.thenBy { it.text }).take(limit)

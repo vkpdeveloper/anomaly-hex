@@ -43,14 +43,14 @@ internal class SpatialDecoder(val model: TypingModel) {
         fun hindi(w: String) = english.index(w) < 0 && (model.capitals?.percent(w) ?: -1) < 50
         return model.language == "hien" && hindi(a) && hindi(b) && Spellings.hindi(a, b)
     }
-    // The model's cost for a word after the context word, mixed with what you write.
-    private fun mixedCost(previous: Int, word: Int): Double {
+    // The model's cost for a word after the context word (and the one before it), mixed with what you write.
+    private fun mixedCost(previous: Int, word: Int, beforePrevious: String?): Double {
         val base = model.languageCost(previous, word)
-        return learned?.mixed(base, model.text(word), contextText(previous)) ?: base
+        return learned?.mixed(base, model.text(word), contextText(previous), beforePrevious) ?: base
     }
     /** One of your words: a moderately common word, or likelier when you write it often. */
-    internal fun personalCost(text: String, previous: Int) =
-        minOf(USER_WORD_COST, learned?.mixed(Double.POSITIVE_INFINITY, text, contextText(previous)) ?: USER_WORD_COST)
+    internal fun personalCost(text: String, previous: Int, beforePrevious: String?) =
+        minOf(USER_WORD_COST, learned?.mixed(Double.POSITIVE_INFINITY, text, contextText(previous), beforePrevious) ?: USER_WORD_COST)
     internal fun contextText(previous: Int) = if (previous in 0 until model.size) model.text(previous) else null
     /** `spaceCost`: what reading this tap as a space the finger missed costs when it landed on
      * the bottom row's upper half, or infinity (`spaceTapCost`). */
@@ -227,7 +227,7 @@ internal class SpatialDecoder(val model: TypingModel) {
         return found.map { Found(it.key, it.value) }
     }
 
-    fun decide(typed: String, taps: List<Tap>, previous: Int, swears: Boolean): Decision {
+    fun decide(typed: String, taps: List<Tap>, previous: Int, swears: Boolean, beforePrevious: String? = null): Decision {
         val none = Decision(null, emptyList())
         if (typed.length !in 2..32 || taps.size != typed.length || model.neverSuggest.blocks(typed, swears, previous) ||
             typed.any { model.code(it) == 0 || it == '\'' }) return none
@@ -238,22 +238,22 @@ internal class SpatialDecoder(val model: TypingModel) {
         // A rare word the books use, outside the model: what it costs by its count, not a known word's.
         val listed = if (literal < 0 && yours < 0) model.validCost(typed) else null
         var lm = when {
-            literal >= 0 -> mixedCost(previous, literal)
+            literal >= 0 -> mixedCost(previous, literal, beforePrevious)
             listed != null -> listed
             knownLiteral -> 15.0
             else -> 22.0
         }
         // One of your own words scores as a moderately common one (about the 10,000th).
-        if (yours >= 0) lm = minOf(lm, personalCost(typed, previous))
+        if (yours >= 0) lm = minOf(lm, personalCost(typed, previous, beforePrevious))
         var cost = lmWeight * lm
         for (i in taps.indices) cost += taps[i].cost[model.code(typed[i])]
         if (!cost.isFinite()) return none
         val readings = ArrayList<Reading>()
         // iOS applies the language score only to the five best spatial readings.
         for ((w, spatial) in search(taps, 0, taps.size, 1, swears, previous).sortedWith(spatialOrder).take(5)) if (w != literal)
-            readings.add(Reading(model.text(w), spatial + lmWeight * mixedCost(previous, w), model.frequencyCost(w)))
+            readings.add(Reading(model.text(w), spatial + lmWeight * mixedCost(previous, w, beforePrevious), model.frequencyCost(w)))
         if (personal != null) for ((w, spatial) in search(taps, 0, taps.size, 1, swears, previous, personal).sortedWith(spatialOrder).take(3))
-            if (w != yours) readings.add(Reading(personal.text(w), spatial + lmWeight * personalCost(personal.text(w), previous), (USER_WORD_COST * 8).toInt()))
+            if (w != yours) readings.add(Reading(personal.text(w), spatial + lmWeight * personalCost(personal.text(w), previous, beforePrevious), (USER_WORD_COST * 8).toInt()))
         if (taps.size >= 3) {
             fun alone(f: Found) = model.length(f.word) > 1 || model.frequencyCost(f.word) < 56
             fun half(a: Int, b: Int, prev: Int) = search(taps, a, b, 0, swears, prev).sortedWith(spatialOrder)
