@@ -1,6 +1,7 @@
 package ly.anoma.hex.typing
 
 import kotlin.math.hypot
+import kotlin.math.sqrt
 
 /** Reads a glide, a finger's path across the letter keys, as the words it most likely spells.
  *
@@ -71,7 +72,8 @@ internal class GlideDecoder(private val model: TypingModel) {
         }
         var depth = 1
         while (layer.isNotEmpty() && depth < TypingWord.MAX_LENGTH) {
-            if (layer.size > BEAM) { layer.sortBy { it.cost }; layer.subList(BEAM, layer.size).clear() }
+            // The same stable order sortBy gives, without boxing a cost for every comparison.
+            if (layer.size > BEAM) { layer.sortWith { a, b -> java.lang.Double.compare(a.cost, b.cost) }; layer.subList(BEAM, layer.size).clear() }
             val next = HashMap<Long, State>()
             fun push(child: Long, j: Int, key: Int, cost: Double) {
                 if (child == 0L) return
@@ -118,7 +120,7 @@ internal class GlideDecoder(private val model: TypingModel) {
         private val bends = FloatArray(size * size) { -1f }
         // The path's length up to each point, in keys.
         private val travelled = FloatArray(size).also {
-            for (i in 1 until size) it[i] = it[i - 1] + hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
+            for (i in 1 until size) it[i] = it[i - 1] + length(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
         }
         private val afters = arrayOfNulls<IntArray>(keys.size * size)
 
@@ -150,7 +152,7 @@ internal class GlideDecoder(private val model: TypingModel) {
             var far = 0f
             for (i in a + 1 until b) far = maxOf(far, segmentDistance(xs[i], ys[i], xs[a], ys[a], xs[b], ys[b]))
             val over = maxOf(0f, far - BEND_FREE)
-            val extra = maxOf(0f, travelled[b] - travelled[a] - hypot(xs[b] - xs[a], ys[b] - ys[a]) - DETOUR_FREE)
+            val extra = maxOf(0f, travelled[b] - travelled[a] - length(xs[b] - xs[a], ys[b] - ys[a]) - DETOUR_FREE)
             val cost = (BEND_WEIGHT * over * over + DETOUR_WEIGHT * extra).toFloat()
             bends[a * size + b] = cost
             return cost.toDouble()
@@ -183,7 +185,7 @@ internal class GlideDecoder(private val model: TypingModel) {
                 val n = xs.size
                 val distance = Array(keys.size) { k ->
                     val c = centres[k]
-                    FloatArray(n) { j -> hypot(xs[j] - c.x, ys[j] - c.y).toFloat() }
+                    FloatArray(n) { j -> (xs[j] - c.x).let { dx -> (ys[j] - c.y).let { dy -> sqrt(dx * dx + dy * dy) } }.toFloat() }
                 }
                 return Reading(xs, ys, keys, distance, Array(keys.size) { passes(distance[it], PASS_RADIUS * reach) },
                     Array(keys.size) { byKey[it].toIntArray() }, accent, reach)
@@ -246,8 +248,12 @@ internal class GlideDecoder(private val model: TypingModel) {
                 val dx = bx - ax; val dy = by - ay
                 val length = dx * dx + dy * dy
                 val t = if (length == 0f) 0f else (((x - ax) * dx + (y - ay) * dy) / length).coerceIn(0f, 1f)
-                return hypot(x - (ax + t * dx), y - (ay + t * dy))
+                return length(x - (ax + t * dx), y - (ay + t * dy))
             }
+
+            // The distance of a float offset, as hypot gives it (rounded to a float) without hypot's
+            // overflow-proof slowness: these are a few keys long, and it was a quarter of a glide's time.
+            private fun length(x: Float, y: Float) = sqrt(x.toDouble() * x + y.toDouble() * y).toFloat()
         }
     }
 
