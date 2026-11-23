@@ -42,6 +42,10 @@ internal class TypingPreferences(context: Context) {
     var learnFromHistory: Boolean
         get() = prefs.getBoolean(LEARN_FROM_HISTORY, true)
         set(value) { prefs.edit().putBoolean(LEARN_FROM_HISTORY, value).apply() }
+    /** Whether words you fix in text the keyboard dictated are learned, here and on the paired computer. */
+    var learnFromCorrections: Boolean
+        get() = prefs.getBoolean(LEARN_FROM_CORRECTIONS, true)
+        set(value) { prefs.edit().putBoolean(LEARN_FROM_CORRECTIONS, value).apply() }
     /** The fix button above the keys: on only once its files have downloaded ([ly.anoma.hex.fix.TinyfixFiles]). */
     var fixButton: Boolean
         get() = prefs.getBoolean(FIX_BUTTON, false)
@@ -115,6 +119,7 @@ internal class TypingPreferences(context: Context) {
     companion object {
         const val SUGGEST_SWEAR_WORDS = "suggestSwearWords"
         const val LEARN_FROM_HISTORY = "learnFromHistory"
+        const val LEARN_FROM_CORRECTIONS = "learnFromCorrections"
         const val FORGET_LEARNED = "forgetLearned"
         const val FIX_BUTTON = "fixButton"
         const val CONTACT_EMAILS = "contactEmails"

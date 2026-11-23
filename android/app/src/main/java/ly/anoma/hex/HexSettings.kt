@@ -93,6 +93,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val glide = remember(revision) { typing.glide }
     val glideTrail = remember(revision) { typing.glideTrail }
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
+    val learnFromCorrections = remember(revision) { typing.learnFromCorrections }
     val sayToSend = remember(revision) { typing.sayToSend }
     val cleanLinks = remember(revision) { typing.cleanLinks }
     val expandLinks = remember(revision) { typing.expandLinks }
@@ -274,6 +275,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             }
                             Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
                                 typing.learnFromHistory = it
+                            }
+                            Rule(); Toggle("Learn from my corrections", "Remember words you fix after dictating", learnFromCorrections) {
+                                typing.learnFromCorrections = it
                             }
                             Rule(); Toggle("Say \"send it\" to send", "End a dictation with it to press send", sayToSend) {
                                 typing.sayToSend = it

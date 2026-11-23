@@ -72,6 +72,8 @@ internal class KeyboardEngine(
     private val emojiPicked: () -> Unit = {},
     /** Free times from the calendar for the text before the caret ([FreeTimes]), none while that's off. */
     private val freeTimes: (String) -> List<StripAction> = { emptyList() },
+    /** What the person fixed in text just dictated, for the paired computer ([DictationWatch]). */
+    private val corrected: (DictationFix) -> Unit = {},
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
@@ -89,6 +91,8 @@ internal class KeyboardEngine(
         const val FIX_WINDOW = 1_000
         /** A pause this long in typing starts another undo step even mid-word. */
         const val STEP_GAP_MS = 2_000L
+        /** A fixed dictation is read once the field has been still this long. */
+        const val WATCH_PAUSE_MS = 1_000L
     }
     private var editedAt = Long.MIN_VALUE / 2
     // Undo's steps: a word with what ends it, a run of deletes, or one larger edit ([EditHistory]). Within a
@@ -263,6 +267,7 @@ internal class KeyboardEngine(
         addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
         addressesLearned.clear(); typedHere = false
+        if (!learnsCorrections()) dropWatch()
         resetTyping(); word = null; clearSpaces()
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
             kind == InputType.TYPE_CLASS_DATETIME
@@ -274,6 +279,7 @@ internal class KeyboardEngine(
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
+        if (watch.active) watchChanged()
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) offerActions()
         (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
         val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
@@ -949,7 +955,7 @@ internal class KeyboardEngine(
     }
 
     /** Dictation starts: the word in progress is left as typed. */
-    fun clearForDictation() { edited(); resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
+    fun clearForDictation() { finishWatch(read = true); edited(); resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
 
     /** The editor or the keyboard went away: forget the word, never carry it to the next field. */
     /** A panel (emoji, the grid's menu, the clipboard) takes the keys' place. The word in progress stays,
@@ -957,6 +963,7 @@ internal class KeyboardEngine(
     fun pause() { cancelChip(); surface?.suggestions(emptyList()) }
 
     fun leave() {
+        finishWatch(read = true)
         edited()
         if (typedHere) learnAddressBefore(before())
         resetTyping(); clearSpaces(); word = null; surface?.suggestions(emptyList())
@@ -998,8 +1005,40 @@ internal class KeyboardEngine(
         val result = insertion(shaped, before?.lastOrNull(), target.after(1)?.firstOrNull())
         if (result.isEmpty() || !target.commit(result)) return false
         if (offer && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
+        if (offer) beginWatch(result)
         return true
     }
+
+    // Fixes to a dictation are learned in the fields that learn, while Learn from my corrections is on.
+    private val watch = DictationWatch(clock)
+    private val readWatch = Runnable { target.all()?.let { watch.sample(it.text) } }
+    private val endWatch = Runnable { finishWatch(read = true) }
+    private fun learnsCorrections() = learnHere && feedback.learnFromCorrections
+    private fun beginWatch(inserted: String) {
+        dropWatch()
+        if (!learnsCorrections()) return
+        target.all()?.let { watch.begin(inserted, it.text) }
+        if (watch.active) main.postDelayed(endWatch, DictationWatch.WATCH_MS)
+    }
+    /** Forgets the dictation being followed, teaching nothing. */
+    internal fun dropWatch() { main.removeCallbacks(readWatch); main.removeCallbacks(endWatch); watch.drop() }
+    private fun watchChanged() {
+        if (!learnsCorrections()) { dropWatch(); return }
+        main.removeCallbacks(readWatch); main.postDelayed(readWatch, WATCH_PAUSE_MS)
+    }
+    /** Ends the watch: the field is read once more when [read], and what was fixed goes to [corrected]. */
+    internal fun finishWatch(read: Boolean = false) {
+        if (!watch.active) return
+        main.removeCallbacks(readWatch); main.removeCallbacks(endWatch)
+        if (read && learnsCorrections() && target.connected) target.all()?.let { watch.sample(it.text) }
+        if (!learnsCorrections()) { watch.drop(); return }
+        val fix = watch.finish() ?: return
+        if (Corrections.learn(learned, fix.words)) personalWordsChanged()
+        if (fix.words.isNotEmpty()) learnedChanged()
+        corrected(fix)
+    }
+    /** Reads the field now, as the pause after an edit does. */
+    internal fun sampleWatch() = readWatch.run()
 
     /** The undo chip. Undo dictation: the last dictation goes, if it is still right before the cursor with
      * nothing selected. Undo fixes: each fixed word goes back, if the field hasn't changed since. Returns

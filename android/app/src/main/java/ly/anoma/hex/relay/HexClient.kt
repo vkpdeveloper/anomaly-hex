@@ -47,12 +47,18 @@ object HexClient {
     }
 
     /** How often each word, and each pair of neighbouring words, appears in the computer's Hex History. */
-    data class Words(val words: List<Pair<String, Int>>, val pairs: List<Triple<String, String, Int>>)
+    data class Words(
+        val words: List<Pair<String, Int>>,
+        val pairs: List<Triple<String, String, Int>>,
+        /** The computer's Vocabulary terms (Settings › Output); empty from an older Hex. */
+        val vocabulary: List<String> = emptyList(),
+    )
 
     fun words(host: String, port: Int, code: String): Words {
         val json = request(host, port, code, "GET", "/phone/v1/words", null, 2_000, 15_000)
         val words = json.optJSONArray("words")
         val pairs = json.optJSONArray("pairs")
+        val vocabulary = json.optJSONArray("vocabulary")
         return Words(
             words = (0 until (words?.length() ?: 0)).mapNotNull { i ->
                 words!!.optJSONArray(i)?.takeIf { it.length() == 2 }?.let { it.optString(0) to it.optInt(1) }
@@ -60,6 +66,7 @@ object HexClient {
             pairs = (0 until (pairs?.length() ?: 0)).mapNotNull { i ->
                 pairs!!.optJSONArray(i)?.takeIf { it.length() == 3 }?.let { Triple(it.optString(0), it.optString(1), it.optInt(2)) }
             },
+            vocabulary = (0 until (vocabulary?.length() ?: 0)).map { vocabulary!!.optString(it) }.filter { it.isNotBlank() },
         )
     }
 
@@ -100,6 +107,15 @@ object HexClient {
         val json = request(host, port, code, "POST", "/phone/v1/transcriptions" + origin.query(), wav, 2_000, 60_000)
         val language = json.optString("language").takeIf { it.isNotEmpty() && it != "auto" }
         return Heard(json.optString("transcript").trim(), language)
+    }
+
+    /** Tells the computer what a fixed dictation taught; it answers with the terms it added to Vocabulary. */
+    fun correct(host: String, port: Int, code: String, baseline: String, inserted: String, edited: String): List<String> {
+        val body = JSONObject().put("baseline", baseline).put("inserted", inserted).put("edited", edited)
+            .toString().toByteArray()
+        val json = request(host, port, code, "POST", "/phone/v1/corrections", body, 2_000, 10_000, "application/json")
+        val learned = json.optJSONArray("learned")
+        return (0 until (learned?.length() ?: 0)).map { learned!!.optString(it) }.filter { it.isNotBlank() }
     }
 
     /** The computer's text replacements (Settings › Output), each `phrase to output`. */

@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import ly.anoma.hex.R
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
+import ly.anoma.hex.relay.HexError
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.ContactNames
 import ly.anoma.hex.typing.EmailAddresses
@@ -144,15 +145,46 @@ class HexKeyboard : InputMethodService() {
             try {
                 val got = dictation.router.send { host, computer -> HexClient.words(host, computer.port, computer.code) }
                 if (!feedback.learnFromHistory) return@launch
-                learned.seed(got.words, got.pairs)
+                // The computer's Vocabulary names are words you use there, so they are words here.
+                learned.seed(got.words + Corrections.termWords(got.vocabulary).map { it.first to VOCABULARY_COUNT }, got.pairs)
                 forgotten.all().forEach(learned::forgetWord)
                 feedback.historyWordsAt = System.currentTimeMillis()
                 engine.learnedWordsChanged(); learnedChanged()
+                sendCorrections()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 // Not paired, unreachable, or a computer without the words route: try again next time.
             } finally { fetching = false }
+        }
+    }
+    // Fixes to dictated text the computer hasn't taken yet: a few, in memory, sent at the next contact.
+    private val pendingCorrections = PendingCorrections()
+    private var sendingCorrections = false
+    private fun correctionFound(fix: DictationFix) { pendingCorrections.add(fix); sendCorrections() }
+    /** Sends the waiting corrections, oldest first, and learns the terms the computer took from them. A
+     * computer that can't be reached keeps them; one that refuses a correction (an older Hex) drops it. */
+    private fun sendCorrections() {
+        if (sendingCorrections || pendingCorrections.size == 0) return
+        sendingCorrections = true
+        io.launch {
+            try {
+                while (feedback.learnFromCorrections) {
+                    val fix = pendingCorrections.first() ?: break
+                    try {
+                        val terms = dictation.router.send { host, computer -> HexClient.correct(host, computer.port, computer.code, fix.baseline, fix.inserted, fix.edited) }
+                        pendingCorrections.remove(fix)
+                        if (Corrections.learn(learned, Corrections.termWords(terms))) engine.learnedWordsChanged()
+                        if (terms.isNotEmpty()) learnedChanged()
+                    } catch (_: HexError.Failed) {
+                        pendingCorrections.remove(fix)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not paired or unreachable: they wait for the next contact.
+            } finally { sendingCorrections = false }
         }
     }
     private var fetchingReplacements = false
@@ -186,7 +218,7 @@ class HexKeyboard : InputMethodService() {
                 else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {
                     FreeTimes.busy(contentResolver, it)
                 }
-            }, background = words)
+            }, corrected = ::correctionFound, background = words)
     }
     internal val dictation by lazy {
         Dictation(this,
@@ -215,11 +247,13 @@ class HexKeyboard : InputMethodService() {
             TypingPreferences.FORGET_LEARNED -> {
                 main.removeCallbacks(saveLearned); learned.clear(); touch.clear(); engine.learnedWordsChanged()
                 forgotten.clear(); engine.hiddenChanged()
+                engine.dropWatch(); pendingCorrections.clear()
                 emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
             }
             TypingPreferences.LEARN_FROM_HISTORY ->
                 if (feedback.learnFromHistory) fetchHistoryWords(force = true)
                 else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
+            TypingPreferences.LEARN_FROM_CORRECTIONS -> if (!feedback.learnFromCorrections) pendingCorrections.clear()
             TypingPreferences.CONTACT_EMAILS -> contactsSettingChanged()
             TypingPreferences.REPLACEMENTS -> engine.personalWordsChanged()
             TypingPreferences.NUMBER_ROW -> view?.numberRowChanged()
@@ -311,6 +345,7 @@ class HexKeyboard : InputMethodService() {
         if (!engine.secure) dictation.prewarm()
         fetchHistoryWords()
         fetchReplacements()
+        sendCorrections()
     }
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
                                    candidatesStart: Int, candidatesEnd: Int) {
@@ -360,6 +395,8 @@ class HexKeyboard : InputMethodService() {
         const val SAVE_DELAY_MS = 3_000L
         const val EMOJI_PICKS = "picks"
         const val CONTACTS_DELAY_MS = 2_000L
+        /** What the computer's Vocabulary terms count as, so they are words at once. */
+        const val VOCABULARY_COUNT = 3
         const val HISTORY_WORDS_MS = 6 * 60 * 60_000L
         const val REPLACEMENTS_MS = 60 * 60_000L
     }
