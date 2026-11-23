@@ -17,7 +17,9 @@ mod processed;
 mod typed_rewrite;
 
 pub use self::processed::{Processed, ProcessingObservation};
-pub(crate) use self::typed_rewrite::{RewriteFailure, rewrite_typed_text};
+pub(crate) use self::typed_rewrite::{
+    ChatLine, RewriteFailure, Style as RewriteStyle, draft_replies, rewrite_typed_text,
+};
 
 use self::generation::{
     Request, Response, generate_single_model, post_generation, remaining_generation_deadline,

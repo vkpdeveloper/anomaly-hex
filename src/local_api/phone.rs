@@ -621,6 +621,9 @@ fn handle(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Opti
         }
         ("POST", "/phone/v1/transcriptions") => transcribe(request, stream, shared),
         ("POST", "/phone/v1/rewrite") => Some(rewrite::handle(request, stream, &shared.stop)),
+        ("POST", "/phone/v1/replies") => {
+            Some(rewrite::handle_replies(request, stream, &shared.stop))
+        }
         ("GET", "/phone/v1/words") => Some(HttpResponse::json(
             200,
             &words::from_history(crate::desktop::events::now_ms()),

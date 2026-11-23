@@ -1,8 +1,11 @@
 //! A paired phone keyboard's Rewrite (`POST /phone/v1/rewrite`): text from
-//! the phone's text box, rewritten by OpenCode with Global mode's model,
-//! variant, and deadline (`dictation::processor::rewrite_typed_text`). Only
-//! on the phone's tap; the text is never logged or kept. A failure answers a
-//! code and never the text it was sent, so the phone leaves its field alone.
+//! the phone's text box, rewritten by OpenCode in the tone asked for, with
+//! Global mode's model, variant, and deadline
+//! (`dictation::processor::rewrite_typed_text`); and its Reply
+//! (`POST /phone/v1/replies`): replies drafted to the chat on the phone's
+//! screen (`dictation::processor::draft_replies`). Only on the phone's tap;
+//! the text is never logged or kept. A failure answers a code and never the
+//! text it was sent, so the phone leaves its field alone.
 
 use std::net::TcpStream;
 use std::sync::RwLock;
@@ -11,7 +14,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Deserialize;
 
 use crate::app_settings::AppSettings;
-use crate::dictation::processor::{PostProcessingSettings, RewriteFailure, rewrite_typed_text};
+use crate::dictation::processor::{
+    ChatLine, PostProcessingSettings, RewriteFailure, RewriteStyle, draft_replies,
+    rewrite_typed_text,
+};
 use crate::local_api::http::{HttpRequest, HttpResponse, body_read_response, read_body_bounded};
 
 /// Far more than a phone's text box sends: the selection, or what the
@@ -33,33 +39,99 @@ pub(super) fn apply(settings: &AppSettings) {
     );
 }
 
+/// A chat is cut to its newest lines this many.
+const MAX_CHAT_LINES: usize = 40;
+
 #[derive(Deserialize)]
 struct RewriteRequest {
     text: String,
+    /// Fix when left out, as every phone before tones sent.
+    #[serde(default)]
+    style: RewriteStyle,
 }
 
-type Rewrite<'a> = &'a dyn Fn(&str, &AtomicBool) -> Result<String, RewriteFailure>;
+#[derive(Deserialize)]
+struct RepliesRequest {
+    lines: Vec<ChatLine>,
+    #[serde(default)]
+    draft: String,
+}
+
+/// What a route asks OpenCode, with a request already read and checked.
+enum Ask {
+    Rewrite(RewriteRequest),
+    Replies(RepliesRequest),
+}
+
+type Answer<'a> = &'a dyn Fn(Ask, &AtomicBool) -> Result<serde_json::Value, RewriteFailure>;
+
+fn settings() -> PostProcessingSettings {
+    SETTINGS
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+
+fn answer(ask: Ask, cancelled: &AtomicBool) -> Result<serde_json::Value, RewriteFailure> {
+    match ask {
+        Ask::Rewrite(RewriteRequest { text, style }) => {
+            rewrite_typed_text(&text, style, &settings(), cancelled)
+                .map(|text| serde_json::json!({ "text": text }))
+        }
+        Ask::Replies(RepliesRequest { lines, draft }) => {
+            draft_replies(&lines, &draft, &settings(), cancelled)
+                .map(|replies| serde_json::json!({ "replies": replies }))
+        }
+    }
+}
 
 pub(super) fn handle(
     request: HttpRequest,
     stream: &mut TcpStream,
     stop: &AtomicBool,
 ) -> HttpResponse {
-    respond(request, stream, stop, &|text, cancelled| {
-        let settings = SETTINGS
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-            .unwrap_or_default();
-        rewrite_typed_text(text, &settings, cancelled)
-    })
+    respond(request, stream, stop, false, &answer)
+}
+
+pub(super) fn handle_replies(
+    request: HttpRequest,
+    stream: &mut TcpStream,
+    stop: &AtomicBool,
+) -> HttpResponse {
+    respond(request, stream, stop, true, &answer)
+}
+
+/// Reads the body as a rewrite, or as a chat to reply to when `replies`.
+fn read_ask(body: &[u8], replies: bool) -> Result<Ask, HttpResponse> {
+    let invalid = || HttpResponse::code(400, "invalid-request");
+    if replies {
+        let Ok(mut request) = serde_json::from_slice::<RepliesRequest>(body) else {
+            return Err(invalid());
+        };
+        request.lines.retain(|line| !line.text.trim().is_empty());
+        if request.lines.is_empty() {
+            return Err(HttpResponse::code(400, "empty-text"));
+        }
+        let extra = request.lines.len().saturating_sub(MAX_CHAT_LINES);
+        request.lines.drain(..extra);
+        return Ok(Ask::Replies(request));
+    }
+    let Ok(request) = serde_json::from_slice::<RewriteRequest>(body) else {
+        return Err(invalid());
+    };
+    if request.text.trim().is_empty() {
+        return Err(HttpResponse::code(400, "empty-text"));
+    }
+    Ok(Ask::Rewrite(request))
 }
 
 fn respond(
     request: HttpRequest,
     stream: &mut TcpStream,
     stop: &AtomicBool,
-    rewrite: Rewrite,
+    replies: bool,
+    answer: Answer,
 ) -> HttpResponse {
     if !request.has_content_type("application/json") {
         return HttpResponse::code(415, "unsupported-media-type");
@@ -78,17 +150,15 @@ fn respond(
     ) {
         return body_read_response(error);
     }
-    let Ok(RewriteRequest { text }) = serde_json::from_slice(&body) else {
-        return HttpResponse::code(400, "invalid-request");
+    let ask = match read_ask(&body, replies) {
+        Ok(ask) => ask,
+        Err(refused) => return refused,
     };
-    if text.trim().is_empty() {
-        return HttpResponse::code(400, "empty-text");
-    }
     let Some(_busy) = Busy::claim() else {
         return HttpResponse::code(429, "busy");
     };
-    match rewrite(&text, stop) {
-        Ok(text) => HttpResponse::json(200, &serde_json::json!({ "text": text })),
+    match answer(ask, stop) {
+        Ok(json) => HttpResponse::json(200, &json),
         Err(RewriteFailure::Managed) => HttpResponse::code(403, "opencode-managed"),
         Err(RewriteFailure::NotRunning) => HttpResponse::code(503, "opencode-not-running"),
         Err(RewriteFailure::Outdated) => HttpResponse::code(503, "opencode-outdated"),
@@ -124,12 +194,34 @@ mod tests {
     use super::*;
     use crate::local_api::http::{read_request, write_response};
 
-    /// One request through the route with `rewrite` in OpenCode's place.
-    fn send(content_type: &str, body: &[u8], rewrite: Rewrite) -> (u16, serde_json::Value) {
+    /// One rewrite through the route with `rewrite` in OpenCode's place.
+    fn send(
+        content_type: &str,
+        body: &[u8],
+        rewrite: &dyn Fn(&str, &AtomicBool) -> Result<String, RewriteFailure>,
+    ) -> (u16, serde_json::Value) {
+        let answer = |ask: Ask, stop: &AtomicBool| match ask {
+            Ask::Rewrite(request) => {
+                rewrite(&request.text, stop).map(|text| serde_json::json!({ "text": text }))
+            }
+            Ask::Replies(_) => panic!("a rewrite never asks for replies"),
+        };
+        post(false, content_type, body, &answer)
+    }
+
+    /// One request through the rewrite route, or the replies one when
+    /// `replies`, with `answer` in OpenCode's place.
+    fn post(
+        replies: bool,
+        content_type: &str,
+        body: &[u8],
+        answer: Answer,
+    ) -> (u16, serde_json::Value) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let path = if replies { "replies" } else { "rewrite" };
         let head = format!(
-            "POST /phone/v1/rewrite HTTP/1.1\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+            "POST /phone/v1/{path} HTTP/1.1\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
             body.len()
         );
         let body = body.to_vec();
@@ -145,7 +237,7 @@ mod tests {
         let (mut stream, _) = listener.accept().unwrap();
         let stop = AtomicBool::new(false);
         let request = read_request(&mut stream, &stop).unwrap();
-        let response = respond(request, &mut stream, &stop, rewrite);
+        let response = respond(request, &mut stream, &stop, replies, answer);
         write_response(&mut stream, response).unwrap();
         // Drain what was left unread, so closing never resets the reply away.
         // Best effort: the client may already have read the reply and closed.
@@ -213,5 +305,58 @@ mod tests {
         let (status, json) = send("application/json", br#"{"text":"hi"}"#, &unreached);
         assert_eq!((status, json["code"].as_str()), (429, Some("busy")));
         drop(held);
+
+        // A tone the phone names reaches OpenCode; one this computer doesn't
+        // know is refused rather than rewritten some other way.
+        let styles = Mutex::new(Vec::new());
+        let styled = |ask: Ask, _: &AtomicBool| match ask {
+            Ask::Rewrite(request) => {
+                styles.lock().unwrap().push(request.style);
+                Ok(serde_json::json!({ "text": "ok" }))
+            }
+            Ask::Replies(_) => unreachable!(),
+        };
+        let body = br#"{"text":"hi","style":"shorter"}"#;
+        assert_eq!(post(false, "application/json", body, &styled).0, 200);
+        assert_eq!(
+            post(false, "application/json", br#"{"text":"hi"}"#, &styled).0,
+            200
+        );
+        let body = br#"{"text":"hi","style":"sarcastic"}"#;
+        assert_eq!(post(false, "application/json", body, &styled).0, 400);
+        assert_eq!(
+            *styles.lock().unwrap(),
+            [RewriteStyle::Shorter, RewriteStyle::Fix]
+        );
+
+        // Replies get the chat's newest lines, blank ones left out.
+        let seen = Mutex::new(Vec::new());
+        let replying = |ask: Ask, _: &AtomicBool| match ask {
+            Ask::Replies(request) => {
+                seen.lock().unwrap().push((request.lines, request.draft));
+                Ok(serde_json::json!({ "replies": ["Yes!", "Can't today"] }))
+            }
+            Ask::Rewrite(_) => unreachable!(),
+        };
+        let mut lines: Vec<_> = (0..45)
+            .map(|n| serde_json::json!({ "mine": n % 2 == 0, "text": format!("line {n}") }))
+            .collect();
+        lines.push(serde_json::json!({ "mine": false, "text": "  " }));
+        let body =
+            serde_json::to_vec(&serde_json::json!({ "lines": lines, "draft": "ye" })).unwrap();
+        let (status, json) = post(true, "application/json", &body, &replying);
+        assert_eq!(status, 200);
+        assert_eq!(json["replies"], serde_json::json!(["Yes!", "Can't today"]));
+        let (lines, draft) = seen.lock().unwrap().pop().unwrap();
+        assert_eq!(lines.len(), MAX_CHAT_LINES);
+        assert_eq!(lines[0].text, "line 5");
+        assert!(!lines[0].mine);
+        assert_eq!(draft, "ye");
+        let blank = br#"{"lines":[{"mine":false,"text":" "}]}"#;
+        assert_eq!(post(true, "application/json", blank, &replying).0, 400);
+        assert_eq!(
+            post(true, "application/json", br#"{"text":"hi"}"#, &replying).0,
+            400
+        );
     }
 }
