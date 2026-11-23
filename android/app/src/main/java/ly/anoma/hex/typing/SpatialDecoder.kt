@@ -11,7 +11,9 @@ internal data class KeyRect(val left: Double, val top: Double, val right: Double
 }
 /** `space` is the space bar's keycap, or null when unknown: then a tap on the bottom letter row
  * is never read as a missed space. */
-internal class KeyGrid(val centres: Map<Char, KeyPoint>, val pitchX: Double, val pitchY: Double, val space: KeyRect? = null) {
+internal class KeyGrid @JvmOverloads constructor(val centres: Map<Char, KeyPoint>, val pitchX: Double, val pitchY: Double, val space: KeyRect? = null,
+                       /** Where taps for each key are expected: its centre moved by your habitual miss ([TouchOffsets]). */
+                       val aimed: Map<Char, KeyPoint> = centres, val touchVersion: Int = 0) {
     val bottomY = centres.values.maxOf { it.y }
     // R1's reference pitch is 39.5 × 56. Keep its vertical spread and its 6-nat split
     // prior on that layout. On shorter rows the travel to space is shorter: scale its
@@ -65,7 +67,7 @@ internal class SpatialDecoder(val model: TypingModel) {
     fun score(grid: KeyGrid, x: Double, y: Double): Tap {
         val costs = DoubleArray(model.alphabet + 1) { Double.POSITIVE_INFINITY }
         val sy = grid.verticalSpread
-        for ((c, p) in grid.centres) {
+        for ((c, p) in grid.aimed) {
             val code = model.code(c)
             if (code == 0) continue
             val dx = (x - p.x) / (grid.pitchX * .29)

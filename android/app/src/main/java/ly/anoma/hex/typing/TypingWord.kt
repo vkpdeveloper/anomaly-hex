@@ -21,6 +21,14 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private var previous = -1
     private var literalOnly = false
     private val taps = ArrayList<SpatialDecoder.Tap>()
+    // Where each of the word's letters was tapped, in the grid they were scored on, for [TouchOffsets].
+    private val touches = ArrayList<KeyPoint>()
+    private var touchGrid: KeyGrid? = null
+    /** The taps of the word [reset] just ended: its letters as typed, where each was tapped and the grid. */
+    class Touched(val typed: String, val points: List<KeyPoint>, val grid: KeyGrid)
+    private var touched: Touched? = null
+    /** The taps of the last word that ended, once; null when its letters weren't all tapped. */
+    fun takeTouched(): Touched? = touched.also { touched = null }
     private var decision: SpatialDecoder.Decision? = null
     // The text before the word, the word before it (lowercase, null after punctuation) and
     // whether the word starts a sentence.
@@ -46,7 +54,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     /** Starts a word after `before`. The word a space just finished stays revisable only when
      * `before` is still the text it left; an empty `before` keeps it for the next call. */
     fun reset(before: String = "") {
-        token = ""; taps.clear(); decision = null; literalOnly = false
+        val grid = touchGrid
+        touched = if (grid != null && token.isNotEmpty() && !literalOnly && touches.size == token.length) Touched(token, ArrayList(touches), grid) else null
+        token = ""; taps.clear(); touches.clear(); decision = null; literalOnly = false
         this.before = before
         previousText = previousWord(before).takeIf { it.isNotEmpty() }
         previous = model.context(previousText.orEmpty())
@@ -176,14 +186,16 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private fun shown(word: String) = matchCase(token, if (token.firstOrNull()?.isUpperCase() == true) word else displayed(word))
     fun letter(text: String, x: Double, y: Double, grid: KeyGrid) {
         token += text; decision = null
-        if (spatial && !literalOnly && taps.size < MAX_LENGTH) taps.add(decoder.score(grid, x, y))
+        if (spatial && !literalOnly && taps.size < MAX_LENGTH) {
+            taps.add(decoder.score(grid, x, y)); touches.add(KeyPoint(x, y)); touchGrid = grid
+        }
     }
     fun explicit(text: String) {
-        token += text; taps.clear(); decision = null; literalOnly = true
+        token += text; taps.clear(); touches.clear(); decision = null; literalOnly = true
     }
     fun pop() {
         if (token.isEmpty()) return
-        if (taps.size == token.length) taps.removeAt(taps.lastIndex)
+        if (taps.size == token.length) { taps.removeAt(taps.lastIndex); if (touches.isNotEmpty()) touches.removeAt(touches.lastIndex) }
         token = token.dropLast(1); decision = null
     }
     private val glider by lazy { GlideDecoder(model) }

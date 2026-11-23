@@ -37,6 +37,7 @@ import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.Replacements
 import ly.anoma.hex.typing.SpatialDecoder
+import ly.anoma.hex.typing.TouchOffsets
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
 
@@ -56,17 +57,24 @@ class HexKeyboard : InputMethodService() {
     // What you write, learned by the engine, saved a few seconds after it changes and topped up from the
     // paired computer's Hex History. Nothing is saved before the file has been read, so a save never loses it.
     private val learned = LearnedWords()
+    // Where your taps land on the keys, learned and saved with [learned] and forgotten with it.
+    private val touch = TouchOffsets()
+    private val touchFile by lazy { File(filesDir, TouchOffsets.FILE) }
     private val learnedFile by lazy { File(filesDir, LearnedWords.FILE) }
     @Volatile private var learnedLoaded = false
     private val main = Handler(Looper.getMainLooper())
-    private val saveLearned = Runnable { val text = learned.write(); words.execute { writeLearned(text) } }
+    private val saveLearned = Runnable { saveWords() }
+    private fun saveWords() {
+        val text = learned.write(); val touches = touch.write()
+        words.execute { writeLearned(text, LearnedWords.FILE); writeLearned(touches, TouchOffsets.FILE) }
+    }
     private fun learnedChanged() {
         if (!learnedLoaded) return
         main.removeCallbacks(saveLearned); main.postDelayed(saveLearned, SAVE_DELAY_MS)
     }
-    private fun writeLearned(text: String) {
-        val partial = File(filesDir, LearnedWords.FILE + ".partial")
-        runCatching { partial.writeText(text); partial.renameTo(learnedFile) }
+    private fun writeLearned(text: String, name: String) {
+        val partial = File(filesDir, "$name.partial")
+        runCatching { partial.writeText(text); partial.renameTo(File(filesDir, name)) }
     }
     // The emoji you pick for words, kept beside the emoji panel's recent ones, and each layout's emoji
     // lists, read on first use (English's, and Hinglish's own with English's).
@@ -151,6 +159,7 @@ class HexKeyboard : InputMethodService() {
     internal val engine by lazy {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
             readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements)) }, learned = learned,
+            touch = touch,
             learnedChanged = ::learnedChanged, emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
             emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() },
             freeTimes = { before ->
@@ -185,7 +194,7 @@ class HexKeyboard : InputMethodService() {
                 view?.fixChanged()
             }
             TypingPreferences.FORGET_LEARNED -> {
-                main.removeCallbacks(saveLearned); learned.clear(); engine.learnedWordsChanged()
+                main.removeCallbacks(saveLearned); learned.clear(); touch.clear(); engine.learnedWordsChanged()
                 emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
             }
             TypingPreferences.LEARN_FROM_HISTORY ->
@@ -248,6 +257,7 @@ class HexKeyboard : InputMethodService() {
         clips.start()
         words.execute {
             runCatching { if (learnedFile.exists()) learned.read(learnedFile.readText()) }
+            runCatching { if (touchFile.exists()) touch.read(touchFile.readText()) }
             learnedLoaded = true
             main.post { engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords() }
         }
@@ -321,7 +331,7 @@ class HexKeyboard : InputMethodService() {
         main.removeCallbacks(readContacts)
         // The last changes are written before the worker stops.
         main.removeCallbacks(saveLearned)
-        if (learnedLoaded) learned.write().let { text -> words.execute { writeLearned(text) } }
+        if (learnedLoaded) saveWords()
         words.shutdown(); fixWork.shutdown()
         view?.cancelGestures(); view = null; engine.surface = null; dictation.close(); super.onDestroy()
     }

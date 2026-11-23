@@ -563,7 +563,12 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         val row = own.parent as View
         val face = KeyRect((own.left + own.paddingLeft).toDouble(), (row.top + own.paddingTop).toDouble(),
             (own.right - own.paddingRight).toDouble(), (row.top + own.height - own.paddingBottom).toDouble())
-        val near = nearKeys(touch, face, areas, TypingWord.REACH * density).mapValues { it.value / density }
+        // Your habitual miss on this key moved back out of the touch, so a thumb that lands low and right
+        // of its keys isn't read as reaching for the neighbour there.
+        val miss = ime.engine.touch.offset(c)
+        val pitch = geometry()
+        val aimed = if (pitch == null) touch else KeyPoint(touch.x - miss.x * pitch.pitchX, touch.y - miss.y * pitch.pitchY)
+        val near = nearKeys(aimed, face, areas, TypingWord.REACH * density).mapValues { it.value / density }
         if (near.isEmpty()) return text
         return ime.engine.likelierLetter(text.single(), near, letters.keys).toString()
     }
@@ -582,14 +587,15 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             top + spaceKey.height - spaceKey.paddingTop - spaceKey.paddingBottom)
     }
     private fun geometry(): KeyGrid? {
-        grid?.let { return it }
+        val touch = ime.engine.touch
+        grid?.takeIf { it.touchVersion == touch.version }?.let { return it }
         val q = letters['q'] ?: letters['a'] ?: return null
         val w = letters['w'] ?: letters['z'] ?: return null
         val a = letters['a'] ?: return null
         if (q.width == 0 || w.left == q.left) return null
         val centres = letters.mapValues { (_, cap) -> capCentre(cap) }
         return KeyGrid(centres, centres.getValue(if ('w' in letters) 'w' else 'z').x - centres.getValue(if ('q' in letters) 'q' else 'a').x,
-            capCentre(a).y - capCentre(q).y, spaceRect()).also { grid = it }
+            capCentre(a).y - capCentre(q).y, spaceRect()).let(touch::personalised).also { grid = it }
     }
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)

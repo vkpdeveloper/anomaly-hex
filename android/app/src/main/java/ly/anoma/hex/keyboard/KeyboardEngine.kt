@@ -20,6 +20,7 @@ import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.Suggestion
+import ly.anoma.hex.typing.TouchOffsets
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
 import ly.anoma.hex.typing.TypingWord
@@ -54,6 +55,8 @@ internal class KeyboardEngine(
     private val learned: LearnedWords = LearnedWords(),
     /** [learned] changed and should be saved. */
     private val learnedChanged: () -> Unit = {},
+    /** Where your taps land on each key, learned from the words you finish under the same rules as [learned]. */
+    val touch: TouchOffsets = TouchOffsets(),
     /** The addresses the strip offers as one is typed, with those in [learned]. */
     private val emails: EmailAddresses = EmailAddresses(),
     /** A typing model's emoji lists (by its language), or null for a language with none. */
@@ -344,6 +347,7 @@ internal class KeyboardEngine(
     private fun learn(b: String, boundary: Int) {
         if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         val f = LearnedWords.finished(b) ?: return
+        word?.takeTouched()?.let { t -> if (TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid)) learnedChanged() }
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
     }

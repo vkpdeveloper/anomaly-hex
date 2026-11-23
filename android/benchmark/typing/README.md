@@ -205,3 +205,10 @@ adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOB
    # Reads en.hextm, en.capitals and never-suggest.tsv; writes hien.hextm and hien.capitals beside them.
    python3 benchmark/typing/build-hinglish-model.py app/src/main/assets/typing "$T/source/hinglish"
    ```
+
+## Biased thumb (touch personalization)
+
+`TOUCH_BIAS=0.3,0.3` shifts every replayed tap by that many key pitches (right, down), as a thumb that lands off its keys.
+Adding `TOUCH_LEARN=1` lets the replay learn the per-key offsets from the words it finishes (`TouchOffsets`), as the keyboard
+does, and aim the keys at them. Compare `wer` with and without `TOUCH_LEARN` at the same bias; with neither variable set the
+replay is the unpersonalised baseline. `TouchOffsetsTest` runs the same experiment on the JVM with a synthetic thumb.
