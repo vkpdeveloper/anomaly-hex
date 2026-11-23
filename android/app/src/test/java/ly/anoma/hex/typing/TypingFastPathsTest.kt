@@ -35,6 +35,23 @@ class TypingFastPathsTest {
         assertEquals(emptyList<String>(), own.completionsAfter("a", the, false).map { own.text(it) }.filter { it in after })
     }
 
+    // The keyboard refills one map when its layout changes; a word reading touches must follow it.
+    @Test fun likelierKeyFollowsTheKeysItIsGiven() {
+        val qwerty = "qwertyuiopasdfghjklzxcvbnm".toList()
+        val noE = qwerty - 'e'
+        val keySets = listOf(qwerty, noE, qwerty.shuffled(kotlin.random.Random(3)), qwerty.take(20))
+        val shared = TypingWord(SpatialDecoder(model), true)
+        val random = Random(2)
+        repeat(600) {
+            val before = listOf("th", "", "hello wor", "i don", "q", "the qu")[random.nextInt(6)]
+            val hit = qwerty[random.nextInt(qwerty.size)]
+            val near = qwerty.filter { it != hit && random.nextInt(4) == 0 }.associateWith { random.nextDouble() * 12 }
+            val keys = keySets[random.nextInt(keySets.size)]
+            val expected = TypingWord(SpatialDecoder(model), true).likelierKey(before, hit, near, keys)
+            assertEquals("$before $hit $near", expected, shared.likelierKey(before, hit, near, keys.toMutableList()))
+        }
+    }
+
     @Test fun nextWordsAreTheThreeCheapestPairs() {
         for (previous in listOf("the", "i", "of", "to", "thank", "mentally", "zebra").map { model.index(it) }.filter { it >= 0 }) {
             val first = model.nextWords(previous, false, fill = false)

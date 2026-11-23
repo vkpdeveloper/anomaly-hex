@@ -227,10 +227,10 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         val token = currentToken(before)
         if (token == null && before.lastOrNull()?.let { it.isLetterOrDigit() || it == '\'' } == true) return hit
         val continuations = model.continuations((token ?: "").lowercase()) ?: return hit
-        val keyed = keys.mapTo(HashSet()) { model.code(it.lowercaseChar()) }
+        val keyed = keyed(keys)
         val mass = DoubleArray(continuations.size)
         for (code in 1 until continuations.size) if (continuations[code] > 0)
-            mass[if (code in keyed) code else model.bases[code]] += continuations[code]
+            mass[if (code < keyed.size && keyed[code]) code else model.bases[code]] += continuations[code]
         val total = mass.sum()
         // Right after an elided article or pronoun ("l", "qu"), the apostrophe key is the likeliest: the
         // books split the commonest elisions off ("l'", "d'"), so the word list can't say so itself.
@@ -246,6 +246,25 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
             if (score > bestScore) { best = c; bestScore = score }
         }
         return if (hit.isUpperCase()) best.uppercaseChar() else best
+    }
+
+    // The letter codes of the keys last asked about. The keyboard hands over the same keys on every touch
+    // (its own map, refilled when the layout changes), so they are compared letter by letter, not by identity.
+    private class Keyed(val chars: CharArray, val codes: BooleanArray)
+    private var lastKeyed: Keyed? = null
+    private fun keyed(keys: Collection<Char>): BooleanArray {
+        lastKeyed?.let { last ->
+            if (last.chars.size == keys.size) {
+                var same = true; var i = 0
+                for (c in keys) { if (last.chars[i++] != c) { same = false; break } }
+                if (same) return last.codes
+            }
+        }
+        val chars = CharArray(keys.size); var i = 0
+        for (c in keys) chars[i++] = c
+        val codes = BooleanArray(model.alphabet + 1)
+        for (c in chars) model.code(c.lowercaseChar()).let { if (it in codes.indices) codes[it] = true }
+        return codes.also { lastKeyed = Keyed(chars, it) }
     }
 
     /** Whether a letter typed after `before` starts a word the keyboard should read: after a space or
