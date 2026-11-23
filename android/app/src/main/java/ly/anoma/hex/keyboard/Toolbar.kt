@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.text.TextPaint
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -63,7 +65,11 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val slotViews = List(5) { FrameLayout(context) }
     private val words = List(5) { TextView(context) }
     private val dividers = List(4) { View(context) }
-    private var offered = arrayOfNulls<Suggestion>(5)
+    private val offered = arrayOfNulls<Suggestion>(5)
+    /** What each slot's description was made for, so a key that leaves a slot as it was does no work on it. */
+    private val describedKinds = arrayOfNulls<Suggestion.Kind>(5)
+    private val fitPaint = TextPaint()
+    private val clip = Rect()
     private var fitted = 0f
     /** The strip holds only next-word guesses, which a fresh copy or photo replaces. */
     private var guessing = false
@@ -100,6 +106,12 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val scope = DotScopeView(context)
     private val wellText = TextView(context)
 
+    // The mic's looks are made once: each dictation turns the button over twice.
+    private val micIdle by lazy { pressable(color(R.color.kb_key), true) }
+    private val micListening by lazy { pressable(color(R.color.kb_enter), true) }
+    private val micInkIdle = ColorStateList.valueOf(color(R.color.kb_ink))
+    private val micInkListening = ColorStateList.valueOf(color(R.color.kb_enter_ink))
+    private val micInkSending = ColorStateList.valueOf(color(R.color.kb_off))
     private var phase = DictationPhase.Idle
     private var note: String? = null
     private val clearNote = Runnable { note = null; update() }
@@ -137,7 +149,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
                 setOnLongClickListener {
                     val slot = offered[i]
                     if (slot == null || slot.kind == Suggestion.Kind.Emoji || slot.kind == Suggestion.Kind.Typed) return@setOnLongClickListener false
-                    forgetting = i
+                    forgetting = i; describedKinds[i] = null
                     this@Toolbar.words[i].text = context.getString(R.string.keyboard_forget, slot.text)
                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                     fitWords()
@@ -280,14 +292,14 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
      * the middle and the next the left, as Gboard places them. With emoji, two words come first, in
      * the order given, and up to two emoji after them in the third word's place. */
     fun suggestions(list: List<Suggestion>) {
-        val shown = arrayOfNulls<Suggestion>(5)
+        val shown = offered
+        shown.fill(null)
         val emoji = list.filter { it.kind == Suggestion.Kind.Emoji }.take(2)
         val words = list.filter { it.kind != Suggestion.Kind.Emoji }
         if (emoji.isNotEmpty() || words.any { it.kind == Suggestion.Kind.Typed }) {
             words.take(if (emoji.isEmpty()) 3 else 2).forEachIndexed { i, slot -> shown[i] = slot }
         } else { shown[1] = words.getOrNull(0); shown[0] = words.getOrNull(1); shown[2] = words.getOrNull(2) }
         emoji.forEachIndexed { i, slot -> shown[3 + i] = slot }
-        offered = shown
         forgetting = -1
         guessing = words.all { it.kind == Suggestion.Kind.Next }
         typingWord = wordInProgress(words)
@@ -301,16 +313,23 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         for (i in 0..4) {
             val slot = shown[i]
             val s = slot?.text.orEmpty()
-            this.words[i].text = s
+            // A new layout is made for every setText, even of the same words, and most keys leave most
+            // slots as they were (empty emoji slots above all).
+            val view = this.words[i]
+            val changed = !view.text.contentEquals(s)
+            if (changed) view.text = s
             // The word space will put in gets Gboard's heavier weight.
-            if (i < 3) this.words[i].useSans(if (slot?.kind == Suggestion.Kind.Fix) 600 else 400)
-            slotViews[i].contentDescription = when {
-                s.isEmpty() -> null
-                slot?.kind == Suggestion.Kind.Typed -> context.getString(R.string.keyboard_keep, s)
-                slot?.kind == Suggestion.Kind.Fix -> context.getString(R.string.keyboard_correction, s)
-                else -> context.getString(R.string.keyboard_suggest, s)
+            if (i < 3) view.useSans(if (slot?.kind == Suggestion.Kind.Fix) 600 else 400)
+            if (changed || describedKinds[i] != slot?.kind) {
+                describedKinds[i] = slot?.kind
+                slotViews[i].contentDescription = when {
+                    s.isEmpty() -> null
+                    slot?.kind == Suggestion.Kind.Typed -> context.getString(R.string.keyboard_keep, s)
+                    slot?.kind == Suggestion.Kind.Fix -> context.getString(R.string.keyboard_correction, s)
+                    else -> context.getString(R.string.keyboard_suggest, s)
+                }
+                slotViews[i].isEnabled = s.isNotEmpty()
             }
-            slotViews[i].isEnabled = s.isNotEmpty()
         }
         fitWords()
         update()
@@ -325,8 +344,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             val view = words[i]
             val room = slotViews[i].width - view.paddingLeft - view.paddingRight
             if (slotViews[i].visibility != VISIBLE || view.text.isEmpty() || room <= 0) continue
-            val paint = android.text.TextPaint(view.paint).apply { textSize = px(SUGGESTION).toFloat() }
-            val wide = paint.measureText(view.text.toString())
+            fitPaint.set(view.paint); fitPaint.textSize = px(SUGGESTION).toFloat()
+            val wide = fitPaint.measureText(view.text, 0, view.text.length)
             if (wide > room) size = minOf(size, px(SUGGESTION) * room / wide)
         }
         size = size.coerceAtLeast(px(SUGGESTION_MIN).toFloat())
@@ -357,19 +376,20 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             val left = chip.left - autofillScroll.scrollX
             val from = (-left).coerceIn(0, chip.width)
             val to = (shown - left).coerceIn(from, chip.width)
-            surface.clipBounds = android.graphics.Rect(from, 0, to, chip.height)
+            clip.set(from, 0, to, chip.height)
+            surface.clipBounds = clip
         }
     }
 
     fun dictation(phase: DictationPhase) {
         this.phase = phase
         val listening = phase == DictationPhase.Listening
-        micFace.background = pressable(color(if (listening) R.color.kb_enter else R.color.kb_key), true)
-        micIcon.imageTintList = ColorStateList.valueOf(color(when (phase) {
-            DictationPhase.Listening -> R.color.kb_enter_ink
-            DictationPhase.Sending -> R.color.kb_off
-            DictationPhase.Idle -> R.color.kb_ink
-        }))
+        micFace.background = if (listening) micListening else micIdle
+        micIcon.imageTintList = when (phase) {
+            DictationPhase.Listening -> micInkListening
+            DictationPhase.Sending -> micInkSending
+            DictationPhase.Idle -> micInkIdle
+        }
         mic.contentDescription = context.getString(when (phase) {
             DictationPhase.Idle -> R.string.keyboard_dictate
             DictationPhase.Listening -> R.string.keyboard_finish_dictation
@@ -395,6 +415,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     }
 
     fun actions(list: List<StripAction>) {
+        if (list == actions) { update(); return }
         actions = list
         actionRow.removeAllViews()
         for (action in actions) {
@@ -433,7 +454,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         cancel.visibility = if (idle) GONE else VISIBLE
         grid.visibility = if (idle) VISIBLE else GONE
         noteText.visibility = if (noting) VISIBLE else GONE
-        noteText.text = note
+        if (!noteText.text.contentEquals(note.orEmpty())) noteText.text = note
         val undoing = idle && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
         val acting = idle && !noting && !undoing && actions.isNotEmpty()
