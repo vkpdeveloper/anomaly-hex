@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.util.TypedValue
@@ -45,14 +44,22 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
             Triple("Flags", R.drawable.ic_emoji_flags, "Flags"),
         )
         /** Read and checked against the system's emoji font once per process. */
-        private var groups: Map<String, List<String>>? = null
-        private fun load(context: Context): Map<String, List<String>> = groups ?: run {
+        @Volatile private var groups: Map<String, List<String>>? = null
+        // Checking some three thousand emoji against the font takes long enough to be a visible stall in
+        // the first press of the emoji key, so [warm] does it in the background as the keyboard is made.
+        // A press before it finishes waits for it here, never starts a second pass.
+        @Synchronized private fun load(context: Context): Map<String, List<String>> = groups ?: run {
             val paint = Paint()
             context.assets.open("emoji.txt").bufferedReader().readLines().filter { it.isNotBlank() && !it.startsWith("#") }
                 .associate { line ->
                     val (name, list) = line.split('\t', limit = 2)
                     name to list.split(' ').filter { it.isNotEmpty() && paint.hasGlyph(it) }
                 }.also { groups = it }
+        }
+        private fun warm(context: Context) {
+            if (groups != null) return
+            val app = context.applicationContext
+            Thread(null, { load(app) }, "emoji-load").apply { priority = Thread.MIN_PRIORITY; isDaemon = true }.start()
         }
     }
     private val density = resources.displayMetrics.density
@@ -68,6 +75,7 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
     private val emoticonPill: FrameLayout
 
     init {
+        warm(context)
         orientation = VERTICAL
         setBackgroundColor(color(R.color.kb_emoji_background))
         val top = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(px(7.5f), 0, 0, 0) }
@@ -86,7 +94,7 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
         // Gboard's columns stop 5 dp short of each edge; headings still start 12.5 dp in.
         scroll.setPadding(px(5f), 0, px(5f), 0)
         scroll.addView(grid)
-        scroll.setOnScrollChangeListener { _, _, y, _, _ -> if (!emoticons) select(grid.sectionAt(y)) }
+        scroll.setOnScrollChangeListener { _, _, y, _, _ -> grid.scrolled(y); if (!emoticons) select(grid.sectionAt(y)) }
         addView(scroll, LayoutParams(-1, 0, 1f))
 
         val bottom = FrameLayout(context)
@@ -164,13 +172,17 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
         tabs.addView(tab, LayoutParams(px(34f), px(34f)))
     }
     private var selected = -2
+    // Shared by every tab: only one is ever selected, and a selection is no reason to make new ones.
+    private val tabDisc = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color(R.color.kb_enter)) }
+    private val tabInkOn = ColorStateList.valueOf(color(R.color.kb_selected_ink))
+    private val tabInkOff = ColorStateList.valueOf(color(R.color.kb_hint))
     private fun select(index: Int) {
         if (index == selected) return
         selected = index
         tabViews.forEachIndexed { i, (tab, image) ->
             val on = i == index
-            (tab.getChildAt(0) as View).background = if (on) GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color(R.color.kb_enter)) } else null
-            image.imageTintList = ColorStateList.valueOf(color(if (on) R.color.kb_selected_ink else R.color.kb_hint))
+            (tab.getChildAt(0) as View).background = if (on) tabDisc else null
+            image.imageTintList = if (on) tabInkOn else tabInkOff
             tab.isSelected = on
         }
     }
@@ -236,11 +248,16 @@ internal class EmojiGrid(context: Context, private val pick: (String) -> Unit) :
     /** Each section's top, then each of its rows follows the heading. */
     private var tops = IntArray(0)
     private var total = 0
-    private var pressed: Pair<Int, Int>? = null
+    private var pressedSection = -1
+    private var pressedIndex = -1
+    // The rows the last draw recorded. A view inside a scroll is recorded whole, whatever shows, so
+    // drawing all of the thousands of emoji meant recording every one again for each press. Only the rows
+    // within a screen of what shows are drawn; [scrolled] draws again once the scroll leaves them.
+    private var drawnFrom = 0f
+    private var drawnTo = 0f
     private var downX = 0f
     private var downY = 0f
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
-    private val clip = Rect()
 
     fun show(sections: List<Section>, columns: Int, emoji: Boolean) {
         this.sections = sections; this.columns = columns; this.emoji = emoji
@@ -267,53 +284,68 @@ internal class EmojiGrid(context: Context, private val pick: (String) -> Unit) :
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) =
         setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), total)
 
+    /** The scroll moved to [y]: the rows now showing must have been drawn. */
+    fun scrolled(y: Int) {
+        val shown = (parent as? View)?.height ?: return
+        if (y < drawnFrom || y + shown > drawnTo) invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
-        canvas.getClipBounds(clip)
+        val viewport = parent as? View
+        val shown = viewport?.height ?: height
+        val top = viewport?.scrollY ?: 0
+        drawnFrom = (top - shown).toFloat(); drawnTo = (top + 2 * shown).toFloat()
         val cell = width / columns.toFloat()
         sections.forEachIndexed { i, s ->
             val start = tops[i] + headingOf(s)
             val end = start + rowsOf(s) * rowHeight
-            if (end < clip.top || tops[i] > clip.bottom) return@forEachIndexed
+            if (end < drawnFrom || tops[i] > drawnTo) return@forEachIndexed
             s.heading?.let { canvas.drawText(it, 7.5f * density, tops[i] + 18.5f * density, headingPaint) }
             val paint = if (emoji) emojiPaint else textPaint
             val baseline = rowHeight / 2 - (paint.ascent() + paint.descent()) / 2
-            val first = ((clip.top - start) / rowHeight).toInt().coerceAtLeast(0)
-            val last = ((clip.bottom - start) / rowHeight).toInt().coerceAtMost(rowsOf(s) - 1)
+            val first = ((drawnFrom - start) / rowHeight).toInt().coerceAtLeast(0)
+            val last = ((drawnTo - start) / rowHeight).toInt().coerceAtMost(rowsOf(s) - 1)
             for (row in first..last) for (col in 0 until columns) {
                 val index = row * columns + col
                 if (index >= s.items.size) break
                 val x = cell * col + cell / 2
                 val top = start + row * rowHeight
-                if (pressed == i to index) canvas.drawRoundRect(cell * col + 2 * density, top + 2 * density,
+                if (pressedSection == i && pressedIndex == index) canvas.drawRoundRect(cell * col + 2 * density, top + 2 * density,
                     cell * (col + 1) - 2 * density, top + rowHeight - 2 * density, 8 * density, 8 * density, pressPaint)
                 canvas.drawText(s.items[index], x, top + baseline, paint)
             }
         }
     }
 
-    private fun hit(x: Float, y: Float): Pair<Int, Int>? {
+    /** Presses the cell under ([x], [y]), if there is one. */
+    private fun press(x: Float, y: Float) {
+        pressedSection = -1; pressedIndex = -1
         val cell = width / columns.toFloat()
         sections.forEachIndexed { i, s ->
             val start = tops[i] + headingOf(s)
             if (y >= start && y < start + rowsOf(s) * rowHeight) {
                 val index = ((y - start) / rowHeight).toInt() * columns + (x / cell).toInt().coerceIn(0, columns - 1)
-                return if (index < s.items.size) i to index else null
+                if (index < s.items.size) { pressedSection = i; pressedIndex = index }
+                return
             }
         }
-        return null
     }
+    private fun release() { pressedSection = -1; pressedIndex = -1 }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { downX = e.x; downY = e.y; pressed = hit(e.x, e.y); invalidate() }
-            MotionEvent.ACTION_MOVE -> if (pressed != null && (Math.abs(e.x - downX) > slop || Math.abs(e.y - downY) > slop)) {
-                pressed = null; invalidate()
+            MotionEvent.ACTION_DOWN -> { downX = e.x; downY = e.y; press(e.x, e.y); invalidate() }
+            MotionEvent.ACTION_MOVE -> if (pressedSection >= 0 && (Math.abs(e.x - downX) > slop || Math.abs(e.y - downY) > slop)) {
+                release(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                pressed?.let { (s, i) -> performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); pick(sections[s].items[i]) }
-                pressed = null; invalidate()
+                if (pressedSection >= 0) {
+                    pick(sections[pressedSection].items[pressedIndex])
+                    performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                }
+                release(); invalidate()
             }
-            MotionEvent.ACTION_CANCEL -> { pressed = null; invalidate() }
+            MotionEvent.ACTION_CANCEL -> { release(); invalidate() }
         }
         return true
     }
