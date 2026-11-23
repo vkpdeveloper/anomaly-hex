@@ -100,6 +100,7 @@ internal class TypingPreferences(context: Context) {
      * through [FORGET_LEARNED]. */
     fun forgetLearned(files: java.io.File) {
         java.io.File(files, LearnedWords.FILE).delete()
+        java.io.File(files, LearnedPhrases.FILE).delete()
         java.io.File(files, TouchOffsets.FILE).delete()
         java.io.File(files, TypoMemory.FILE).delete()
         java.io.File(files, TypingStats.FILE).delete()

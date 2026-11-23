@@ -148,7 +148,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
                 // next suggestions undo the offer). What you typed is yours to keep, and emoji aren't words.
                 setOnLongClickListener {
                     val slot = offered[i]
-                    if (slot == null || slot.kind == Suggestion.Kind.Emoji || slot.kind == Suggestion.Kind.Typed) return@setOnLongClickListener false
+                    if (slot == null || slot.kind == Suggestion.Kind.Emoji || slot.kind == Suggestion.Kind.Typed || slot.kind == Suggestion.Kind.Phrase)
+                        return@setOnLongClickListener false
                     forgetting = i; describedKinds[i] = null
                     this@Toolbar.words[i].text = context.getString(R.string.keyboard_forget, slot.text)
                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
@@ -296,16 +297,24 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         shown.fill(null)
         val emoji = list.filter { it.kind == Suggestion.Kind.Emoji }.take(2)
         val words = list.filter { it.kind != Suggestion.Kind.Emoji }
-        if (emoji.isNotEmpty() || words.any { it.kind == Suggestion.Kind.Typed }) {
+        // A phrase takes the middle slot at twice its width, the third slot's room, so it is shown whole.
+        val phrase = words.firstOrNull { it.kind == Suggestion.Kind.Phrase }
+        if (phrase != null) {
+            shown[1] = phrase; shown[0] = words.firstOrNull { it !== phrase }
+        } else if (emoji.isNotEmpty() || words.any { it.kind == Suggestion.Kind.Typed }) {
             words.take(if (emoji.isEmpty()) 3 else 2).forEachIndexed { i, slot -> shown[i] = slot }
         } else { shown[1] = words.getOrNull(0); shown[0] = words.getOrNull(1); shown[2] = words.getOrNull(2) }
         emoji.forEachIndexed { i, slot -> shown[3 + i] = slot }
         forgetting = -1
-        guessing = words.all { it.kind == Suggestion.Kind.Next }
+        guessing = words.all { it.kind == Suggestion.Kind.Next || it.kind == Suggestion.Kind.Phrase }
         typingWord = wordInProgress(words)
         val emojiShown = emoji.isNotEmpty()
-        slotViews[2].visibility = if (emojiShown) GONE else VISIBLE
+        slotViews[2].visibility = if (emojiShown || phrase != null) GONE else VISIBLE
         dividers[1].visibility = slotViews[2].visibility
+        (slotViews[1].layoutParams as LinearLayout.LayoutParams).let { p ->
+            val weight = if (phrase != null) 2f else 1f
+            if (p.weight != weight) { p.weight = weight; slotViews[1].layoutParams = p }
+        }
         dividers[2].visibility = if (emojiShown) VISIBLE else GONE
         slotViews[3].visibility = dividers[2].visibility
         dividers[3].visibility = if (emoji.size > 1) VISIBLE else GONE

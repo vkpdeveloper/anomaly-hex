@@ -7,9 +7,10 @@ internal data class Correction(val original: String, val replacement: String)
 
 /** One slot of the suggestion strip. [Kind.Typed] keeps what was typed as typed; [Kind.Fix] is what
  * space will put in its place (shown highlighted); [Kind.Word] a completion or another reading;
- * [Kind.Next] a word that may follow, offered after a space; [Kind.Emoji] an emoji for the word ([EmojiWords]). */
+ * [Kind.Next] a word that may follow, offered after a space; [Kind.Phrase] several words you write together,
+ * which a tap puts in whole ([LearnedPhrases]); [Kind.Emoji] an emoji for the word ([EmojiWords]). */
 internal data class Suggestion(val text: String, val kind: Kind) {
-    enum class Kind { Typed, Fix, Word, Next, Emoji }
+    enum class Kind { Typed, Fix, Word, Next, Phrase, Emoji }
 }
 
 /** The current word, and the one a space just finished while the next is typed. Both the keyboard
@@ -54,6 +55,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * capital you didn't type: "i" stays "i", "monday" "monday", German nouns as typed, the strip and its
      * predictions lowercase; your own words and shortcuts keep theirs. */
     var addsCapitals = true
+    /** The phrases you write ([LearnedPhrases]), offered by [phrase]; none until the keyboard sets them. */
+    var phrases: LearnedPhrases? = null
     /** Starts a word after `before`. The word a space just finished stays revisable only when
      * `before` is still the text it left; an empty `before` keeps it for the next call. */
     fun reset(before: String = "") {
@@ -116,6 +119,34 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         return out
     }
 
+    /** A phrase you write, as the strip shows it, or null: the words that most reliably follow the words
+     * before the cursor ([LearnedPhrases.offer], after a sentence's start or a word and a space, never
+     * after a mark, handle, path or number). Its first word is capitalised as [predictions] capitalises, none of its
+     * words are one you hid or the model never suggests, and it is cut to fit the strip ([MAX_PHRASE_CHARS]). */
+    fun phrase(before: String, capitalize: Boolean? = null): String? {
+        val store = phrases ?: return null
+        val text = if (before.lastOrNull()?.let { it.isLetter() || it == '\'' } == true) "$before " else before
+        val start = startsSentence(text)
+        val context = when {
+            start -> LearnedPhrases.START
+            !text.last().isWhitespace() || text.dropLast(1).lastOrNull()?.let { it in midSentenceMarks } == true -> return null
+            else -> currentToken(text.dropLast(1))?.trimEnd('\'')?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        }
+        fun allowing(first: Int): (String) -> Boolean { var index = first; return { w ->
+            (!model.neverSuggest.hidden(w) && !model.neverSuggest.blocks(w, suggestSwearWords, index)).also { index = model.context(w) }
+        } }
+        val upper = addsCapitals && (capitalize ?: start)
+        fun spelled(w: String, first: Boolean): String {
+            val s = decoder.learned?.spelling(w)?.takeIf { s -> s.any(Char::isUpperCase) } ?: displayed(w)
+            return if (first && upper) s.replaceFirstChar { it.uppercase() } else if (addsCapitals) s else s.lowercase()
+        }
+        val shown = store.offer(context, allowing(if (start) -1 else model.context(context))).mapIndexed { i, w -> spelled(w, i == 0) }
+        // As many words as fit the chip.
+        var words = shown.size
+        while (words >= 2 && shown.take(words).sumOf { it.length + 1 } - 1 > MAX_PHRASE_CHARS) words--
+        return if (words >= 2) shown.take(words).joinToString(" ") else null
+    }
+
     // A model word as the strip shows it: English "i" and its contractions with their capital, and
     // a name the books nearly always capitalise ("monday" -> "Monday").
     private fun displayed(word: String): String {
@@ -156,6 +187,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         // Your own word, completed once two letters match, before the dictionary's: a word you added is
         // likelier what you mean than a reading's runner-up ("zor" offers "Zorbex" beside the fix "or").
         if (token.length >= 2) decoder.personal?.completions(token)?.firstOrNull()?.let { add(yours(it)) }
+        // A word already in this message, completed once two letters match: names and topic words come again.
+        if (token.length >= FIELD_COMPLETES) decoder.fieldWords?.completion(token)?.let { add(if (it.any(Char::isUpperCase)) yours(it) else shown(it)) }
         // The word you write after these two, completed from its first letter (your own phrases).
         val one = previousText
         if (beforePreviousText != null && one != null) decoder.learned?.next(beforePreviousText, one, lower)?.forEach {
@@ -216,7 +249,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * of a word written several ways ("nhi" for "nahi"). */
     fun glide(path: List<KeyPoint>, grid: KeyGrid, before: String): List<String> =
         glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal, decoder.learned,
-            beforePrevious = LearnedWords.wordBeforeGap(before)?.let { LearnedWords.wordBeforeGap(it.second) }?.first?.lowercase())
+            beforePrevious = LearnedWords.wordBeforeGap(before)?.let { LearnedWords.wordBeforeGap(it.second) }?.first?.lowercase(),
+            fieldWords = decoder.fieldWords)
             .map { c ->
                 val yours = decoder.preferred(c.text)?.takeUnless(::blocked)
                 if (yours != null) learnedSpelling(yours) ?: displayed(yours)
@@ -436,6 +470,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     }
     companion object {
         const val MAX_LENGTH = 32
+        private const val FIELD_COMPLETES = 2
+        /** The longest phrase the strip's wide slot shows without cutting it. */
+        const val MAX_PHRASE_CHARS = 24
         // R1's reference keys, for a word read without its taps ([reread]).
         private val QWERTY = KeyGrid(buildMap {
             for ((row, letters) in listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").withIndex())

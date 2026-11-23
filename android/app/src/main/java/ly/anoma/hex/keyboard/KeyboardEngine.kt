@@ -17,6 +17,8 @@ import ly.anoma.hex.typing.EmojiWords
 import ly.anoma.hex.typing.Forgotten
 import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
+import ly.anoma.hex.typing.FieldWords
+import ly.anoma.hex.typing.LearnedPhrases
 import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
@@ -80,6 +82,8 @@ internal class KeyboardEngine(
     private val freeTimes: (String) -> List<StripAction> = { emptyList() },
     /** What the person fixed in text just dictated, for the paired computer ([DictationWatch]). */
     private val corrected: (DictationFix) -> Unit = {},
+    /** The runs of words you write, offered as one chip and learned in the same fields as [learned]. */
+    private val phrases: LearnedPhrases = LearnedPhrases(),
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
@@ -104,6 +108,8 @@ internal class KeyboardEngine(
         const val START_TAIL = 40
         /** A fixed dictation is read once the field has been still this long. */
         const val WATCH_PAUSE_MS = 1_000L
+        /** Words kept on the strip beside a phrase. */
+        const val PHRASE_WORDS = 1
     }
     private var editedAt = Long.MIN_VALUE / 2
     // Undo's steps: a word with what ends it, a run of deletes, or one larger edit ([EditHistory]). Within a
@@ -261,6 +267,8 @@ internal class KeyboardEngine(
     /** The addresses the strip offers and the text they complete, which a pick replaces. */
     private class AddressOffer(val typed: String, val addresses: List<String>)
     private var addressOffer: AddressOffer? = null
+    /** The words already in this field, which are likelier to come again ([FieldWords]). */
+    private val fieldWords = FieldWords()
     /** The word the strip's emoji are for, which a picked one is learned for. */
     private var emojiWord: String? = null
     // Each address is learned once per field, and leaving it teaches only after something was typed there.
@@ -297,6 +305,11 @@ internal class KeyboardEngine(
         addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
         addressesLearned.clear(); typedHere = false; unglided = null; counted = null; ended = null; redone = null
+        // The text around the caret from the copy the keyboard keeps, never from the editor on a key.
+        fieldWords.clear()
+        if (wordsHere && !secure && attribute.initialSelStart == attribute.initialSelEnd) {
+            target.before(CachedText.INITIAL)?.let(fieldWords::seed); target.after(CachedText.INITIAL)?.let(fieldWords::seed)
+        }
         if (!learnsCorrections()) dropWatch()
         resetTyping(); word = null; clearSpaces()
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
@@ -310,6 +323,7 @@ internal class KeyboardEngine(
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) = traced("hex:select") { doUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd) }
     private fun doUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
+        if (newSelStart == 0 && newSelEnd == 0 && oldSelStart > 0) fieldWords.clear() // Sent or cleared: a new message.
         if (watch.active) watchChanged()
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) offerActions()
         (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
@@ -371,7 +385,7 @@ internal class KeyboardEngine(
     // A language's decoder with what you write and your own words, and for Hinglish English's model,
     // read in the background, which tells its Hindi words from English ones (SpatialDecoder.english).
     private fun prepared(decoder: SpatialDecoder) = decoder.also {
-        it.learned = learned; it.typos = typos; it.model.neverSuggest.hide(forgotten.all()); loadPersonal(it)
+        it.learned = learned; it.typos = typos; it.fieldWords = fieldWords; it.model.neverSuggest.hide(forgotten.all()); loadPersonal(it)
         if (it.model.language == Spoken.Hinglish.code) background.execute {
             it.english = try { loadDecoder(Spoken.English.code).model } catch (_: java.io.IOException) { null }
         }
@@ -395,7 +409,7 @@ internal class KeyboardEngine(
      * what you wrote, and not learned again from one slip. A user action, so it works in any field. */
     fun forget(word: String) {
         if (!forgotten.add(word)) return
-        learned.forgetWord(word)
+        learned.forgetWord(word); phrases.forgetWord(word)
         hiddenChanged(refresh = true)
         forgottenChanged(); learnedChanged()
     }
@@ -436,9 +450,12 @@ internal class KeyboardEngine(
     /** The word that ends [b], the text before the cursor, is learned when [boundary] characters (a
      * space or mark that just went in after it, or none: the next glide, a held space, return) follow it. */
     private fun learn(b: String, boundary: Int, picked: Boolean = false) {
-        if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
+        if (word == null || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         // `finished` reads a word a space or mark ended; with none yet, the one about to go in.
-        val f = LearnedWords.finished(if (boundary == 0) "$b " else b) ?: return
+        val closed = if (boundary == 0) "$b " else b
+        val f = LearnedWords.finished(closed) ?: return
+        fieldWords.add(f.word)
+        if (!learnHere) return
         val touched = word?.takeTouched()?.takeIf { t -> TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid) }
         if (touched != null) learnedChanged()
         val start = b.dropLast(boundary).dropLast(f.word.length)
@@ -455,6 +472,7 @@ internal class KeyboardEngine(
         stats.words++
         if (!counts) return
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
+        phrases.learn(closed)
         learnedChanged()
         missed?.let { teach(f.word, f.sentenceStart) }
     }
@@ -560,7 +578,8 @@ internal class KeyboardEngine(
         word = if (wordsHere) {
             try {
                 TypingWord(models.getOrPut(language) { prepared(loadDecoder(language)) }, feedback.spatial)
-                    .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize }
+                    .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize
+                        it.phrases = phrases }
             } catch (_: java.io.IOException) { null } // The editor can still type if its assets cannot be read.
         } else null
         showPlane()
@@ -593,8 +612,17 @@ internal class KeyboardEngine(
     private fun showPredictions(before: String?) = defer { predict(before) }
     private fun predict(before: String?) {
         val w = word
-        showStrip(if (w != null && before != null && !symbols && canEndWord())
-            w.predictions(before, capitalize = capsWanted()).map { Suggestion(it, Suggestion.Kind.Next) } else emptyList())
+        if (w == null || before == null || symbols || !canEndWord()) { showStrip(emptyList()); return }
+        val caps = capsWanted()
+        val words = w.predictions(before, capitalize = caps).map { Suggestion(it, Suggestion.Kind.Next) }
+        val phrase = w.phrase(before, capitalize = caps)
+        showStrip(if (phrase == null) words else withPhrase(phrase, words))
+    }
+    /** The strip with a [phrase] you write: it takes the wide middle slot and one word stays beside it (the
+     * likeliest one that isn't the phrase's own first word, which the phrase already offers). */
+    private fun withPhrase(phrase: String, words: List<Suggestion>): List<Suggestion> {
+        val first = phrase.substringBefore(' ')
+        return listOf(Suggestion(phrase, Suggestion.Kind.Phrase)) + words.filterNot { it.text.equals(first, ignoreCase = true) }.take(PHRASE_WORDS)
     }
     /** The strip, with the email addresses that complete the one being typed ([EmailAddresses]): up to
      * three, first, in an address field; elsewhere one in the last slot once three characters match,
@@ -730,7 +758,7 @@ internal class KeyboardEngine(
         if (old.isNotEmpty() && !endsWith(prefix + old)) { resetTyping(); clearStrip(); return }
         if (old.isEmpty() && !w.startsWord(before())) return
         val holds = SpaceRules.separates(target.after(1))
-        val taught = if (old.isEmpty()) null else taught(w, old, text)
+        val taught = if (old.isEmpty() || ' ' in text) null else taught(w, old, text)
         clearSpaces()
         if (replace(old, if (holds) text else "$text ")) {
             if (learnHere) {
@@ -740,7 +768,11 @@ internal class KeyboardEngine(
             resetTyping()
             val b = before()
             if (holds) heldAnchor = b else pickedAnchor = b
-            learn(b, if (holds) 0 else 1, picked = true)
+            // A phrase counts word by word, as if typed.
+            val parts = text.split(' ')
+            val base = b.dropLast(text.length + if (holds) 0 else 1)
+            for (i in 1 until parts.size) learn(base + parts.take(i).joinToString(" ") + " ", 1)
+            learn(b, if (holds) 0 else 1, picked = parts.size == 1)
             taught?.let(::teach)
             showPredictions(b)
             inputDone()
@@ -910,6 +942,7 @@ internal class KeyboardEngine(
                 c.touched?.let { t -> touch.unlearn(f.word, t.points, t.grid) }
                 if (c.typed != null && c.typoWeight > 0) typos.unlearn(c.typed, f.word, c.typoWeight)
                 if (c.counts && learned.unlearn(f.word, f.previous, f.beforePrevious)) personalWordsChanged()
+                if (c.counts) phrases.unlearn(c.anchor)
                 learnedChanged()
             }
             counted = null
