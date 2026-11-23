@@ -21,8 +21,11 @@ internal interface KeyboardTextTarget {
     fun performEditorAction(id: Int): Boolean
     fun defaultEditorAction(): Boolean
     fun sendKey(code: Int)
-    /** The whole text and selection, or null where it can't be read whole (too long, or no editor). */
+    /** The whole text and selection, or null where it can't be read whole (too long, or no editor). It
+     * may come from the keyboard's own copy of the text ([CachedText]). */
     fun all(): FieldState? = null
+    /** [all], read from the editor itself: for edits made from it, which must not go by an old copy. */
+    fun allFromEditor(): FieldState? = all()
     /** The editor's own Cut, Copy, Paste or Select all (android.R.id.cut and the rest). */
     fun contextAction(id: Int): Boolean = false
 }

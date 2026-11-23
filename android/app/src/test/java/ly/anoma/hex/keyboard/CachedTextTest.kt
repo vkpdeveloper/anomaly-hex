@@ -53,6 +53,23 @@ class CachedTextTest {
         assertEquals(0, t.editor.reads)
     }
 
+    @Test fun theWholeFieldComesFromTheCopyOnceItHoldsItAll() {
+        val t = Setup("Hi")
+        t.text.commit(" you")
+        assertEquals(FieldState("Hi you", 6, 6), t.text.all())
+        assertEquals(0, t.editor.alls)
+        // Unsure what follows the cursor: read once, then the copy has it all.
+        t.editor.text = "Hi you there"; t.editor.caret = 6
+        t.text.started(6, 6, "Hi you", null)
+        assertEquals(FieldState("Hi you there", 6, 6), t.text.all())
+        t.text.commit("!")
+        assertEquals(FieldState("Hi you! there", 7, 7), t.text.all())
+        assertEquals(1, t.editor.alls)
+        // Undo's own read always asks the editor.
+        assertEquals(FieldState("Hi you! there", 7, 7), t.text.allFromEditor())
+        assertEquals(2, t.editor.alls)
+    }
+
     private class Setup(initial: String) {
         var now = 0L
         val editor = Editor(initial)
@@ -66,6 +83,8 @@ class CachedTextTest {
         var caret = text.length
         var reads = 0
         var refuse = false
+        var alls = 0
+        override fun all(): FieldState { alls++; return FieldState(text, caret, caret) }
         override val connected = true
         override fun before(length: Int): String { reads++; return text.substring(maxOf(0, caret - length), caret) }
         override fun after(length: Int): String { reads++; return text.substring(caret, minOf(text.length, caret + length)) }

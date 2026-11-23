@@ -43,7 +43,8 @@ internal class EditHistory(private val target: KeyboardTextTarget) {
     fun redo() = step(from = future, to = past)
 
     private fun step(from: ArrayDeque<FieldState>, to: ArrayDeque<FieldState>): Boolean {
-        val now = target.all() ?: return false
+        // What undo deletes is worked out from this, so it is the editor's own text, never the copy's.
+        val now = target.allFromEditor() ?: return false
         while (from.lastOrNull()?.text == now.text) from.removeLast()
         val back = from.removeLastOrNull() ?: return false
         if (to.lastOrNull()?.text != now.text) to.addLast(now)

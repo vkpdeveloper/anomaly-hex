@@ -114,7 +114,26 @@ internal class CachedText(
     override fun performEditorAction(id: Int) = field.performEditorAction(id).also { lose() }
     override fun defaultEditorAction() = field.defaultEditorAction().also { lose() }
     override fun sendKey(code: Int) { field.sendKey(code); lose() }
-    override fun all() = field.all()
+    // Undo keeps the field as each word starts. Read from the editor that is a round trip with the whole
+    // text, 15 to 70 ms in Messages on the emulator, so it comes from the copy once the copy holds it all.
+    override fun all(): FieldState? {
+        if (fresh() && beforeAll && afterAll) {
+            val b = before; val a = after
+            if (b != null && a != null) return FieldState(b + a, caret, caret)
+        }
+        return allFromEditor()
+    }
+    // A whole read is the copy too: the editor answers after every edit sent, so it is current.
+    override fun allFromEditor(): FieldState? {
+        val read = field.all() ?: return null
+        if (read.selStart == read.selEnd && (caret < 0 || caret == read.selStart)) {
+            if (caret < 0) expected.clear()
+            caret = read.selStart
+            before = read.text.substring(0, caret); beforeAll = true
+            after = read.text.substring(caret); afterAll = true
+        }
+        return read
+    }
     override fun contextAction(id: Int): Boolean { val done = field.contextAction(id); lose(); return done }
 
     companion object {
