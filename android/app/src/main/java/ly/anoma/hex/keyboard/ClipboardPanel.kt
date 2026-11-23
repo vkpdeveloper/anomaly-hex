@@ -33,6 +33,9 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
         const val ICON = 14f
         const val PIECES = 24f
         const val PIECE_TEXT_WIDTH = 96f
+        /** What the first frame builds: the headings and rows that show; the rest follow, [ROWS_PER_FRAME] at a time. */
+        const val FIRST_STEPS = 5
+        const val STEPS_PER_FRAME = 2
     }
     private val density = resources.displayMetrics.density
     private fun px(value: Float) = (value * density).roundToInt()
@@ -73,16 +76,29 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
         addView(scroll, LayoutParams(-1, 0, 1f))
     }
 
-    fun open() { acting = null; removeCallbacks(resetTitle); resetTitle.run(); show(); scroll.scrollTo(0, 0) }
+    fun open() { acting = null; removeCallbacks(resetTitle); resetTitle.run(); show(spread = true); scroll.scrollTo(0, 0) }
 
-    /** Builds the list again from the keeper's snapshot; it is short, so every view is made anew. */
-    fun show() {
+    // The list's pieces not built yet. Each clip is a card of several views, so a long list built in one
+    // go is a long stall as the panel opens; the rows that show are built at once and the rest over the
+    // frames after, below the fold where nobody sees them arrive.
+    private val steps = ArrayDeque<() -> Unit>()
+    private val buildMore = object : Runnable {
+        override fun run() {
+            repeat(STEPS_PER_FRAME) { steps.removeFirstOrNull()?.invoke() }
+            if (steps.isNotEmpty()) postOnAnimation(this)
+        }
+    }
+
+    /** Builds the list again from the keeper's snapshot, every view anew. Opening spreads that over frames;
+     * a change while it shows builds it whole, so the scroll keeps its place. */
+    fun show(spread: Boolean = false) {
+        removeCallbacks(buildMore); steps.clear()
         val clips = ime.clips.clips
         val photos = ime.clips.photos
         if (clips.none { it.id == acting }) acting = null
         content.removeAllViews()
         clear.visibility = if (clips.any { !it.pinned }) VISIBLE else GONE
-        if (photos.isNotEmpty()) {
+        if (photos.isNotEmpty()) steps += {
             heading(R.string.keyboard_recent_photos)
             val row = LinearLayout(context)
             for (photo in photos) row.addView(photo(photo), LayoutParams(px(PHOTO), px(PHOTO)).apply { marginEnd = px(6f) })
@@ -90,16 +106,15 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
                 isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; addView(row)
             }, LayoutParams(-1, -2))
         }
-        if (clips.isEmpty()) {
+        if (clips.isEmpty()) steps += {
             content.addView(TextView(context).apply {
                 text(this, 14f); setTextColor(color(R.color.kb_quiet)); gravity = Gravity.CENTER
                 setText(R.string.keyboard_clipboard_empty); setPadding(px(24f), px(32f), px(24f), px(16f))
             }, LayoutParams(-1, -2))
-            return
         }
         for ((pinned, group) in clips.groupBy { it.pinned }) {
-            heading(if (pinned) R.string.keyboard_pinned else R.string.keyboard_recent)
-            for (pair in group.chunked(2)) {
+            steps += { heading(if (pinned) R.string.keyboard_pinned else R.string.keyboard_recent) }
+            for (pair in group.chunked(2)) steps += {
                 val row = LinearLayout(context)
                 pair.forEachIndexed { i, clip ->
                     row.addView(card(clip), LayoutParams(0, px(CARD), 1f).apply { if (i == 0) marginEnd = px(6f) })
@@ -108,6 +123,8 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
                 content.addView(row, LayoutParams(-1, -2).apply { bottomMargin = px(6f) })
             }
         }
+        repeat(if (spread) FIRST_STEPS else steps.size) { steps.removeFirstOrNull()?.invoke() }
+        if (steps.isNotEmpty()) postOnAnimation(buildMore)
     }
 
     private fun heading(text: Int) = content.addView(TextView(context).apply {

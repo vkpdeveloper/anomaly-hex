@@ -14,6 +14,8 @@ internal class DotScopeView(context: Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ink = context.getColor(R.color.kb_ink)
     private var tick = 0
+    private val step = resources.displayMetrics.density * 5f
+    private val radius = resources.displayMetrics.density * .95f
     fun clear() { tick = 0; levels.fill(0f); invalidate() }
     fun push(rms: Float) {
         levels.copyInto(levels, 0, 1, levels.size)
@@ -21,9 +23,7 @@ internal class DotScopeView(context: Context) : View(context) {
         tick++; invalidate()
     }
     override fun onDraw(canvas: Canvas) {
-        val step = resources.displayMetrics.density * 5f
         val columns = (width / step).toInt().coerceAtLeast(1)
-        val radius = resources.displayMetrics.density * .95f
         paint.color = ink
         for (x in 0 until columns) {
             val level = levels[(x * levels.size / columns).coerceAtMost(levels.lastIndex)]
