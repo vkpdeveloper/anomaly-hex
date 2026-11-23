@@ -44,7 +44,7 @@ class LearningBenchTest {
      * outer columns) instead of one spread for all. */
     private val uneven = env("HEX_LEARN_BENCH_SPREAD") == "1"
     /** HEX_LEARN_BENCH_SLIPS=1: each author has [HABITS] words they habitually misspell (two letters swapped or one
-     * dropped, the same way every time) and do so [SLIP_RATE] of the time they type them. */
+     * dropped, half of them twice, the same way every time) and do so [SLIP_RATE] of the time they type them. */
     private val slips = env("HEX_LEARN_BENCH_SLIPS") == "1"
     /** HEX_LEARN_BENCH_DEBUG=1 lists every word that did not come out as intended. */
     private val debug = env("HEX_LEARN_BENCH_DEBUG") == "1"
@@ -104,8 +104,11 @@ class LearningBenchTest {
         val common = counts.entries.sortedWith(compareBy({ -it.value }, { it.key })).map { it.key }.drop(4).take(56)
         val r = Random(seed * 17 + author)
         return common.shuffled(r).take(HABITS).associateWith { w ->
+            fun swap(x: String, at: Int) = if (x[at] != x[at + 1]) x.substring(0, at) + x[at + 1] + x[at] + x.substring(at + 2) else x.removeRange(at, at + 1)
             val at = 1 + r.nextInt(w.length - 2)
-            if (r.nextBoolean() && w[at] != w[at + 1]) w.substring(0, at) + w[at + 1] + w[at] + w.substring(at + 2) else w.removeRange(at, at + 1)
+            val one = if (r.nextBoolean()) swap(w, at) else w.removeRange(at, at + 1)
+            // Half the habits take a second slip on top (a swap and a dropped letter), more than one edit from the word.
+            if (r.nextBoolean() && one.length >= 5) swap(one, 1 + r.nextInt(one.length - 2)).let { if (it.length > one.length - 2) it else one } else one
         }
     }
 
