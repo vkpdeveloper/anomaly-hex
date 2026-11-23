@@ -31,26 +31,26 @@ internal interface KeyboardTextTarget {
 internal class InputConnectionTarget(private val ime: InputMethodService) : KeyboardTextTarget {
     private val ic get() = ime.currentInputConnection
     override val connected get() = ic != null
-    override fun before(length: Int) = ic?.getTextBeforeCursor(length, 0)?.toString()
-    override fun after(length: Int) = ic?.getTextAfterCursor(length, 0)?.toString()
-    override fun selected() = ic?.getSelectedText(0)?.toString()
-    override fun capsMode(mask: Int) = ic?.getCursorCapsMode(mask) ?: 0
-    override fun commit(text: String) = ic?.commitText(text, 1) ?: false
-    override fun deleteBefore(length: Int) = ic?.deleteSurroundingText(length, 0) ?: false
-    override fun deleteCodePointsBefore(count: Int) = ic?.deleteSurroundingTextInCodePoints(count, 0) ?: false
-    override fun deleteAround(before: Int, after: Int) = ic?.deleteSurroundingText(before, after) ?: false
-    override fun beginBatch() { ic?.beginBatchEdit() }
-    override fun endBatch() { ic?.endBatchEdit() }
-    override fun setSelection(start: Int, end: Int) = ic?.setSelection(start, end) ?: false
-    override fun performEditorAction(id: Int) = ic?.performEditorAction(id) ?: false
-    override fun defaultEditorAction() = ime.sendDefaultEditorAction(true)
-    override fun sendKey(code: Int) = ime.sendDownUpKeyEvents(code)
-    override fun contextAction(id: Int) = ic?.performContextMenuAction(id) ?: false
-    override fun all(): FieldState? {
-        val got = ic?.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = MAX_FIELD }, 0) ?: return null
-        val text = got.text?.toString() ?: return null
-        if (got.startOffset != 0 || text.length > MAX_FIELD || got.selectionStart < 0) return null
-        return FieldState(text, got.selectionStart, got.selectionEnd)
+    override fun before(length: Int) = traced("hex:ic:before") { ic?.getTextBeforeCursor(length, 0)?.toString() }
+    override fun after(length: Int) = traced("hex:ic:after") { ic?.getTextAfterCursor(length, 0)?.toString() }
+    override fun selected() = traced("hex:ic:selected") { ic?.getSelectedText(0)?.toString() }
+    override fun capsMode(mask: Int) = traced("hex:ic:caps") { ic?.getCursorCapsMode(mask) ?: 0 }
+    override fun commit(text: String) = traced("hex:ic:commit") { ic?.commitText(text, 1) ?: false }
+    override fun deleteBefore(length: Int) = traced("hex:ic:delete") { ic?.deleteSurroundingText(length, 0) ?: false }
+    override fun deleteCodePointsBefore(count: Int) = traced("hex:ic:deleteCp") { ic?.deleteSurroundingTextInCodePoints(count, 0) ?: false }
+    override fun deleteAround(before: Int, after: Int) = traced("hex:ic:delete") { ic?.deleteSurroundingText(before, after) ?: false }
+    override fun beginBatch() { traced("hex:ic:batch") { ic?.beginBatchEdit() } }
+    override fun endBatch() { traced("hex:ic:batch") { ic?.endBatchEdit() } }
+    override fun setSelection(start: Int, end: Int) = traced("hex:ic:selection") { ic?.setSelection(start, end) ?: false }
+    override fun performEditorAction(id: Int) = traced("hex:ic:action") { ic?.performEditorAction(id) ?: false }
+    override fun defaultEditorAction() = traced("hex:ic:action") { ime.sendDefaultEditorAction(true) }
+    override fun sendKey(code: Int) = traced("hex:ic:key") { ime.sendDownUpKeyEvents(code) }
+    override fun contextAction(id: Int) = traced("hex:ic:action") { ic?.performContextMenuAction(id) ?: false }
+    override fun all(): FieldState? = traced("hex:ic:all") {
+        val got = ic?.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = MAX_FIELD }, 0)
+        val text = got?.text?.toString()
+        if (got == null || text == null || got.startOffset != 0 || text.length > MAX_FIELD || got.selectionStart < 0) null
+        else FieldState(text, got.selectionStart, got.selectionEnd)
     }
     private companion object {
         /** Undo keeps the whole text at each step, so a longer field has none. */

@@ -309,7 +309,7 @@ class HexKeyboard : InputMethodService() {
         if (restored.isNotEmpty()) fixWork.execute { TinyfixFiles.ifLoaded { fixer -> restored.forEach(fixer::ignore) } }
     }
 
-    override fun onCreate() {
+    override fun onCreate() = traced("hex:onCreate") {
         setTheme(R.style.HexIme)
         super.onCreate()
         getSharedPreferences("typing", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(typingChanged)
@@ -333,21 +333,21 @@ class HexKeyboard : InputMethodService() {
         engine.preload()
     }
     override fun onEvaluateFullscreenMode() = false
-    override fun onCreateInputView(): View = KeyboardView(this, this).also { view = it; engine.surface = it }
+    override fun onCreateInputView(): View = traced("hex:onCreateInputView") { KeyboardView(this, this).also { view = it; engine.surface = it } }
 
     // Each field gets a number as it starts; an app restarting the same field (chat apps do) keeps it.
     // A transcript comes back to the field it was spoken for, or is copied ([commitSpeech]).
     private var field = 0
     private var dictatedFor = -1
 
-    override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+    override fun onStartInput(attribute: EditorInfo, restarting: Boolean) = traced("hex:onStartInput") {
         super.onStartInput(attribute, restarting)
         if (!restarting) { field++; dictation.leave(); autofill.clear() }
         text.started(attribute.initialSelStart, attribute.initialSelEnd,
             attribute.getInitialTextBeforeCursor(CachedText.INITIAL, 0), attribute.getInitialTextAfterCursor(CachedText.INITIAL, 0))
         engine.startInput(attribute)
     }
-    override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
+    override fun onStartInputView(info: EditorInfo, restarting: Boolean) = traced("hex:onStartInputView") {
         super.onStartInputView(info, restarting)
         view?.cancelGestures()
         clips.shown()

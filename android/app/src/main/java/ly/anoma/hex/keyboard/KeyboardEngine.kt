@@ -289,7 +289,8 @@ internal class KeyboardEngine(
         refreshCaps(force = true)
     }
 
-    fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
+    fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) = traced("hex:select") { doUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd) }
+    private fun doUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
         if (watch.active) watchChanged()
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) offerActions()
@@ -613,7 +614,8 @@ internal class KeyboardEngine(
     /** Shift as the keys show it: letters type capitals while it is on or held. */
     val uppercase get() = shift.uppercase
 
-    fun letter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) {
+    fun letter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) = traced("hex:key:letter") { doLetter(text, x, y, grid, explicit) }
+    private fun doLetter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) {
         if (!target.connected) return
         edited(); typedHere = true
         val w = word
@@ -658,7 +660,8 @@ internal class KeyboardEngine(
      * after the cursor already starts with a space or closing mark: then the space waits for the next
      * key that starts a word. A space right after a picked word is swallowed (it still counts towards
      * double-space), and a closing mark takes its place. */
-    fun pickSuggestion(text: String) {
+    fun pickSuggestion(text: String) = traced("hex:key:pick") { doPickSuggestion(text) }
+    private fun doPickSuggestion(text: String) {
         edited()
         addressOffer?.takeIf { text in it.addresses }?.let { pickAddress(it.typed, text); return }
         tapped?.let { pickForTapped(it, text); return }
@@ -725,7 +728,8 @@ internal class KeyboardEngine(
     }
 
     /** The space bar, tapped at [point] in [grid]'s coordinates (null off the letters page). */
-    fun space(point: KeyPoint? = null, grid: KeyGrid? = null) {
+    fun space(point: KeyPoint? = null, grid: KeyGrid? = null) = traced("hex:key:space") { doSpace(point, grid) }
+    private fun doSpace(point: KeyPoint? = null, grid: KeyGrid? = null) {
         if (!target.connected) return
         typeSpace(point, grid)
         if (symbols && !numpad && symbolTyped) {
@@ -771,7 +775,8 @@ internal class KeyboardEngine(
         showPredictions(b); inputDone()
     }
 
-    fun type(value: String) {
+    fun type(value: String) = traced("hex:key:type") { doType(value) }
+    private fun doType(value: String) {
         if (!target.connected) return
         edited(); typedHere = true
         if (value == " ") { space(); return }
@@ -805,7 +810,8 @@ internal class KeyboardEngine(
         if (mark == "," || mark == ";") learnAddressBefore(b)
         showPredictions(b); inputDone()
     }
-    fun delete() {
+    fun delete() = traced("hex:key:delete") { doDelete() }
+    private fun doDelete() {
         if (!target.connected) return
         edited()
         // Right after a glide, delete takes the whole word back; the space before it stays.
@@ -861,7 +867,8 @@ internal class KeyboardEngine(
         while (characters.next() != java.text.BreakIterator.DONE) count++
         repeat(maxOf(count, 1)) { delete() }
     }
-    fun enter() {
+    fun enter() = traced("hex:key:enter") { doEnter() }
+    private fun doEnter() {
         edited()
         learn(before(), 0); learnAddressBefore(before())
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
@@ -881,7 +888,8 @@ internal class KeyboardEngine(
     /** A glide lifted, its [path] in [grid]'s coordinates. Its likeliest word goes in, after a space
      * when it follows a word, capitalised while shift is on and in capitals with caps lock; the strip
      * offers the other readings beside it. A word in progress stays as typed. */
-    fun glide(path: List<KeyPoint>, grid: KeyGrid) {
+    fun glide(path: List<KeyPoint>, grid: KeyGrid) = traced("hex:key:glide") { doGlide(path, grid) }
+    private fun doGlide(path: List<KeyPoint>, grid: KeyGrid) {
         val w = word
         if (w == null || !glides) return
         edited()
