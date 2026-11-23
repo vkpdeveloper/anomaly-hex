@@ -224,9 +224,13 @@ internal class KeyboardEngine(
     private var heldAnchor: String? = null
     /** The word a glide put in and its other readings, while [anchor], the text before the cursor right
      * after it, is still there: delete takes the word back, a pick replaces it, and the next word,
-     * tapped or glided, puts a space in first while a mark goes against it (Gboard's phantom space). */
-    private class Glided(val word: String, val readings: List<String>, val anchor: String)
+     * tapped or glided, puts a space in first while a mark goes against it (Gboard's phantom space).
+     * [readings] are as the strip shows them (with shift's capitals), each with its own spelling. */
+    private class Glided(val word: String, val readings: Map<String, String>, val anchor: String)
     private var glided: Glided? = null
+    /** A glided word delete took back: the word typed in its place, at [Glided.anchor], is the one the
+     * glide missed, and is yours at once, as Gboard learns it ([learn]). */
+    private var unglided: Glided? = null
     var secure = true
         private set
     // Email addresses are offered and learned in text fields that allow suggestions and learning; an
@@ -266,7 +270,7 @@ internal class KeyboardEngine(
             attribute.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS == 0
         addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
-        addressesLearned.clear(); typedHere = false
+        addressesLearned.clear(); typedHere = false; unglided = null
         if (!learnsCorrections()) dropWatch()
         resetTyping(); word = null; clearSpaces()
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
@@ -351,7 +355,7 @@ internal class KeyboardEngine(
         val read = readPersonal ?: return
         val model = decoder.model
         background.execute {
-            decoder.personal = read(model, learned.words().filter { it !in forgotten && model.index(it.lowercase()) < 0 && !model.known(it.lowercase()) })
+            decoder.personal = read(model, learned.yours(model).filter { it !in forgotten })
             then()
         }
     }
@@ -374,11 +378,12 @@ internal class KeyboardEngine(
     }
 
     /** [word] is yours from now on, as if used twice: kept as typed against an autocorrection, picked over
-     * one, or put back by undo. Forgotten words come back when you choose them. */
-    private fun teach(word: String) {
+     * one or over a glide, or put back by undo. Forgotten words come back when you choose them. At a
+     * [sentenceStart] its capital teaches nothing, as in [LearnedWords.learn]. */
+    private fun teach(word: String, sentenceStart: Boolean = false) {
         if (!learnHere) return
         if (forgotten.remove(word)) { forgottenChanged(); for (d in models.values) d.model.neverSuggest.hide(forgotten.all()) }
-        repeat(LearnedWords.WORD_USES) { learned.learn(word, null, false) }
+        repeat(LearnedWords.WORD_USES) { learned.learn(word, null, sentenceStart) }
         personalWordsChanged(); learnedChanged()
     }
     // What a picked strip word teaches: the word kept as typed, when the keyboard lacks it or would have
@@ -397,14 +402,19 @@ internal class KeyboardEngine(
     }
 
     /** The word that ends [b], the text before the cursor, is learned when [boundary] characters (a
-     * space or mark that just went in after it, or none) follow it. */
+     * space or mark that just went in after it, or none: the next glide, a held space, return) follow it. */
     private fun learn(b: String, boundary: Int) {
         if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
-        val f = LearnedWords.finished(b) ?: return
+        // `finished` reads a word a space or mark ended; with none yet, the one about to go in.
+        val f = LearnedWords.finished(if (boundary == 0) "$b " else b) ?: return
         word?.takeTouched()?.let { t -> if (TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid)) learnedChanged() }
+        val missed = unglided?.takeIf { g -> b.dropLast(boundary).dropLast(f.word.length) == g.anchor &&
+            g.readings.keys.none { it.equals(f.word, ignoreCase = true) } }
+        unglided = null
         if (f.word in forgotten) return
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
+        missed?.let { teach(f.word, f.sentenceStart) }
     }
     // The address that ends [b], the text before the cursor, once a space, comma, semicolon or line break
     // follows it or the field is left. A period may still be the address's own ("a@b.co" of "a@b.co.uk").
@@ -675,9 +685,11 @@ internal class KeyboardEngine(
     }
 
     // Another reading takes the glided word's place, and the next word still puts its space in first.
+    // The glide read it wrong, so the pick is yours at once, as a word picked over an autocorrection is.
     private fun pickForGlided(g: Glided, text: String) {
         if (text == g.word || !replace(g.word, text)) return
         showGlided(Glided(text, g.readings, before()))
+        teach(g.readings[text] ?: text)
     }
 
     // The tapped word goes whole, both sides of the caret, and the pick takes its place with no space.
@@ -725,7 +737,8 @@ internal class KeyboardEngine(
             if (feedback.autocorrect && autocorrectHere && old.isNotEmpty() && endsWith(prefix + old) && !QuickMath.endsInUnit(b)) {
                 val fix = w.finish(' ', point, grid)
                 if (fix != null && !feedback.blocked(lang, fix.original, fix.replacement) && replace(fix.original, fix.replacement + " ")) {
-                    cancelChip()
+                    // What went in is the keyboard's word, not one typed for a missed glide.
+                    cancelChip(); unglided = null
                     undo = Undo(lang, fix.original, fix.replacement)
                     if (expectedCaret >= 0) expectedCaret += fix.replacement.length + 1 - fix.original.length
                     w.reset(); afterSpace(now); return
@@ -761,7 +774,7 @@ internal class KeyboardEngine(
             if (feedback.autocorrect && autocorrectHere && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
                 val fix = w.finish(value[0])
                 if (fix != null && !feedback.blocked(w.decoder.model.language, fix.original, fix.replacement) &&
-                    replace(fix.original, fix.replacement + value)) { resetTyping(); afterMark(value); return }
+                    replace(fix.original, fix.replacement + value)) { unglided = null; resetTyping(); afterMark(value); return }
             }
         }
         resetTyping()
@@ -781,7 +794,7 @@ internal class KeyboardEngine(
         // Right after a glide, delete takes the whole word back; the space before it stays.
         glided?.takeIf { it.anchor == before() }?.let { g ->
             clearSpaces()
-            if (replace(g.word, "")) { showSuggestions(word); return }
+            if (replace(g.word, "")) { unglided = Glided(g.word, g.readings, before()); showSuggestions(word); return }
         }
         // Right after a pick held its space, delete takes that space back and deletes nothing.
         if (heldAnchor != null && heldAnchor == before()) { clearSpaces(); surface?.suggestions(emptyList()); return }
@@ -854,18 +867,22 @@ internal class KeyboardEngine(
         // "l'" + "homme" joins in French and Italian, as a typed word would.
         val elided = (b.endsWith("'") || b.endsWith("\u2019")) && w.startsWord(b)
         var upper = shift.uppercase
-        // The space can start a sentence the editor didn't capitalise for yet ("Done.").
-        if (SpaceRules.followsWord(b) && !elided && target.commit(" ")) upper = upper || capsWanted()
-        val readings = found.map { if (shift.locked) it.uppercase() else if (upper) it.replaceFirstChar { c -> c.uppercase() } else it }.distinct()
-        if (!target.commit(readings[0])) return
-        showGlided(Glided(readings[0], readings, before()))
+        // The space can start a sentence the editor didn't capitalise for yet ("Done."). It ends a
+        // tapped word, which is learned as a space would learn it.
+        if (SpaceRules.followsWord(b) && !elided && target.commit(" ")) { upper = upper || capsWanted(); learn(before(), 1) }
+        unglided = null
+        val readings = LinkedHashMap<String, String>()
+        for (r in found) readings.putIfAbsent(if (shift.locked) r.uppercase() else if (upper) r.replaceFirstChar { it.uppercase() } else r, r)
+        val first = readings.keys.first()
+        if (!target.commit(first)) return
+        showGlided(Glided(first, readings, before()))
         inputDone()
     }
     // The strip after a glide: the word that went in, highlighted in the middle, then the rest.
     private fun showGlided(g: Glided) {
         glided = g
         surface?.suggestions(listOf(Suggestion(g.word, Suggestion.Kind.Fix)) +
-            g.readings.filter { it != g.word }.map { Suggestion(it, Suggestion.Kind.Word) })
+            g.readings.keys.filter { it != g.word }.map { Suggestion(it, Suggestion.Kind.Word) })
     }
 
     /** A space-bar slide starts moving the cursor: the word in progress stays as typed. */

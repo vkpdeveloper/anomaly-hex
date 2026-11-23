@@ -49,8 +49,7 @@ class HexSpellChecker : SpellCheckerService() {
             personalAt = now
             val model = decoder.model
             val learned = LearnedWords().also { l -> runCatching { File(filesDir, LearnedWords.FILE).takeIf { it.isFile }?.let { l.read(it.readText()) } } }
-            decoder.personal = PersonalWords.read(contentResolver, model,
-                learned.words().filter { model.index(it.lowercase()) < 0 && !model.known(it.lowercase()) })
+            decoder.personal = PersonalWords.read(contentResolver, model, learned.yours(model))
         }
         val words = SpellCheck(decoder, prefs.autoCapitalize, prefs.suggestSwearWords).check(text, wrongWords(text, layout, decoder.model))
         for (w in words) if (w.wrongWord) WrongWords.put(text.substring(w.from, w.to), text.substring(0, w.from), w.suggestions!!.first())

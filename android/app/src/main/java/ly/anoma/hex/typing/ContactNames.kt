@@ -9,11 +9,12 @@ import android.provider.ContactsContract
 internal object ContactNames {
     private const val MAX = 5_000
 
-    /** The words in [displayNames] and the given and family names in [parts], each once in the
-     * spelling first seen, at most [MAX]. */
-    fun words(displayNames: Sequence<String?>, parts: Sequence<String?>): List<String> {
+    /** The words in [own] (your own name), the given and family names in [parts] and the words in
+     * [displayNames], each once in the spelling first seen, at most [MAX]. */
+    fun words(displayNames: Sequence<String?>, parts: Sequence<String?>, own: Sequence<String?> = emptySequence()): List<String> {
         val out = LinkedHashMap<String, String>()
-        for (name in parts + displayNames.flatMap { it.orEmpty().split(' ', '\t').asSequence() }) {
+        fun split(names: Sequence<String?>) = names.flatMap { it.orEmpty().split(' ', '\t').asSequence() }
+        for (name in split(own) + parts + split(displayNames)) {
             if (out.size >= MAX) break
             val word = name?.trim(',', '.', ' ')?.takeIf { it.length >= 2 && it.all { c -> c.isLetter() || c == '\'' || c == '-' } } ?: continue
             // A hyphenated name is typed as its parts ("Anne-Marie").
@@ -22,10 +23,16 @@ internal object ContactNames {
         return out.values.toList()
     }
 
-    /** Your contacts' names; empty without the Contacts permission. Read it off the main thread. */
+    /** Your contacts' names and your own, from the phone's profile card ("Me"), first; empty without the
+     * Contacts permission. Read it off the main thread. */
     fun read(resolver: ContentResolver): List<String> {
+        val own = ArrayList<String?>()
         val display = ArrayList<String?>()
         val parts = ArrayList<String?>()
+        try {
+            resolver.query(ContactsContract.Profile.CONTENT_URI, arrayOf(ContactsContract.Profile.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> while (cursor.moveToNext()) own.add(cursor.getString(0)) }
+        } catch (_: RuntimeException) {} // No profile card, or no permission: the contacts below say which.
         try {
             resolver.query(ContactsContract.Data.CONTENT_URI,
                 arrayOf(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME,
@@ -38,6 +45,6 @@ internal object ContactNames {
                 }
             }
         } catch (_: RuntimeException) { return emptyList() } // SecurityException once the permission goes.
-        return words(display.asSequence(), parts.asSequence())
+        return words(display.asSequence(), parts.asSequence(), own.asSequence())
     }
 }

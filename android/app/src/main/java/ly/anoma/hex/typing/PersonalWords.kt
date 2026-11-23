@@ -95,34 +95,46 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
             }
 
         /** The personal dictionary's words and shortcuts for the model's language (or every language),
-         * with the words you've written that the model lacks ([learned], `LearnedWords.words`) and the
-         * paired computer's [replacements] and your [contactNames]; your own shortcut wins one the computer also has.
+         * with the words you've written that the model lacks ([learned], `LearnedWords.yours`) and the
+         * paired computer's [replacements] and your [contactNames] ([of]).
          * Android lets only an enabled input method or spell checker read it, with no permission, and
          * answers anyone else with nothing; any failure reads as nothing. Read it off the main thread. */
         fun read(resolver: ContentResolver, model: TypingModel, learned: Collection<String> = emptyList(),
                  replacements: Replacements = Replacements.None, contactNames: Collection<String> = emptyList(),
                  forgotten: Forgotten? = null): PersonalWords {
-            val hidden: (String) -> Boolean = { forgotten?.contains(it) == true }
-            val words = ArrayList<String>(learned)
-            val shortcuts = HashMap<String, String>()
+            val dictionary = ArrayList<Pair<String, String>>()
             try {
                 resolver.query(UserDictionary.Words.CONTENT_URI,
                     arrayOf(UserDictionary.Words.WORD, UserDictionary.Words.SHORTCUT, UserDictionary.Words.LOCALE),
                     null, null, null)?.use { cursor ->
-                    while (cursor.moveToNext() && words.size + shortcuts.size < LIMIT) {
+                    while (dictionary.size < LIMIT && cursor.moveToNext()) {
                         if (!applies(cursor.getString(2), model.language)) continue
                         val word = cursor.getString(0)?.trim().orEmpty()
-                        if (word.isEmpty()) continue
-                        val shortcut = cursor.getString(1)?.trim().orEmpty()
-                        if (shortcut.isNotEmpty() && !shortcut.equals(word, ignoreCase = true)) shortcuts[shortcut] = word
-                        else words.add(word)
+                        if (word.isNotEmpty()) dictionary.add(word to cursor.getString(1)?.trim().orEmpty())
                     }
                 }
             } catch (_: RuntimeException) {
-                return PersonalWords(model, learned + contactNames + replacements.words, replacements.shortcuts, hidden)
+                dictionary.clear()
+            }
+            return of(model, dictionary, learned, replacements, contactNames, forgotten)
+        }
+
+        /** Your words from every source: the personal dictionary's entries (a word and its shortcut, or ""
+         * for none), at most [LIMIT] of them however many words you've written, then [learned], your
+         * [contactNames] and the paired computer's [replacements]. A word in several keeps the first one's
+         * capitals, and your own shortcut wins one the computer also has. A [forgotten] word is left out. */
+        fun of(model: TypingModel, dictionary: List<Pair<String, String>>, learned: Collection<String> = emptyList(),
+               replacements: Replacements = Replacements.None, contactNames: Collection<String> = emptyList(),
+               forgotten: Forgotten? = null): PersonalWords {
+            val words = ArrayList<String>()
+            val shortcuts = HashMap<String, String>()
+            for ((word, shortcut) in dictionary.take(LIMIT)) {
+                if (shortcut.isNotEmpty() && !shortcut.equals(word, ignoreCase = true)) shortcuts[shortcut] = word
+                else words.add(word)
             }
             val mine = shortcuts.keys.mapTo(HashSet()) { it.lowercase() }
-            return PersonalWords(model, words + contactNames + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts, hidden)
+            return PersonalWords(model, words + learned + contactNames + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts,
+                { forgotten?.contains(it) == true })
         }
     }
 }

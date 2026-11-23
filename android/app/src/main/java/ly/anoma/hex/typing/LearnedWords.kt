@@ -80,6 +80,11 @@ internal class LearnedWords {
     /** Your words, spelled your way, used at least twice: the ones the keyboard treats as words. */
     @Synchronized fun words(): List<String> = words.values.filter { it.count >= WORD_USES }.map { it.spelling }
 
+    /** Your [words] that [model]'s word list lacks: the ones read as your own words beside it ([PersonalWords]),
+     * so taps and glides spell them. A word only its validity or capitals list knows ("kotlin", "Ravi")
+     * is one of these too: those lists keep a typed word, but a glide walks word lists alone. */
+    fun yours(model: TypingModel): List<String> = words().filter { model.index(it.lowercase()) < 0 }
+
     /** Your spelling of a word you've used, or null. */
     @Synchronized fun spelling(word: String): String? = words[word.lowercase()]?.spelling
 
