@@ -225,7 +225,7 @@ class HexKeyboard : InputMethodService() {
                 else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {
                     FreeTimes.busy(contentResolver, it)
                 }
-            }, corrected = ::correctionFound, background = words)
+            }, corrected = ::correctionFound, background = words, deferStrip = true)
     }
     internal val dictation by lazy {
         Dictation(this,

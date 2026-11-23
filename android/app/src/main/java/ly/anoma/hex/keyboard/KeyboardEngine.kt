@@ -77,6 +77,9 @@ internal class KeyboardEngine(
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
+    /** Work the strip after the key's own work has returned, so a letter is committed first and the
+     * suggestions follow in the next turn of the main loop. Off, the strip is worked out at once. */
+    private val deferStrip: Boolean = false,
 ) {
     private companion object {
         /** The fix and the decoder's readings wait for this pause in typing: working them out costs a
@@ -302,7 +305,7 @@ internal class KeyboardEngine(
                 // before invalidating our own in-flight commit, not a stale intermediate offset.
                 val suffix = undo?.let { it.replacement + " " } ?: word?.token?.takeIf { it.isNotEmpty() }?.let { prefix + it }
                 if (newSelStart != newSelEnd || suffix == null || !endsWith(suffix) ||
-                    oldSelStart == expectedCaret) { resetTyping(); surface?.suggestions(emptyList()) }
+                    oldSelStart == expectedCaret) { resetTyping(); clearStrip() }
             }
             refreshCaps()
             if (!expected && clock() - editedAt > OWN_EDIT_MS) caretMoved()
@@ -314,7 +317,7 @@ internal class KeyboardEngine(
     private fun caretMoved() {
         val w = word ?: return
         resetTyping(); clearSpaces()
-        if (symbols || selStart < 0 || selStart != selEnd) { surface?.suggestions(emptyList()); return }
+        if (symbols || selStart < 0 || selStart != selEnd) { clearStrip(); return }
         val b = before()
         val a = target.after(48).orEmpty()
         val left = TypingWord.currentToken(b) ?: if (TypingWord.boundary(b.lastOrNull())) "" else null
@@ -339,7 +342,7 @@ internal class KeyboardEngine(
         // At the word's end it is the word in progress again: letters add to it and a pick ends it.
         if (right.isEmpty()) { prefix = start.takeLast(40); w.restored(left, prefix) }
         else { w.reset(); tapped = Tapped(left, right) }
-        surface?.suggestions(strip)
+        cancelSuggestions(); surface?.suggestions(strip)
     }
 
     /** Suggest swear words changed: the current word's suggestions follow at once. */
@@ -476,13 +479,27 @@ internal class KeyboardEngine(
     /** The number pad's !?#: the first symbols page. */
     fun symbolPage() { leavePage(); symbols = true; numpad = false; showPlane() }
     private fun leavePage() {
-        resetTyping(); clearSpaces(); surface?.suggestions(emptyList()); more = false; shift.forgetTap(); symbolTyped = false
+        resetTyping(); clearSpaces(); clearStrip(); more = false; shift.forgetTap(); symbolTyped = false
     }
     private fun resetTyping() {
-        cancelChip(); addressOffer = null; word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
+        cancelSuggestions(); addressOffer = null; word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
     }
     private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null; glided = null }
     private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
+    private var pendingStrip: Runnable? = null
+    private fun cancelSuggestions() {
+        cancelChip()
+        pendingStrip?.let(main::removeCallbacks); pendingStrip = null
+    }
+    /** Empties the strip now, and drops any strip still waiting to be worked out. */
+    private fun clearStrip() { cancelSuggestions(); surface?.suggestions(emptyList()) }
+    /** Runs [work], the strip's suggestions, after the key that asked for them (see [deferStrip]).
+     * The latest request replaces an earlier one that has not run, so fast typing works out one strip. */
+    private fun defer(work: () -> Unit) {
+        cancelSuggestions()
+        if (!deferStrip) { traced("hex:suggest", work); return }
+        pendingStrip = Runnable { pendingStrip = null; traced("hex:suggest", work) }.also(main::post)
+    }
     /** Reads the layout's typing model on [background] before the keyboard first shows, so showing it
      * doesn't wait on the read. A field that opens first reads the model itself and this copy goes. */
     fun preload() {
@@ -514,7 +531,8 @@ internal class KeyboardEngine(
 
     // The strip while a word is typed: completions at once, then, after a pause, the model's whole
     // strip with what space will put in. A fix you turned down twice shows as a plain word.
-    private fun showSuggestions(w: TypingWord?) {
+    private fun showSuggestions(w: TypingWord?) = defer { suggest(w) }
+    private fun suggest(w: TypingWord?) {
         cancelChip()
         if (w != null && w.token.isNotEmpty()) {
             showStrip(w.strip(autocorrect = false))
@@ -534,7 +552,8 @@ internal class KeyboardEngine(
         showPredictions(if (b != null && TypingWord.boundary(b.lastOrNull())) b else null)
     }
     /** Next words for the text before the cursor, capitalised as shift would be. */
-    private fun showPredictions(before: String?) {
+    private fun showPredictions(before: String?) = defer { predict(before) }
+    private fun predict(before: String?) {
         val w = word
         showStrip(if (w != null && before != null && !symbols && canEndWord())
             w.predictions(before, capitalize = capsWanted()).map { Suggestion(it, Suggestion.Kind.Next) } else emptyList())
@@ -669,7 +688,7 @@ internal class KeyboardEngine(
         val w = word ?: return
         if (symbols || !canEndWord()) return
         val old = w.token
-        if (old.isNotEmpty() && !endsWith(prefix + old)) { resetTyping(); surface?.suggestions(emptyList()); return }
+        if (old.isNotEmpty() && !endsWith(prefix + old)) { resetTyping(); clearStrip(); return }
         if (old.isEmpty() && !w.startsWord(before())) return
         val holds = SpaceRules.separates(target.after(1))
         val taught = if (old.isEmpty()) null else taught(w, old, text)
@@ -690,10 +709,10 @@ internal class KeyboardEngine(
     private fun pickAddress(typed: String, address: String) {
         resetTyping(); clearSpaces()
         val holds = addressField || SpaceRules.separates(target.after(1))
-        if (!replace(typed, if (holds) address else "$address ")) { surface?.suggestions(emptyList()); return }
+        if (!replace(typed, if (holds) address else "$address ")) { clearStrip(); return }
         learnAddress(address)
         val b = before()
-        if (addressField) surface?.suggestions(emptyList())
+        if (addressField) clearStrip()
         else { if (holds) heldAnchor = b else pickedAnchor = b; showPredictions(b) }
         inputDone()
     }
@@ -724,7 +743,7 @@ internal class KeyboardEngine(
                 }
             } finally { target.endBatch() }
         }
-        surface?.suggestions(emptyList())
+        clearStrip()
     }
 
     /** The space bar, tapped at [point] in [grid]'s coordinates (null off the letters page). */
@@ -820,7 +839,7 @@ internal class KeyboardEngine(
             if (replace(g.word, "")) { unglided = Glided(g.word, g.readings, before()); showSuggestions(word); return }
         }
         // Right after a pick held its space, delete takes that space back and deletes nothing.
-        if (heldAnchor != null && heldAnchor == before()) { clearSpaces(); surface?.suggestions(emptyList()); return }
+        if (heldAnchor != null && heldAnchor == before()) { clearSpaces(); clearStrip(); return }
         clearSpaces()
         val last = undo
         undo = null
@@ -842,7 +861,7 @@ internal class KeyboardEngine(
             val typed = last.original.substringAfterLast(' ')
             prefix = before().dropLast(typed.length).takeLast(40); word?.restored(typed, prefix)
             if (expectedCaret >= 0) expectedCaret += last.original.length - last.replacement.length - 1
-            surface?.suggestions(listOf(Suggestion(typed, Suggestion.Kind.Typed))); return
+            cancelSuggestions(); surface?.suggestions(listOf(Suggestion(typed, Suggestion.Kind.Typed))); return
         }
         val w = word
         val track = w != null && w.token.isNotEmpty() && endsWith(prefix + w.token)
@@ -855,7 +874,7 @@ internal class KeyboardEngine(
             if (!(if (cluster > 1) target.deleteBefore(cluster) else target.deleteCodePointsBefore(1))) target.sendKey(KeyEvent.KEYCODE_DEL)
             if (track) { w!!.pop(); if (expectedCaret >= 0) expectedCaret-- } else resetTyping()
         }
-        if (w != null && w.token.isNotEmpty()) showSuggestions(w) else showStrip(emptyList())
+        if (w != null && w.token.isNotEmpty()) showSuggestions(w) else clearStrip()
     }
     /** Held delete once it speeds up ([DeleteRepeat]): the word before the cursor with the spaces
      * after it, as a delete slide counts words, taken one character at a time through [delete]. */
@@ -871,7 +890,7 @@ internal class KeyboardEngine(
     private fun doEnter() {
         edited()
         learn(before(), 0); learnAddressBefore(before())
-        resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
+        resetTyping(); clearSpaces(); clearStrip()
         val info = editor
         if (info?.actionLabel != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) == 0 &&
             target.performEditorAction(info.actionId)) return
@@ -915,6 +934,7 @@ internal class KeyboardEngine(
     // The strip after a glide: the word that went in, highlighted in the middle, then the rest.
     private fun showGlided(g: Glided) {
         glided = g
+        cancelSuggestions()
         surface?.suggestions(listOf(Suggestion(g.word, Suggestion.Kind.Fix)) +
             g.readings.keys.filter { it != g.word }.map { Suggestion(it, Suggestion.Kind.Word) })
     }
@@ -922,7 +942,7 @@ internal class KeyboardEngine(
     /** A space-bar slide starts moving the cursor: the word in progress stays as typed. */
     /** A slide on space; with shift held it selects as it goes, and shift then types no capital. */
     fun cursorSlide(select: Boolean = false): CursorSlide {
-        resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
+        resetTyping(); clearSpaces(); clearStrip()
         val selecting = select && !secure
         if (selecting) shift.typed()
         return CursorSlide(target, minOf(selStart, selEnd), maxOf(selStart, selEnd), readable = !secure, selecting = selecting)
@@ -933,14 +953,14 @@ internal class KeyboardEngine(
     /** A slide left from delete: null where it can't run (a password field, a selection, no known cursor). */
     fun deleteSlide(): DeleteSlide? {
         if (secure || selStart < 0 || selStart != selEnd || !target.connected) return null
-        resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
+        resetTyping(); clearSpaces(); clearStrip()
         return DeleteSlide(target, selStart, target.before(2000).orEmpty())
     }
     /** The delete slide lifted with words selected: they go. */
     fun deleteSelection() {
         if (!target.connected) return
         edited()
-        target.commit(""); resetTyping(); surface?.suggestions(emptyList())
+        target.commit(""); resetTyping(); clearStrip()
     }
 
     /** A clip from the toolbar's chip or the clipboard: it goes in as it is, never autocorrected, but its
@@ -948,7 +968,7 @@ internal class KeyboardEngine(
     fun paste(text: String) {
         if (!target.connected) return
         val clip = if (feedback.cleanLinks) Links.clean(text) else text
-        edited(); resetTyping(); clearSpaces(); target.commit(clip); surface?.suggestions(emptyList()); refreshCaps()
+        edited(); resetTyping(); clearSpaces(); target.commit(clip); clearStrip(); refreshCaps()
     }
 
     private var actionsShown = emptyList<StripAction>()
@@ -1002,22 +1022,22 @@ internal class KeyboardEngine(
                 } finally { target.endBatch() }
             }
         }
-        surface?.suggestions(emptyList()); refreshCaps()
+        clearStrip(); refreshCaps()
     }
 
     /** Dictation starts: the word in progress is left as typed. */
-    fun clearForDictation() { finishWatch(read = true); edited(); resetTyping(); clearSpaces(); surface?.suggestions(emptyList()) }
+    fun clearForDictation() { finishWatch(read = true); edited(); resetTyping(); clearSpaces(); clearStrip() }
 
     /** The editor or the keyboard went away: forget the word, never carry it to the next field. */
     /** A panel (emoji, the grid's menu, the clipboard) takes the keys' place. The word in progress stays,
      * so closing it untouched brings back the word's suggestions ([configureTyping] with keepWord). */
-    fun pause() { cancelChip(); surface?.suggestions(emptyList()) }
+    fun pause() { cancelChip(); clearStrip() }
 
     fun leave() {
         finishWatch(read = true)
         edited()
         if (typedHere) learnAddressBefore(before())
-        resetTyping(); clearSpaces(); word = null; surface?.suggestions(emptyList())
+        resetTyping(); clearSpaces(); word = null; clearStrip()
     }
 
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
@@ -1131,7 +1151,7 @@ internal class KeyboardEngine(
         if (fixes.isEmpty() || fieldText() != field) return false
         edited(); resetTyping(); clearSpaces()
         rewrite(field, fixes)
-        surface?.suggestions(emptyList())
+        clearStrip()
         offerUndo(Fixed(field, fixes, Tinyfix.apply(field.text, fixes)))
         return true
     }
