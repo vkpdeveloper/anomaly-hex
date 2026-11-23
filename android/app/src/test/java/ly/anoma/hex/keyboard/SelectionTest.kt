@@ -25,7 +25,7 @@ class SelectionTest {
         assertEquals(6 to 6, field.selection)
     }
 
-    @Test fun aSelectionOffersCutCopyAndRewritesAndClearsThemAfter() {
+    @Test fun aSelectionOffersCutAndCopyAndClearsThemAfter() {
         val k = Keyboard("see you at six")
         k.engine.updateSelection(14, 14, 4, 7)
         assertEquals(StripAction.selection, k.actions)
@@ -56,16 +56,6 @@ class SelectionTest {
         val k = Keyboard("")
         for (c in "250 usd ") if (c == ' ') k.engine.space() else k.engine.type(c.toString())
         assertEquals("250 usd ", k.field.text)
-    }
-
-    @Test fun aReplyReplacesWhatWasTypedAndGoesOnceTheTextChanges() {
-        val k = Keyboard("sure")
-        k.engine.offerReplies(listOf("Sure, see you at 8!", "On my way"))
-        assertEquals(listOf(StripAction.Reply("Sure, see you at 8!"), StripAction.Reply("On my way")), k.actions)
-        k.engine.act(StripAction.Reply("Sure, see you at 8!"))
-        assertEquals("Sure, see you at 8!", k.field.text)
-        k.engine.updateSelection(4, 4, 19, 19)
-        assertTrue(k.actions.isEmpty())
     }
 
     // A field whose selection is kept, as an editor's is.

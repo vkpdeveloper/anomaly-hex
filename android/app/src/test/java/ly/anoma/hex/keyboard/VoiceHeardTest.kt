@@ -1,62 +1,25 @@
 package ly.anoma.hex.keyboard
 
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class SpeechEndTest {
-    /** Feeds [ms] of chunks at [peak]; the millisecond of that stretch the end came at, or null. */
-    private fun SpeechEnd.run(ms: Int, peak: Float): Int? {
-        for (t in 20..ms step 20) if (feed(peak)) return t
-        return null
-    }
-
-    @Test fun endsAfterQuietThatFollowsSpeech() {
-        val end = SpeechEnd()
-        assertNull(end.run(500, 0.01f))
-        assertNull(end.run(2_000, 0.3f))
-        assertEquals(SpeechEnd.QUIET_MS, end.run(3_000, 0.01f))
-    }
-
-    @Test fun aPauseShorterThanTheQuietKeepsListening() {
-        val end = SpeechEnd()
-        assertNull(end.run(1_000, 0.3f))
-        assertNull(end.run(800, 0.01f))
-        assertNull(end.run(1_000, 0.3f))
-        assertEquals(SpeechEnd.QUIET_MS, end.run(3_000, 0.01f))
-    }
-
-    @Test fun silenceEndsAfterTheNoSpeechLimit() {
-        assertEquals(SpeechEnd.NO_SPEECH_MS, SpeechEnd().run(10_000, 0.01f))
-    }
-
-    @Test fun steadyNoiseIsNotSpeech() {
-        // A loud fan from the tap on: it sets the floor, then a voice above it still counts.
-        val end = SpeechEnd()
-        assertNull(end.run(3_000, 0.06f))
-        assertNull(end.run(1_000, 0.4f))
-        assertEquals(SpeechEnd.QUIET_MS, end.run(3_000, 0.06f))
-    }
-
-    @Test fun aClickIsNotSpeech() {
-        val end = SpeechEnd()
-        assertNull(end.run(500, 0.01f))
-        assertNull(end.run(200, 0.5f))
-        assertEquals(SpeechEnd.NO_SPEECH_MS - 700, end.run(10_000, 0.01f))
-    }
+class VoiceHeardTest {
+    /** Feeds [ms] of chunks at [peak]. */
+    private fun VoiceHeard.run(ms: Int, peak: Float) { for (t in 20..ms step 20) feed(peak) }
 
     @Test fun onlyARecordingWithAVoiceInItIsHeard() {
-        val room = SpeechEnd().apply { run(4_000, 0.01f) }
+        val room = VoiceHeard().apply { run(4_000, 0.01f) }
         assertFalse(room.heard)
         // A fan loud from the start is the room, not a voice.
-        val fan = SpeechEnd().apply { run(4_000, 0.06f) }
+        val fan = VoiceHeard().apply { run(4_000, 0.06f) }
         assertFalse(fan.heard)
-        val click = SpeechEnd().apply { run(500, 0.005f); run(100, 0.5f); run(2_000, 0.005f) }
+        val click = VoiceHeard().apply { run(500, 0.005f); run(100, 0.5f); run(2_000, 0.005f) }
         assertFalse(click.heard)
-        // Too quiet to end a tapped recording by itself, but a voice all the same.
-        val quiet = SpeechEnd().apply { run(500, 0.005f); run(1_000, 0.03f) }
+        val quiet = VoiceHeard().apply { run(500, 0.005f); run(1_000, 0.03f) }
         assertTrue(quiet.heard)
+        // A long pause to think after speaking still leaves it heard.
+        val paused = VoiceHeard().apply { run(500, 0.01f); run(1_000, 0.3f); run(30_000, 0.01f) }
+        assertTrue(paused.heard)
     }
 }

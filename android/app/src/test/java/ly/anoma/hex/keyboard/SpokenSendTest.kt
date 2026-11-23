@@ -3,7 +3,6 @@ package ly.anoma.hex.keyboard
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import java.io.File
-import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.SpatialDecoder
@@ -53,32 +52,21 @@ class SpokenSendTest {
         assertEquals(emptyList<Int>(), off.field.actions + search.field.actions + password.field.actions)
     }
 
-    @Test fun voiceEditsAreCommandsOnlyWhereSendItWouldBe() {
-        val shorter = SpokenEdit.Action.Rewrite(HexClient.Style.Shorter)
-        assertEquals(SpokenEdit.Command(shorter, "Hey, so I can't come tonight."),
-            SpokenEdit.read("Hey, so I can't come tonight. Make it shorter."))
-        assertEquals(SpokenEdit.Command(SpokenEdit.Action.Scratch, ""), SpokenEdit.read("Scratch that."))
-        assertEquals(SpokenEdit.Command(SpokenEdit.Action.Rewrite(HexClient.Style.English), "Kal milte hain"),
-            SpokenEdit.read("Kal milte hain, translate to English"))
-        assertEquals(HexClient.Style.Formal, (SpokenEdit.read("make it more formal")?.action as SpokenEdit.Action.Rewrite).style)
-        assertNull(SpokenEdit.read("Can you make it shorter?"))
-        assertNull(SpokenEdit.read("I'll delete that tomorrow."))
-        assertNull(SpokenEdit.read("See you at six."))
+    @Test fun scratchThatIsACommandOnlyWhereSendItWouldBe() {
+        assertEquals("Hey, so I can't come tonight.", SpokenEdit.scratched("Hey, so I can't come tonight. Scratch that."))
+        assertEquals("", SpokenEdit.scratched("Scratch that."))
+        assertNull(SpokenEdit.scratched("Can you make it shorter?"))
+        assertNull(SpokenEdit.scratched("I'll delete that tomorrow."))
+        assertNull(SpokenEdit.scratched("See you at six."))
     }
 
     @Test fun scratchThatTakesBackTheDictationOrTheOneBefore() {
         val k = Keyboard(EditorInfo.IME_ACTION_SEND, on = false)
         k.engine.insertDictation("See you at six.", "en")
-        assertNull(k.engine.insertDictation("Bring snacks, scratch that.", "en"))
+        k.engine.insertDictation("Bring snacks, scratch that.", "en")
         assertEquals("See you at six.", k.field.text)
         k.engine.insertDictation("Scratch that.", "en")
         assertEquals("", k.field.text)
-    }
-
-    @Test fun aToneCommandTypesTheRestAndAsksForTheRewrite() {
-        val k = Keyboard(EditorInfo.IME_ACTION_SEND, on = false)
-        assertEquals(HexClient.Style.Formal, k.engine.insertDictation("Hey can't make it. Make it formal.", "en"))
-        assertEquals("Hey can't make it.", k.field.text)
     }
 
     // A field whose editor action is recorded.

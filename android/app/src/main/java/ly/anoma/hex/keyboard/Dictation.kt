@@ -43,7 +43,7 @@ internal class Dictation(
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var recorder: Recorder? = null
-    private var speech: SpeechEnd? = null
+    private var speech: VoiceHeard? = null
     private var sending: Job? = null
     private var spokenIn = HexClient.Origin()
     var phase = DictationPhase.Idle
@@ -61,24 +61,24 @@ internal class Dictation(
     /** A field gained the keyboard: have the route ready before the mic is tapped. */
     fun prewarm() { if (store.computer != null) router.prewarm() }
 
-    /** Starts recording. A tapped start ([stopsItself]) ends by itself once the person stops talking;
-     * a held one ends when the finger lifts. */
-    fun start(stopsItself: Boolean = true): Boolean {
+    /** Starts recording. It never ends by itself on a pause: a tapped start ends at the next tap
+     * ([toggle]), a held one when the finger lifts. */
+    fun start(): Boolean {
         if (phase != DictationPhase.Idle) return false
         blocked()?.let { note(it); return false }
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             note(context.getString(R.string.keyboard_hint_microphone)); return false
         }
         if (store.computer == null) { note(HexError.NotPaired.message.orEmpty()); return false }
-        // Listens to every recording, so one of only the room isn't sent; only a tapped one ends by itself.
-        val end = SpeechEnd()
+        // Listens to every recording, so one of only the room isn't sent.
+        val voice = VoiceHeard()
         lateinit var next: Recorder
         next = Recorder(
             onLevel = { peak ->
                 main.post {
                     if (recorder !== next) return@post
                     level(peak)
-                    if (end.feed(peak) && stopsItself) finish()
+                    voice.feed(peak)
                 }
             },
             // At the computer's limit: send what there is rather than lose it.
@@ -86,7 +86,7 @@ internal class Dictation(
         )
         if (!next.start()) { note(context.getString(R.string.keyboard_hint_mic_busy)); return false }
         recorder = next
-        speech = end
+        speech = voice
         spokenIn = origin()
         phase = DictationPhase.Listening
         router.prewarm()

@@ -27,12 +27,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import ly.anoma.hex.button.ChatScreen
 import ly.anoma.hex.R
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
-import ly.anoma.hex.relay.HexError
-import ly.anoma.hex.relay.Store
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
@@ -236,90 +233,6 @@ class HexKeyboard : InputMethodService() {
             }
         }
     }
-    // Rewrite: the text goes to the paired computer, and from there to OpenCode's model, only on the tap.
-    private val store by lazy { Store(this) }
-    /** A rewrite is waiting for the computer; another tap only says so. */
-    private var rewriting = false
-    private var busyNote = R.string.keyboard_rewriting
-    // The toolbar's note lasts three seconds; this keeps "Rewriting" up until the answer comes.
-    private val rewritingNote = object : Runnable {
-        override fun run() {
-            if (!rewriting) return
-            view?.note(getString(busyNote)); main.postDelayed(this, REWRITING_NOTE_MS)
-        }
-    }
-    internal val rewriteShown get() = !engine.secure && store.computer != null
-    /** The grid menu's Rewrite and its tones: the selection, else the text around the caret as the fix
-     * button reads it, rewritten in [style] by OpenCode through the paired computer. The answer replaces it
-     * in one edit only if it's the same field and the text hasn't changed meanwhile; Undo rewrite puts it back. */
-    internal fun rewrite(style: HexClient.Style = HexClient.Style.Fix) {
-        if (!rewriteShown) return
-        if (rewriting) { view?.note(getString(busyNote)); return }
-        val span = engine.rewriteSpan()
-        if (span == null) { view?.note(getString(R.string.keyboard_nothing_to_rewrite)); return }
-        val forField = field
-        rewriting = true; busyNote = R.string.keyboard_rewriting; rewritingNote.run()
-        io.launch {
-            val note = try {
-                val rewritten = dictation.router.send { host, computer -> HexClient.rewrite(host, computer.port, computer.code, span.text, style) }
-                rewriting = false
-                val here = forField == field && currentInputConnection != null && isInputViewShown
-                when {
-                    rewritten.isEmpty() -> R.string.keyboard_rewrite_failed
-                    rewritten == span.text -> R.string.keyboard_rewrite_unchanged
-                    !here || !engine.applyRewrite(span, rewritten) -> R.string.keyboard_rewrite_changed
-                    else -> null
-                }?.let(::getString)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                rewriteError(e)
-            } finally { rewriting = false; main.removeCallbacks(rewritingNote) }
-            note?.let { view?.note(it) }
-        }
-    }
-    /** The grid menu's Reply: the chat on screen, read through the floating button's service, goes to the
-     * paired computer with what's typed so far; up to three replies come back as chips on the strip. */
-    internal fun reply() {
-        if (!rewriteShown) return
-        if (rewriting) { view?.note(getString(busyNote)); return }
-        val lines = ChatScreen.read() ?: run { view?.note(getString(R.string.keyboard_reply_needs_button)); return }
-        if (lines.isEmpty()) { view?.note(getString(R.string.keyboard_no_chat)); return }
-        val draft = currentInputConnection?.getTextBeforeCursor(2_000, 0)?.toString().orEmpty()
-        val forField = field
-        rewriting = true; busyNote = R.string.keyboard_replying; rewritingNote.run()
-        io.launch {
-            val note = try {
-                val replies = dictation.router.send { host, computer -> HexClient.replies(host, computer.port, computer.code, lines, draft) }
-                rewriting = false
-                when {
-                    replies.isEmpty() -> getString(R.string.keyboard_rewrite_failed)
-                    forField != field || currentInputConnection == null || !isInputViewShown -> null
-                    else -> { main.post { engine.offerReplies(replies) }; null }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                rewriteError(e)
-            } finally { rewriting = false; main.removeCallbacks(rewritingNote) }
-            note?.let { view?.note(it) }
-        }
-    }
-    private fun rewriteError(error: Exception): String = when (error) {
-        is HexError.Failed -> getString(when (error.code) {
-            "opencode-not-running" -> R.string.keyboard_rewrite_no_opencode
-            "opencode-outdated" -> R.string.keyboard_rewrite_old_opencode
-            "opencode-managed" -> R.string.keyboard_rewrite_managed
-            "rewrite-timeout" -> R.string.keyboard_rewrite_timeout
-            "resource-exhausted" -> R.string.keyboard_rewrite_too_long
-            // A computer whose Hex has no rewrite route yet.
-            "not_found" -> R.string.keyboard_rewrite_old_hex
-            else -> R.string.keyboard_rewrite_failed
-        })
-        is HexError -> error.message.orEmpty()
-        else -> getString(R.string.keyboard_rewrite_failed)
-    }
-
     /** The toolbar's undo chip. Words a fix changed and you put back are left alone from then on. */
     internal fun undo() {
         val restored = engine.undo()
@@ -388,8 +301,7 @@ class HexKeyboard : InputMethodService() {
      * hidden), it's copied instead, so the strip's chip offers it, rather than typed somewhere else or lost. */
     private fun commitSpeech(heard: HexClient.Heard) {
         if (dictatedFor == field && currentInputConnection != null && !engine.secure && isInputViewShown) {
-            // A voice edit's tone ("make it formal") rewrites the text with the dictation in it.
-            engine.insertDictation(heard.text, heard.language)?.let(::rewrite)
+            engine.insertDictation(heard.text, heard.language)
             return
         }
         runCatching {
@@ -419,6 +331,5 @@ class HexKeyboard : InputMethodService() {
         const val CONTACTS_DELAY_MS = 2_000L
         const val HISTORY_WORDS_MS = 6 * 60 * 60_000L
         const val REPLACEMENTS_MS = 60 * 60_000L
-        const val REWRITING_NOTE_MS = 2_500L
     }
 }

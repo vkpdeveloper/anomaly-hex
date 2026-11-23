@@ -6,7 +6,7 @@ A keyboard and a floating button that dictate with Hex on your computer. The pho
 
 Pair once under **Computer**: Hex finds the computer on the local network, or takes an address (Tailscale works anywhere), then its pairing code. The protocol, routes and limits are in [docs/phone-dictation.md](../docs/phone-dictation.md). The computer turns on **Labs › Phone dictation** and answers only private and Tailscale addresses.
 
-What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; the text you tap **Rewrite** on, and the chat on screen with what you typed when you tap **Reply**, to the paired computer, which sends it on to whatever model its OpenCode uses (which may be a cloud model); with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
+What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
 
 A transcript goes back to the field it was spoken in. If that field went away while the computer was transcribing (another field, or the keyboard closed), it's copied instead and the strip's chip offers it; an app that restarts the same field (chat apps do) still gets it. The keyboard shapes it with the language the computer says it heard: mid-sentence, a capital the model gave an ordinary first word goes. When the computer chooses the language itself, the text stays as it came.
 
@@ -60,31 +60,11 @@ picked twice. Picks are counts per word (at most 1,000 words), never learned in 
 apps that ask for no personalised learning, and **Forget learned words** clears them.
 
 **Grid menu.** The grid at the strip's start opens a menu in place of the strip and keys:
-**Clipboard**, **Fix mistakes** (only where the Fix button works), **Rewrite** and **Reply** (only
-with a computer paired, never in a password field), a row of tones (Shorter, Friendlier, Formal,
-English) and **Settings**.
+**Clipboard**, **Fix mistakes** (only where the Fix button works) and **Settings**.
 
-**Rewrite** sends the selection, or else the text within 1,000 characters of the caret as Fix
-mistakes reads it, to the paired computer, where OpenCode rewrites it for grammar, spelling and
-clarity in the same language and tone, with Global mode's OpenCode model and instructions. The
-text goes to the computer and from there to whatever model OpenCode uses, which may be a cloud
-model; it leaves the phone only on the tap. The strip says Rewriting while you can keep typing,
-and the answer replaces the text in one edit only if the field hasn't changed meanwhile;
-otherwise it says so and leaves the text alone. **Undo rewrite** on the strip puts it back. The
-computer needs OpenCode running; Hex never starts it. A tone rewrites the same text shorter,
-friendlier, more formal, or into English.
-
-**Reply** reads the chat in the app in front through the floating button's accessibility service
-(which has to be on; the strip says so otherwise), only on the tap and never kept: text on the right
-is yours, on the left theirs, leaving out the title bar, times and dates, up to the last 15 lines.
-Those lines and what you typed go to the paired computer, which drafts up to three replies with
-OpenCode; they show as chips on the strip, and a tap puts one in place of the field's text. They go
-once the field changes.
-
-**Selection.** A selection puts **Cut**, **Copy**, **Rewrite** and **English** on the strip in the
-suggestions' place (the last two with a computer paired). Hold shift and slide on space to select
+**Selection.** A selection puts **Cut** and **Copy** on the strip in the suggestions' place. Hold shift and slide on space to select
 as the caret moves. **Undo and redo**: swipe two fingers left on the keys to undo, right to redo, a
-word with its space, a run of deletes, or one larger edit (a pick, a dictation, a paste, a rewrite)
+word with its space, a run of deletes, or one larger edit (a pick, a dictation, a paste, the Fix button's fixes)
 at a time. Hex keeps the steps itself, so they work in any field; a password field keeps none, and
 sending a message forgets them.
 
@@ -116,11 +96,9 @@ the computer is forgotten.
 "bhej do") after a pause or a sentence's end, and Hex types the rest and presses the field's send
 key. Only where the enter key sends or goes, never in a password field.
 
-**Editing by voice.** End a dictation with "scratch that" to take it back (said alone, it takes back
-the one before), or with "make it shorter", "make it friendlier", "make it formal", "translate to
-English" or "fix the grammar" to have the paired computer rewrite what you said that way before it
-goes in. As with "send it", the command must follow a pause or a sentence's end, so "can you make it
-shorter" stays text.
+**Scratch that.** End a dictation with "scratch that" to take it back (said alone, it takes back
+the one before). As with "send it", it must follow a pause or a sentence's end, so "I'll delete
+that tomorrow" stays text.
 
 **Fields that turn off suggestions** (search boxes, some chat apps) still get the strip:
 suggestions, emoji and corrections show as anywhere, and tapping a word still offers its fixes. Only

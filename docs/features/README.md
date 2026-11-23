@@ -3050,30 +3050,13 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   their long press, keeps its accents; every page one row taller, letter coordinates unchanged
 │   (PeriodAndNumberRowTest; unit tests only, no device run)
 ├── Strip's grid -> menu in place of the strip and keys: Clipboard, Fix mistakes (only where
-│   the Fix button works), Rewrite (a computer paired, not a password field), Settings (seen on
-│   a Pixel emulator)
-├── Grid menu › Rewrite -> the selection, else 1,000 characters each side of the caret, sent
-│   to the paired computer's `POST /phone/v1/rewrite` and rewritten by OpenCode with Global
-│   mode's model (text leaves the phone, and maybe the computer, only on the tap)
-│   ├── The field unchanged when the answer comes -> one edit; Undo rewrite puts it back
-│   ├── The field changed, or another field -> left alone, the strip says so
-│   ├── OpenCode not running, a timeout (30 s at most) or a failure -> a short note, no edit
-│   └── Proof limits: RewriteTest and the route test with a fake rewrite (phone::rewrite);
-│       no device run and no real OpenCode request
-├── Grid menu › a tone (Shorter, Friendlier, Formal, English) -> Rewrite with that `style`
-│   (route tests; no device run, no real OpenCode request)
-├── Grid menu › Reply -> the chat in the app in front, read through the floating button's
-│   accessibility service (right is yours), with the typed text to `POST /phone/v1/replies`;
-│   up to three replies as strip chips, a tap replaces the field's text
-│   ├── Floating button off -> the strip says to turn it on; no chat -> "No chat on screen"
-│   └── Proof limits: ChatScreenTest, SelectionTest, the route test with a fake answer; no
-│       device run, no real chat app read, no real OpenCode request
-├── A dictation ending "scratch that" or "make it shorter" (and other tones) -> taken back, or
-│   rewritten with that tone (SpokenSendTest; unit tests only, no device run)
+│   the Fix button works), Settings (seen on a Pixel emulator)
+├── A dictation ending "scratch that" -> taken back, or the one before when said alone
+│   (SpokenSendTest; unit tests only, no device run)
 ├── Two-finger swipe left / right on the keys -> undo / redo a word, a run of deletes, or one
 │   larger edit, kept by Hex in any field; none in password fields; sending forgets them
 │   (UndoTest; seen on a Pixel emulator)
-├── A selection -> Cut, Copy, Rewrite, English on the strip; shift held while sliding on space
+├── A selection -> Cut and Copy on the strip; shift held while sliding on space
 │   selects (SelectionTest; Cut seen on a Pixel emulator, the shift slide unit-tested only)
 ├── A sum before the caret (45*12) -> its answer as a chip that replaces it; an amount and a
 │   space (250 usd, 8 km, 30°c) -> its conversion in brackets, money at fixed rates for now
@@ -3143,8 +3126,10 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Paired computer -> Global's one-word text replacements as shortcuts too, fetched
 │   hourly (`GET /phone/v1/replacements`); yours win; a capitals-only one becomes your
 │   word; Forget (Computer) clears them (ReplacementsTest; unit tests only, no device run)
-├── A recording that never heard a voice (room, fan, a click) -> not sent, "No speech";
-│   hands-free gives up after 5 s without one (SpeechEndTest; unit tests only, no device run)
+├── A recording that never heard a voice (room, fan, a click) -> not sent, "No speech"
+│   (VoiceHeardTest; unit tests only, no device run)
+├── Tap the mic -> records until the mic is tapped again (or a held mic is let go); a pause
+│   never ends it; only the 16 MiB upload limit (about 8.7 minutes) sends it by itself
 ├── Dictate -> the app in front and the layout's language go with the recording; the
 │   computer applies the mode for that app, else Global (docs/phone-dictation.md;
 │   OriginTest, `phone::origin` tests; no device run)

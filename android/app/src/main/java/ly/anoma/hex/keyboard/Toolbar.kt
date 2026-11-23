@@ -18,7 +18,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import ly.anoma.hex.R
-import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
@@ -39,7 +38,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         const val CHIP_CHROME = 12f + 14f + 20.2f + 8.2f
         const val PIECE_ICON = 16f
         const val PIECE_TEXT_WIDTH = 150f
-        const val REPLY_TEXT_WIDTH = 260f
         const val EMOJI = 21f
         const val EMOJI_SLOT = 46f
         const val NOTE_MS = 3_000L
@@ -89,7 +87,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val shot = ImageView(context)
     private var chipOffer: ChipOffer? = null
     private val noteText = TextView(context)
-    /** The selection's Cut, Copy and rewrites, or a chip for what was just typed ([StripAction]). */
+    /** The selection's Cut and Copy, or a chip for what was just typed ([StripAction]). */
     private val actionScroll = HorizontalScrollView(context)
     private val actionRow = LinearLayout(context)
     private var actions = emptyList<StripAction>()
@@ -107,7 +105,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
 
     // The mic: a tap starts and a second tap finishes; a hold of 350 ms is push to talk, finishing on lift.
     private var held = false
-    private val hold = Runnable { if (mic.isPressed && phase == DictationPhase.Idle) held = ime.dictation.start(stopsItself = false) }
+    private val hold = Runnable { if (mic.isPressed && phase == DictationPhase.Idle) held = ime.dictation.start() }
 
     init {
         // Everything centres on the line Gboard's toolbar icons sit on, a little above the middle.
@@ -371,44 +369,33 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         undoOffer = offer
         undoText.setText(when (offer) {
             UndoOffer.Fixes -> R.string.keyboard_undo_fixes
-            UndoOffer.Rewrite -> R.string.keyboard_undo_rewrite
             else -> R.string.keyboard_undo_dictation
         })
-        // A new offer is newer than any note (Rewriting), which would hide it.
+        // A new offer is newer than any note, which would hide it.
         if (offer != null) { removeCallbacks(clearNote); note = null }
         update()
     }
 
     fun actions(list: List<StripAction>) {
-        actions = list.filter { it !is StripAction.Rewrite || ime.rewriteShown }
+        actions = list
         actionRow.removeAllViews()
         for (action in actions) {
             val label = when (action) {
                 StripAction.Cut -> context.getString(R.string.keyboard_cut)
                 StripAction.Copy -> context.getString(R.string.keyboard_copy)
-                is StripAction.Rewrite -> context.getString(if (action.style == HexClient.Style.English) R.string.keyboard_english else R.string.keyboard_rewrite)
                 is StripAction.Insert -> action.label
-                is StripAction.Reply -> action.text
             }
             val view = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isFocusable = true
                 background = pressable(color(R.color.kb_key), false, pill / 2f)
                 setPadding(px(14f), 0, px(14f), 0)
-                if (action is StripAction.Rewrite && action.style == HexClient.Style.Fix) {
-                    addView(ImageView(context).apply {
-                        setImageResource(R.drawable.ic_rewrite); imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
-                        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-                    }, LinearLayout.LayoutParams(px(PIECE_ICON), px(PIECE_ICON)).apply { marginEnd = px(6f) })
-                }
                 addView(TextView(context).apply {
                     text(this, 15f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END; text = label
-                    maxWidth = px(if (action is StripAction.Reply) REPLY_TEXT_WIDTH else PIECE_TEXT_WIDTH)
+                    maxWidth = px(PIECE_TEXT_WIDTH)
                 })
                 contentDescription = label
-                setOnClickListener {
-                    if (action is StripAction.Rewrite) ime.rewrite(action.style) else ime.engine.act(action)
-                }
+                setOnClickListener { ime.engine.act(action) }
             }
             actionRow.addView(view, LinearLayout.LayoutParams(-2, pill).apply { marginStart = px(3f); marginEnd = px(3f) })
         }

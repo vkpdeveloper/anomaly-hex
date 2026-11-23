@@ -39,7 +39,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import ly.anoma.hex.MainActivity
 import ly.anoma.hex.R
-import ly.anoma.hex.keyboard.SpeechEnd
+import ly.anoma.hex.keyboard.VoiceHeard
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.HexError
 import ly.anoma.hex.relay.Recorder
@@ -108,7 +108,7 @@ class ButtonService : AccessibilityService() {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var recorder: Recorder? = null
-    private var speech: SpeechEnd? = null
+    private var speech: VoiceHeard? = null
     private var settling = false
     /** Whether a text field had focus at the last look. */
     private var typing = false
@@ -134,7 +134,6 @@ class ButtonService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
-        ChatScreen.service = this
         prefs = ButtonPreferences(this)
         // Turned on in Accessibility counts as turned on in Hex.
         prefs.on = true
@@ -176,7 +175,6 @@ class ButtonService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onUnbind(intent: Intent?): Boolean {
-        if (ChatScreen.service === this) ChatScreen.service = null
         // Turned off in Accessibility counts as turned off in Hex.
         if (::prefs.isInitialized) {
             prefs.prefs.unregisterOnSharedPreferenceChangeListener(changed)
@@ -186,7 +184,6 @@ class ButtonService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        if (ChatScreen.service === this) ChatScreen.service = null
         main.removeCallbacks(settle)
         main.removeCallbacks(clearMessage)
         recorder?.cancel()
@@ -272,15 +269,15 @@ class ButtonService : AccessibilityService() {
         }
         if (store.computer == null) return message(HexError.NotPaired.message.orEmpty())
         lateinit var next: Recorder
-        val end = SpeechEnd()
+        val voice = VoiceHeard()
         next = Recorder(
-            onLevel = { peak -> main.post { if (recorder === next) { end.feed(peak); bubble.level(peak) } } },
+            onLevel = { peak -> main.post { if (recorder === next) { voice.feed(peak); bubble.level(peak) } } },
             // At the computer's limit: send what there is rather than lose it.
             onFull = { main.post { if (recorder === next) stopAndSend() } },
         )
         if (!next.start()) return message("Microphone is busy")
         recorder = next
-        speech = end
+        speech = voice
         bubble.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         bubble.show(BubbleView.Mode.RECORDING)
         // Have the route ready by the time speaking ends.

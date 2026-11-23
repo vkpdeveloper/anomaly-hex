@@ -36,16 +36,10 @@ internal interface KeyboardSurface {
     fun actions(list: List<StripAction>) {}
 }
 
-internal enum class UndoOffer { Dictation, Fixes, Rewrite }
+internal enum class UndoOffer { Dictation, Fixes }
 
 /** The field's text around the caret for the fix button: [text] starts at [start] in the field. */
 internal data class FieldText(val text: String, val start: Int, val selStart: Int, val selEnd: Int)
-
-/** What Rewrite sends: [field]'s text from [from] to [to], the selection or else all of it, without the
- * spaces at either end. */
-internal data class RewriteSpan(val field: FieldText, val from: Int, val to: Int) {
-    val text get() = field.text.substring(from, to)
-}
 
 /** Keys in, text out: the current word, autocorrection and its undo, spaces, shift and the key pages.
  * It talks to the editor only through [KeyboardTextTarget] and to the views through [KeyboardSurface]. */
@@ -179,12 +173,10 @@ internal class KeyboardEngine(
     private var tapped: Tapped? = null
     // Undo dictation, as iPhone Hex's: the dictation just inserted and the text after it then, offered
     // back until the next edit, 12 s, or the cursor leaving its end, so the chip never does nothing.
-    // Undo fixes and Undo rewrite are offered the same way, and work while the field still reads as the
-    // fixes or the rewrite left it.
+    // Undo fixes is offered the same way, and works while the field still reads as the fixes left it.
     private sealed interface Offer
     private data class Dictated(val text: String, val after: String) : Offer
-    private class Fixed(val field: FieldText, val fixes: List<Fix>, val result: String,
-                        val kind: UndoOffer = UndoOffer.Fixes) : Offer
+    private class Fixed(val field: FieldText, val fixes: List<Fix>, val result: String) : Offer
     private var offer: Offer? = null
     private val dropDictation = Runnable { offerUndo(null) }
     private var pendingChip: Runnable? = null
@@ -269,7 +261,6 @@ internal class KeyboardEngine(
         symbols = numpad
         more = false; symbolTyped = false; shift.reset()
         selStart = attribute.initialSelStart; selEnd = attribute.initialSelEnd
-        replies = emptyList()
         refreshCaps(force = true)
     }
 
@@ -845,13 +836,6 @@ internal class KeyboardEngine(
     }
 
     private var actionsShown = emptyList<StripAction>()
-    /** Replies drafted for the chat on screen, offered while the field still holds [repliesFor]. */
-    private var replies = emptyList<String>()
-    private var repliesFor: String? = null
-    fun offerReplies(list: List<String>) {
-        replies = list; repliesFor = target.all()?.text
-        offerActions()
-    }
     private var snippetsStored: String? = null
     private var snippetList = Snippets.starter
     /** Your text shortcuts, read again only when the setting changes. */
@@ -867,7 +851,6 @@ internal class KeyboardEngine(
         val list = when {
             secure || !target.connected -> emptyList()
             selStart >= 0 && selStart != selEnd -> StripAction.selection
-            replies.isNotEmpty() && target.all()?.text == repliesFor -> replies.map { StripAction.Reply(it) }
             numpad -> emptyList()
             else -> target.before(QuickMath.READ)?.let { listOfNotNull(QuickMath.offer(it)) + Snippets.offer(it, snippets()) + freeTimes(it) }
                 .orEmpty().take(3)
@@ -877,7 +860,7 @@ internal class KeyboardEngine(
         surface?.actions(list)
     }
 
-    /** A chip on the strip was tapped; Rewrite's are the keyboard's (HexKeyboard.rewrite). */
+    /** A chip on the strip was tapped. */
     fun act(action: StripAction) {
         if (!target.connected) return
         edited(); resetTyping(); clearSpaces()
@@ -902,17 +885,7 @@ internal class KeyboardEngine(
                     }
                 } finally { target.endBatch() }
             }
-            is StripAction.Reply -> {
-                val length = target.all()?.text?.length
-                target.beginBatch()
-                try {
-                    if (length != null) { target.setSelection(length, length); target.deleteBefore(length) }
-                    target.commit(action.text)
-                } finally { target.endBatch() }
-            }
-            is StripAction.Rewrite -> return
         }
-        replies = emptyList()
         surface?.suggestions(emptyList()); refreshCaps()
     }
 
@@ -933,27 +906,22 @@ internal class KeyboardEngine(
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
      * the capital Whisper gave it ([SpokenText.continuing], [language] as dictated or "en" translated).
      * With Say "send it" to send on, a dictation ending in it presses the field's send key ([SpokenSend]).
-     * One ending in a voice edit ([SpokenEdit]) acts on it: "scratch that" takes it back (or the dictation
-     * before, when it is all that was said), and a tone's command returns the tone to rewrite the text in. */
-    fun insertDictation(text: String, language: String?): HexClient.Style? {
-        if (!target.connected) return null
+     * One ending in "scratch that" ([SpokenEdit]) takes it back, or the dictation before when it is all
+     * that was said. */
+    fun insertDictation(text: String, language: String?) {
+        if (!target.connected) return
         val send = spokenSendAction()
         val body = if (send != null) SpokenSend.strip(text) else null
         if (send != null && body != null) {
             // Sent text can't be taken back, so no undo; nothing is sent when the text didn't go in.
             if (body.isEmpty() || insertSpoken(body, language, offer = false)) target.performEditorAction(send)
-            return null
+            return
         }
-        val edit = if (secure) null else SpokenEdit.read(text)
-        when (val action = edit?.action) {
-            null -> insertSpoken(text, language, offer = true)
-            SpokenEdit.Action.Scratch -> if (edit.body.isEmpty() && offer is Dictated) undo()
-            is SpokenEdit.Action.Rewrite -> {
-                if (edit.body.isNotEmpty() && !insertSpoken(edit.body, language, offer = true)) return null
-                return action.style
-            }
+        val scratched = if (secure) null else SpokenEdit.scratched(text)
+        when {
+            scratched == null -> insertSpoken(text, language, offer = true)
+            scratched.isEmpty() && offer is Dictated -> undo()
         }
-        return null
     }
     // The send key a dictation may press: the enter key's own action when it sends or goes, never in a password field.
     private fun spokenSendAction(): Int? {
@@ -994,8 +962,7 @@ internal class KeyboardEngine(
                 }
                 edited(); resetTyping(); clearSpaces()
                 rewrite(now, back)
-                // A rewrite's text isn't a word for the fixer to leave alone.
-                return if (o.kind == UndoOffer.Fixes) o.fixes.map { it.original } else emptyList()
+                return o.fixes.map { it.original }
             }
         }
         return emptyList()
@@ -1017,28 +984,6 @@ internal class KeyboardEngine(
         rewrite(field, fixes)
         surface?.suggestions(emptyList())
         offerUndo(Fixed(field, fixes, Tinyfix.apply(field.text, fixes)))
-        return true
-    }
-
-    /** What Rewrite sends, or null where it mustn't read or there is nothing but spaces. */
-    fun rewriteSpan(): RewriteSpan? {
-        val field = fieldText() ?: return null
-        val selected = minOf(field.selStart, field.selEnd) - field.start until maxOf(field.selStart, field.selEnd) - field.start
-        val range = if (selected.isEmpty()) field.text.indices else selected
-        val from = range.firstOrNull { !field.text[it].isWhitespace() } ?: return null
-        val to = range.last { !field.text[it].isWhitespace() } + 1
-        return RewriteSpan(field, from, to)
-    }
-
-    /** Puts [rewritten] in place of [span] in one edit, or nothing if the field has changed since it was
-     * read; the rewritten text stays selected when it was a selection. Offers Undo rewrite. */
-    fun applyRewrite(span: RewriteSpan, rewritten: String): Boolean {
-        if (fieldText() != span.field) return false
-        val edit = listOf(Fix(span.from, span.to, span.text, rewritten))
-        edited(); resetTyping(); clearSpaces()
-        rewrite(span.field, edit)
-        surface?.suggestions(emptyList())
-        offerUndo(Fixed(span.field, edit, Tinyfix.apply(span.field.text, edit), UndoOffer.Rewrite))
         return true
     }
 
@@ -1076,7 +1021,7 @@ internal class KeyboardEngine(
         if (next != null) main.postDelayed(dropDictation, UNDO_MS)
         if (shown || next != null) surface?.undo(when (next) {
             is Dictated -> UndoOffer.Dictation
-            is Fixed -> next.kind
+            is Fixed -> UndoOffer.Fixes
             null -> null
         })
     }

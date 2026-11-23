@@ -6,7 +6,7 @@ internal data class FieldState(val text: String, val selStart: Int, val selEnd: 
 /** Undo and redo for what the keyboard typed, kept by Hex rather than the app, so they work in any field
  * (a two-finger swipe on the keys, left to undo and right to redo). A step is a word with the space or
  * mark after it, a run of deletes, or one larger edit: a pick, an autocorrection, a dictation, a paste,
- * a rewrite. [checkpoint] keeps the field as it was before each step; undo puts that back with the
+ * the fix button's fixes. [checkpoint] keeps the field as it was before each step; undo puts that back with the
  * smallest edit that does it, so the rest of the text, and its formatting, is left alone. Text the app
  * changed itself is a step too. A field too long to read whole ([FieldState]) keeps no history. */
 internal class EditHistory(private val target: KeyboardTextTarget) {
