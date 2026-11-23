@@ -121,6 +121,53 @@ class TouchOffsetsTest {
         assertTrue(again.offset('e').x > .1)
     }
 
+    /** Taps of 'e' scattered by [wide] and of 'k' by [tight], enough of each for a spread. */
+    private fun uneven(wide: Double = .3, tight: Double = .08): TouchOffsets {
+        val touch = TouchOffsets()
+        val random = Random(11)
+        repeat(80) {
+            for ((c, sd) in listOf('e' to wide, 'k' to tight)) {
+                val p = grid.centres.getValue(c)
+                touch.learn(c.toString(), listOf(KeyPoint(p.x + random.nextGaussian() * sd * grid.pitchX, p.y + random.nextGaussian() * sd * grid.pitchY)), grid)
+            }
+        }
+        return touch
+    }
+
+    @Test fun anUnsteadyKeyIsTrustedLessThanASteadyOne() {
+        val touch = uneven()
+        assertTrue("${touch.spread('e')} ${touch.spread('k')}", touch.spread('e') > 1.1 && touch.spread('k') < .9)
+        assertEquals(1.0, touch.spread('q'), 0.0)
+    }
+
+    @Test fun aSpreadChangesWhatATapBetweenKeysReads() {
+        val decoder = SpatialDecoder(model)
+        val e = grid.centres.getValue('e'); val r = grid.centres.getValue('r')
+        // Halfway between an unsteady key (e) and its steady neighbour r: the unsteady one claims the tap.
+        val touch = TouchOffsets()
+        val random = Random(12)
+        repeat(80) {
+            for ((c, sd) in listOf('e' to .3, 'r' to .08)) {
+                val p = grid.centres.getValue(c)
+                touch.learn(c.toString(), listOf(KeyPoint(p.x + random.nextGaussian() * sd * grid.pitchX, p.y + random.nextGaussian() * sd * grid.pitchY)), grid)
+            }
+        }
+        val x = (e.x + r.x) / 2; val y = (e.y + r.y) / 2
+        val plain = decoder.score(grid, x, y)
+        val aware = decoder.score(touch.personalised(grid), x, y)
+        val code = { c: Char -> model.code(c) }
+        val gap = { t: SpatialDecoder.Tap -> t.cost[code('r')] - t.cost[code('e')] }
+        assertTrue("${gap(plain)} ${gap(aware)}", gap(aware) > gap(plain) + .05)
+    }
+
+    @Test fun aTouchFileFromBeforeSpreadStillLoads() {
+        val touch = TouchOffsets().also { it.read("hex-touch 1\ne\t40.0\t8.0\t6.0\nk\t30.0\t3.0\t3.0\n") }
+        assertTrue(touch.offset('e').x > .1)
+        assertEquals(1.0, touch.spread('e'), 0.0)
+        val again = TouchOffsets().also { it.read(uneven().write()) }
+        assertEquals(uneven().spread('e'), again.spread('e'), 1e-9)
+    }
+
     @Test fun forgettingWipesEverything() {
         val touch = trained()
         val before = touch.version

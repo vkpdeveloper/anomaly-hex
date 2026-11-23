@@ -13,7 +13,9 @@ internal data class KeyRect(val left: Double, val top: Double, val right: Double
  * is never read as a missed space. */
 internal class KeyGrid @JvmOverloads constructor(val centres: Map<Char, KeyPoint>, val pitchX: Double, val pitchY: Double, val space: KeyRect? = null,
                        /** Where taps for each key are expected: its centre moved by your habitual miss ([TouchOffsets]). */
-                       val aimed: Map<Char, KeyPoint> = centres, val touchVersion: Int = 0) {
+                       val aimed: Map<Char, KeyPoint> = centres, val touchVersion: Int = 0,
+                       /** How spread out each key's taps are against the other keys' ([TouchOffsets.spread]); 1 where unknown. */
+                       val scales: Map<Char, Double> = emptyMap()) {
     val bottomY = centres.values.maxOf { it.y }
     // R1's reference pitch is 39.5 × 56. Keep its vertical spread and its 6-nat split
     // prior on that layout. On shorter rows the travel to space is shorter: scale its
@@ -28,6 +30,9 @@ internal class SpatialDecoder(val model: TypingModel) {
     @Volatile var personal: PersonalWords? = null
     /** What you've written (`LearnedWords`): its counts mix into the model's costs. */
     @Volatile var learned: LearnedWords? = null
+    /** Your recurring slips (`TypoMemory`): a spelling no word has that you have fixed the same way often is fixed that way
+     * (an autocorrection you only let stand fills in where the decoder has no fix; a fix you made overrules it). */
+    @Volatile var typos: TypoMemory? = null
     /** For Hinglish, English's model: its words are English, never spellings of a Hindi word ("sheet" isn't
      * "shit" as "theek" is "thik"). Read in the background; until then Hindi spellings stay apart. */
     @Volatile var english: TypingModel? = null
@@ -66,13 +71,24 @@ internal class SpatialDecoder(val model: TypingModel) {
     private val spaceTapCost = if (model.language == "es") Double.POSITIVE_INFINITY else 5.0
     // A grid's keys as letter codes and where taps for them are aimed ([KeyGrid.aimed]), in its own
     // order: built once per grid, since a tap is scored against the same grid again and again.
-    private class Keys(val grid: KeyGrid, val codes: IntArray, val xs: DoubleArray, val ys: DoubleArray)
+    // [kernel] is each key's 1 / (2 scale^2) and [norm] its Gaussian's normaliser, 2 ln scale (both axes).
+    private class Keys(val grid: KeyGrid, val codes: IntArray, val xs: DoubleArray, val ys: DoubleArray,
+                       val kernel: DoubleArray, val norm: DoubleArray)
     @Volatile private var keys: Keys? = null
     private fun keysOf(grid: KeyGrid): Keys {
         keys?.let { if (it.grid === grid) return it }
         val entries = grid.aimed.entries.filter { model.code(it.key) != 0 }
+        val scale = DoubleArray(entries.size) { grid.scales[entries[it].key] ?: 1.0 }
         return Keys(grid, IntArray(entries.size) { model.code(entries[it].key) },
-            DoubleArray(entries.size) { entries[it].value.x }, DoubleArray(entries.size) { entries[it].value.y }).also { keys = it }
+            DoubleArray(entries.size) { entries[it].value.x }, DoubleArray(entries.size) { entries[it].value.y },
+            DoubleArray(entries.size) { .5 / (scale[it] * scale[it]) }, DoubleArray(entries.size) { 2 * Math.log(scale[it]) })
+            .also { keys = it }
+    }
+    /** The apostrophe key's tap: it lands exactly, so only an apostrophe was meant. */
+    fun apostropheTap(): Tap {
+        val costs = DoubleArray(model.alphabet + 1) { Double.POSITIVE_INFINITY }
+        if (model.apostrophe != 0) costs[model.apostrophe] = 0.0
+        return Tap(costs, if (model.apostrophe != 0) intArrayOf(model.apostrophe) else IntArray(0), false, 6.0)
     }
     fun score(grid: KeyGrid, x: Double, y: Double): Tap {
         val costs = DoubleArray(model.alphabet + 1) { Double.POSITIVE_INFINITY }
@@ -82,7 +98,7 @@ internal class SpatialDecoder(val model: TypingModel) {
         for (i in k.codes.indices) {
             val dx = (x - k.xs[i]) / sx
             val dy = (y - k.ys[i]) / sy
-            costs[k.codes[i]] = .5 * (dx * dx + dy * dy)
+            costs[k.codes[i]] = k.kernel[i] * (dx * dx + dy * dy) + k.norm[i]
         }
         val min = costs.min()
         // An accented letter also comes from its base letter's key, even when it has a key of its
@@ -230,10 +246,12 @@ internal class SpatialDecoder(val model: TypingModel) {
     fun decide(typed: String, taps: List<Tap>, previous: Int, swears: Boolean, beforePrevious: String? = null): Decision {
         val none = Decision(null, emptyList())
         if (typed.length !in 2..32 || taps.size != typed.length || model.neverSuggest.blocks(typed, swears, previous) ||
-            typed.any { model.code(it) == 0 || it == '\'' }) return none
+            typed.any { model.code(it) == 0 }) return none
         val literal = model.index(typed)
         val personal = personal?.takeIf { it.size > 0 }
         val yours = personal?.index(typed) ?: -1
+        val apostrophes = typed.count { it == '\'' }
+        if (apostrophes > 0 && !contraction(typed, apostrophes, literal, yours, personal)) return none
         val knownLiteral = literal >= 0 || model.known(typed) || yours >= 0
         // A rare word the books use, outside the model: what it costs by its count, not a known word's.
         val listed = if (literal < 0 && yours < 0) model.validCost(typed) else null
@@ -254,7 +272,7 @@ internal class SpatialDecoder(val model: TypingModel) {
             readings.add(Reading(model.text(w), spatial + lmWeight * mixedCost(previous, w, beforePrevious), model.frequencyCost(w)))
         if (personal != null) for ((w, spatial) in search(taps, 0, taps.size, 1, swears, previous, personal).sortedWith(spatialOrder).take(3))
             if (w != yours) readings.add(Reading(personal.text(w), spatial + lmWeight * personalCost(personal.text(w), previous, beforePrevious), (USER_WORD_COST * 8).toInt()))
-        if (taps.size >= 3) {
+        if (taps.size >= 3 && apostrophes == 0) {
             fun alone(f: Found) = model.length(f.word) > 1 || model.frequencyCost(f.word) < 56
             fun half(a: Int, b: Int, prev: Int) = search(taps, a, b, 0, swears, prev).sortedWith(spatialOrder)
                 .take(3).filter(::alone)
@@ -288,6 +306,8 @@ internal class SpatialDecoder(val model: TypingModel) {
                 }
             }
         }
+        // A word with an apostrophe stays one word with one: never "dog's" -> "dogs" or two words.
+        if (apostrophes > 0) readings.removeAll { r -> r.text.count { it == '\'' } != apostrophes }
         readings.sortWith(compareBy<Reading> { it.cost }.thenBy { it.text })
         val best = readings.firstOrNull()
         // A listed rare word takes a one-word fix as a spelling nobody knows does, but is split into
@@ -297,11 +317,20 @@ internal class SpatialDecoder(val model: TypingModel) {
         var replace = if (best != null && cost - best.cost >= margin) best.text else null
         var shown = readings.asSequence().filter { it.cost < cost && !it.text.equals(typed, ignoreCase = true) }
             .distinctBy { it.text.lowercase() }.toMutableList()
+        // Your own slip, fixed the way you always fix it, whatever the decoder makes of the taps.
+        val habit = if (knownLiteral) null else typos?.fix(typed)?.takeIf {
+            (it.own || replace == null) && !model.neverSuggest.blocks(it.word.lowercase(), swears, previous)
+        }?.word
+        if (habit != null) {
+            replace = habit
+            shown.removeAll { it.text.equals(habit, ignoreCase = true) }
+            shown.add(0, Reading(habit, cost - 1.0, (USER_WORD_COST * 8).toInt()))
+        }
         // Nothing above read a spelling that is no word at all: a missed space may still explain it,
         // with a slip in the second word or three or more words run together (iOS #2244). Never a
         // known spelling or a likelier reading that only missed the margin; not German, whose model
         // is lowercase and whose nouns take their capital in the one-word path.
-        if (replace == null && !knownLiteral && model.language != "de" && typed.length >= 5) {
+        if (replace == null && !knownLiteral && model.language != "de" && typed.length >= 5 && apostrophes == 0) {
             missedSpaceReading(taps, typed, previous, swears, cost)?.let { fallback ->
                 val likeliest = shown.firstOrNull()
                 if (likeliest == null || fallback.cost <= likeliest.cost || likeliest.text.equals(fallback.text, ignoreCase = true)) {
@@ -313,6 +342,15 @@ internal class SpatialDecoder(val model: TypingModel) {
         }
         if (best == null && replace == null) return none
         return Decision(replace, shown.take(3))
+    }
+
+    // Whether a word typed with an apostrophe may be corrected: English's one inside the word ("ler's"),
+    // not a possessive of a word that is one ("Jeff's", "the dog's") nor one of your own.
+    private fun contraction(typed: String, apostrophes: Int, literal: Int, yours: Int, personal: PersonalWords?): Boolean {
+        if (model.spelling != "en" || apostrophes != 1 || typed.first() == '\'' || typed.last() == '\'') return false
+        if (literal >= 0 || yours >= 0) return true
+        val stem = typed.substringBefore('\'')
+        return !(typed.endsWith("'s") && (model.index(stem) >= 0 || (personal?.index(stem) ?: -1) >= 0))
     }
 
     // What a missed space can still make of taps nothing else read (iOS missedSpaceReading): the

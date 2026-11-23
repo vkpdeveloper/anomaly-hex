@@ -101,6 +101,7 @@ internal class TypingPreferences(context: Context) {
     fun forgetLearned(files: java.io.File) {
         java.io.File(files, LearnedWords.FILE).delete()
         java.io.File(files, TouchOffsets.FILE).delete()
+        java.io.File(files, TypoMemory.FILE).delete()
         java.io.File(files, TypingStats.FILE).delete()
         java.io.File(files, Forgotten.FILE).delete()
         java.io.File(files, ly.anoma.hex.keyboard.PendingCorrections.FILE).delete()
@@ -112,11 +113,11 @@ internal class TypingPreferences(context: Context) {
         val bytes = (language + "\u0000" + original.lowercase() + "\u0000" + replacement.lowercase()).toByteArray()
         return java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes))
     }
+    /** Whether the keyboard has been told once that [original] shouldn't become [replacement]: only that swap is off. */
     fun blocked(language: String, original: String, replacement: String) =
-        prefs.getInt(pair(language, original, replacement), 0) >= 2
+        prefs.getInt(pair(language, original, replacement), 0) >= 1
     fun undo(language: String, original: String, replacement: String) {
-        val key = pair(language, original, replacement)
-        prefs.edit().putInt(key, (prefs.getInt(key, 0) + 1).coerceAtMost(2)).apply()
+        prefs.edit().putInt(pair(language, original, replacement), 1).apply()
     }
     companion object {
         const val SUGGEST_SWEAR_WORDS = "suggestSwearWords"

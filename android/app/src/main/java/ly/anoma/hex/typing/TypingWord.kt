@@ -29,6 +29,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private var touched: Touched? = null
     /** The taps of the last word that ended, once; null when its letters weren't all tapped. */
     fun takeTouched(): Touched? = touched.also { touched = null }
+    private var ended: String? = null
+    /** The letters of the last word that ended as the keys typed them (lowercase), once; null for a word put in whole. */
+    fun takeTyped(): String? = ended.also { ended = null }
     private var decision: SpatialDecoder.Decision? = null
     // The text before the word, the word before it (lowercase, null after punctuation) and
     // whether the word starts a sentence.
@@ -56,6 +59,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     fun reset(before: String = "") {
         val grid = touchGrid
         touched = if (grid != null && token.isNotEmpty() && !literalOnly && touches.size == token.length) Touched(token, ArrayList(touches), grid) else null
+        ended = token.takeIf { it.isNotEmpty() && !literalOnly }?.lowercase()
         token = ""; taps.clear(); touches.clear(); decision = null; literalOnly = false
         this.before = before
         previousText = previousWord(before).takeIf { it.isNotEmpty() }
@@ -190,6 +194,14 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
             taps.add(decoder.score(grid, x, y)); touches.add(KeyPoint(x, y)); touchGrid = grid
         }
     }
+    /** Whether an apostrophe typed now is part of this word: English's own, once, after a letter ("don't"). */
+    fun joinsApostrophe() = model.spelling == "en" && spatial && !literalOnly && token.isNotEmpty() && token.last().isLetter() &&
+        token.none { it == '\'' || it == '\u2019' } && taps.size == token.length && token.length < MAX_LENGTH - 1
+    /** The apostrophe key typed inside a word, tapped exactly, so the letters after it are still read with the word. */
+    fun apostrophe(text: String) {
+        token += text; decision = null
+        taps.add(decoder.apostropheTap()); touches.add(KeyPoint(0.0, 0.0))
+    }
     fun explicit(text: String) {
         token += text; taps.clear(); touches.clear(); decision = null; literalOnly = true
     }
@@ -212,7 +224,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
             }.distinct()
     // How you write a model word when you give it capitals it doesn't have ("hex" -> "Hex").
     private fun learnedSpelling(word: String) = decoder.learned?.spelling(word)?.takeIf { it != word && it.lowercase() == word }
-    private fun decision() = decision ?: decoder.decide(token.lowercase(), taps, previous, suggestSwearWords, beforePreviousText).also { decision = it }
+    private fun decision() = decision ?: decoder.decide(token.lowercase().replace('\u2019', '\''), taps, previous, suggestSwearWords, beforePreviousText).also { decision = it }
     // Your own words are always yours to offer, as iOS offers UILexicon terms.
     private fun blocked(spelling: String) = model.neverSuggest.blocks(spelling.lowercase(), suggestSwearWords, previous) &&
         decoder.personal?.owns(spelling) != true
@@ -222,8 +234,11 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * border types e). [near] gives each neighbouring letter's distance from the touch to its touch
      * area, in dp (iOS's points), only those under [REACH]; [keys] is every letter on the keyboard,
      * so a letter without a key of its own counts as its base letter's (é as e). Only while
-     * autocorrect is on in an ordinary text field, never with caps lock; the keyboard decides that. */
-    fun likelierKey(before: String, hit: Char, near: Map<Char, Double>, keys: Collection<Char>): Char {
+     * autocorrect is on in an ordinary text field, never with caps lock; the keyboard decides that.
+     * With [touch], a miss counts for more or less by how you tap each key: a neighbour you hit cleanly
+     * is dearer to reach for, one you often miss is cheaper, and a touch beside a key you hit cleanly is
+     * likelier to have meant its neighbour ([TouchOffsets.spread]). */
+    fun likelierKey(before: String, hit: Char, near: Map<Char, Double>, keys: Collection<Char>, touch: TouchOffsets? = null): Char {
         if (near.isEmpty()) return hit
         val token = currentToken(before)
         if (token == null && before.lastOrNull()?.let { it.isLetterOrDigit() || it == '\'' } == true) return hit
@@ -241,9 +256,10 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         fun odds(c: Char) = model.code(c.lowercaseChar()).takeIf { it != 0 }?.let { kotlin.math.ln(mass[it] + total * 1e-4) }
         var best = hit
         var bestScore = odds(hit) ?: return hit
+        val own = touch?.spread(hit) ?: 1.0
         for ((c, distance) in near) {
             if (distance >= REACH) continue
-            val score = (odds(c) ?: continue) - ODDS_PER_DP * distance
+            val score = (odds(c) ?: continue) - ODDS_PER_DP * distance * own / (touch?.spread(c) ?: 1.0)
             if (score > bestScore) { best = c; bestScore = score }
         }
         return if (hit.isUpperCase()) best.uppercaseChar() else best

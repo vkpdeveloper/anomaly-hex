@@ -22,6 +22,7 @@ import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.typing.TouchOffsets
+import ly.anoma.hex.typing.TypoMemory
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
 import ly.anoma.hex.typing.TypingStats
@@ -59,6 +60,8 @@ internal class KeyboardEngine(
     private val learnedChanged: () -> Unit = {},
     /** Where your taps land on each key, learned from the words you finish under the same rules as [learned]. */
     val touch: TouchOffsets = TouchOffsets(),
+    /** The slips you fix the same way again and again, learned and kept under the same rules as [learned]. */
+    val typos: TypoMemory = TypoMemory(),
     /** Counts of what the strip and autocorrect did, kept under the same rules as [learned]; numbers, never text. */
     val stats: TypingStats = TypingStats(),
     /** The words you forgot from the strip: hidden from suggestions and never learned back from a slip. */
@@ -97,6 +100,8 @@ internal class KeyboardEngine(
         const val FIX_WINDOW = 1_000
         /** A pause this long in typing starts another undo step even mid-word. */
         const val STEP_GAP_MS = 2_000L
+        /** How much of the text before a word tells that two edits are at the same place. */
+        const val START_TAIL = 40
         /** A fixed dictation is read once the field has been still this long. */
         const val WATCH_PAUSE_MS = 1_000L
     }
@@ -239,8 +244,14 @@ internal class KeyboardEngine(
     private var unglided: Glided? = null
     /** What the last [learn] counted, at [anchor] (the text before the cursor then), so undoing the
      * autocorrection that put the word in takes it back. */
-    private class Counted(val anchor: String, val word: LearnedWords.Finished, val counts: Boolean, val touched: TypingWord.Touched?)
+    private class Counted(val anchor: String, val word: LearnedWords.Finished, val counts: Boolean, val touched: TypingWord.Touched?,
+                          val typed: String?, val typoWeight: Int)
     private var counted: Counted? = null
+    /** The last word that ended as typed and the text before it, so deleting it whole and typing another
+     * over it ([Redone]) is a fix of that slip. */
+    private class Ended(val word: String, val start: String)
+    private var ended: Ended? = null
+    private var redone: Ended? = null
     var secure = true
         private set
     // Email addresses are offered and learned in text fields that allow suggestions and learning; an
@@ -285,7 +296,7 @@ internal class KeyboardEngine(
             attribute.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS == 0
         addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
-        addressesLearned.clear(); typedHere = false; unglided = null; counted = null
+        addressesLearned.clear(); typedHere = false; unglided = null; counted = null; ended = null; redone = null
         if (!learnsCorrections()) dropWatch()
         resetTyping(); word = null; clearSpaces()
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
@@ -360,7 +371,7 @@ internal class KeyboardEngine(
     // A language's decoder with what you write and your own words, and for Hinglish English's model,
     // read in the background, which tells its Hindi words from English ones (SpatialDecoder.english).
     private fun prepared(decoder: SpatialDecoder) = decoder.also {
-        it.learned = learned; it.model.neverSuggest.hide(forgotten.all()); loadPersonal(it)
+        it.learned = learned; it.typos = typos; it.model.neverSuggest.hide(forgotten.all()); loadPersonal(it)
         if (it.model.language == Spoken.Hinglish.code) background.execute {
             it.english = try { loadDecoder(Spoken.English.code).model } catch (_: java.io.IOException) { null }
         }
@@ -402,6 +413,7 @@ internal class KeyboardEngine(
      * [sentenceStart] its capital teaches nothing, as in [LearnedWords.learn]. */
     private fun teach(word: String, sentenceStart: Boolean = false) {
         if (!learnHere) return
+        typos.forget(word)
         if (forgotten.remove(word)) { forgottenChanged(); for (d in models.values) d.model.neverSuggest.hide(forgotten.all()) }
         repeat(LearnedWords.WORD_USES) { learned.learn(word, null, sentenceStart) }
         personalWordsChanged(); learnedChanged()
@@ -423,22 +435,39 @@ internal class KeyboardEngine(
 
     /** The word that ends [b], the text before the cursor, is learned when [boundary] characters (a
      * space or mark that just went in after it, or none: the next glide, a held space, return) follow it. */
-    private fun learn(b: String, boundary: Int) {
+    private fun learn(b: String, boundary: Int, picked: Boolean = false) {
         if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         // `finished` reads a word a space or mark ended; with none yet, the one about to go in.
         val f = LearnedWords.finished(if (boundary == 0) "$b " else b) ?: return
         val touched = word?.takeTouched()?.takeIf { t -> TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid) }
         if (touched != null) learnedChanged()
+        val start = b.dropLast(boundary).dropLast(f.word.length)
+        val typed = word?.takeTyped()
+        val typoWeight = if (typed != null) learnTypo(typed, f.word, if (picked) TypoMemory.OWN else 1, f.sentenceStart) else 0
+        redone?.takeIf { sameStart(it.start, start) }?.let { learnTypo(it.word, f.word, TypoMemory.OWN, f.sentenceStart) }
+        redone = null
+        ended = if (typed != null && typed.equals(f.word, ignoreCase = true)) Ended(f.word, start) else null
         val missed = unglided?.takeIf { g -> b.dropLast(boundary).dropLast(f.word.length) == g.anchor &&
             g.readings.keys.none { it.equals(f.word, ignoreCase = true) } }
         unglided = null
         val counts = f.word !in forgotten
-        counted = Counted(b, f, counts, touched)
+        counted = Counted(b, f, counts, touched, typed, typoWeight)
         stats.words++
         if (!counts) return
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
         missed?.let { teach(f.word, f.sentenceStart) }
+    }
+    private fun sameStart(a: String, b: String) = a.takeLast(START_TAIL) == b.takeLast(START_TAIL)
+    /** [typed] was ended as [word]: a slip of yours, remembered when it is one and not a swap you undid before.
+     * Returns the weight learned (0 for none). */
+    private fun learnTypo(typed: String, word: String, weight: Int, sentenceStart: Boolean = false): Int {
+        val model = this.word?.decoder?.model ?: return 0
+        if (word.lowercase() in forgotten || feedback.blocked(model.language, typed, word)) return 0
+        // A sentence's capital isn't the word's: "The" is kept as "the", but "Debra" stays.
+        val lower = word.replaceFirstChar { it.lowercase() }
+        val spelled = if (sentenceStart && model.index(lower) >= 0) lower else word
+        return if (typos.learn(typed, spelled, weight)) weight.also { learnedChanged() } else 0
     }
     // The address that ends [b], the text before the cursor, once a space, comma, semicolon or line break
     // follows it or the field is left. A period may still be the address's own ("a@b.co" of "a@b.co.uk").
@@ -637,7 +666,7 @@ internal class KeyboardEngine(
     fun likelierLetter(hit: Char, near: Map<Char, Double>, keys: Collection<Char>): Char {
         val w = word ?: return hit
         if (near.isEmpty() || symbols || shift.locked || !w.spatial || !target.connected) return hit
-        return w.likelierKey(before(), hit, near, keys)
+        return w.likelierKey(before(), hit, near, keys, touch)
     }
     /** Shift as the keys show it: letters type capitals while it is on or held. */
     val uppercase get() = shift.uppercase
@@ -711,7 +740,7 @@ internal class KeyboardEngine(
             resetTyping()
             val b = before()
             if (holds) heldAnchor = b else pickedAnchor = b
-            learn(b, if (holds) 0 else 1)
+            learn(b, if (holds) 0 else 1, picked = true)
             taught?.let(::teach)
             showPredictions(b)
             inputDone()
@@ -753,6 +782,7 @@ internal class KeyboardEngine(
                 if (target.deleteAround(t.left.length, t.right.length) && target.commit(text) && learnHere) {
                     if (f != null && !text.equals(old, ignoreCase = true) && learned.unlearn(old, f.previous, f.beforePrevious)) personalWordsChanged()
                     if (learned.learn(text, f?.previous, f?.sentenceStart ?: false, f?.beforePrevious)) personalWordsChanged()
+                    learnTypo(old, text, TypoMemory.OWN, f?.sentenceStart ?: false)
                     learnedChanged()
                 }
             } finally { target.endBatch() }
@@ -828,6 +858,14 @@ internal class KeyboardEngine(
         if (value.none { it in SpaceRules.JOINERS || it.isWhitespace() }) takeHeldSpace(b)
         clearSpaces()
         val w = word
+        // An apostrophe inside an English word keeps it one word, so "ler's" is still read as the word it was meant for.
+        if ((value == "'" || value == "\u2019") && w != null && !symbols && canEndWord() && w.joinsApostrophe() &&
+            endsWith(prefix + w.token)) {
+            val start = if (expectedCaret >= 0) expectedCaret else minOf(selStart, selEnd)
+            expectedCaret = if (start >= 0) start + value.length else -1
+            if (target.commit(value)) { w.apostrophe(value); showSuggestions(w); inputDone() } else resetTyping()
+            return
+        }
         if (mark && w != null && !symbols && canEndWord()) {
             if (feedback.autocorrect && autocorrectHere && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
                 val fix = w.finish(value[0])
@@ -870,6 +908,7 @@ internal class KeyboardEngine(
             counted?.takeIf { it.anchor == anchor }?.let { c ->
                 val f = c.word
                 c.touched?.let { t -> touch.unlearn(f.word, t.points, t.grid) }
+                if (c.typed != null && c.typoWeight > 0) typos.unlearn(c.typed, f.word, c.typoWeight)
                 if (c.counts && learned.unlearn(f.word, f.previous, f.beforePrevious)) personalWordsChanged()
                 learnedChanged()
             }
@@ -878,6 +917,7 @@ internal class KeyboardEngine(
             if (learnHere) {
                 stats.undone++
                 feedback.undo(last.language, last.original, last.replacement)
+                typos.remove(last.original, last.replacement)
                 if (' ' !in last.original) teach(last.original)
             }
             val typed = last.original.substringAfterLast(' ')
@@ -895,6 +935,7 @@ internal class KeyboardEngine(
             val cluster = if (track || secure) 1 else DeleteSlide.lastCharacter(target.before(32).orEmpty())
             if (!(if (cluster > 1) target.deleteBefore(cluster) else target.deleteCodePointsBefore(1))) target.sendKey(KeyEvent.KEYCODE_DEL)
             if (track) { w!!.pop(); if (expectedCaret >= 0) expectedCaret-- } else resetTyping()
+            ended?.let { e -> if (sameStart(before(), e.start)) { redone = e; ended = null } }
         }
         if (w != null && w.token.isNotEmpty()) showSuggestions(w) else clearStrip()
     }

@@ -6,17 +6,30 @@ import kotlin.math.hypot
  * of key pitch (so it survives a size or orientation change), learned from the words you finish
  * (Gboard's spatial model personalization). The decoder aims each key at its centre plus this offset
  * ([personalised]). A key moves only after [MIN_WEIGHT] recent taps and never more than [MAX_OFFSET]
- * pitches; old taps decay, so it follows your grip and no long tap history can be rebuilt from it. */
+ * pitches; old taps decay, so it follows your grip and no long tap history can be rebuilt from it.
+ *
+ * Each key also keeps how spread out its taps are (a decayed variance about that mean). [spread] is the
+ * key's spread against the average of the keys that have one, from [MIN_SPREAD_WEIGHT] taps, held within
+ * [MIN_SPREAD]..[MAX_SPREAD]: a key hit cleanly is trusted more, one often missed less. Only the relative
+ * spread counts, so the balance between the taps and the word list stays as tuned. */
 internal class TouchOffsets {
-    private class Stat(var weight: Double = 0.0, var x: Double = 0.0, var y: Double = 0.0)
+    /** [moment] is the decayed sum of squared offsets over the [spreadWeight] taps that have counted for
+     * spread (fewer than [weight] for a file written before spread was kept). */
+    private class Stat(var weight: Double = 0.0, var x: Double = 0.0, var y: Double = 0.0,
+                       var spreadWeight: Double = 0.0, var moment: Double = 0.0)
     private val stats = HashMap<Char, Stat>()
     @Volatile private var offsets: Map<Char, KeyPoint> = emptyMap()
+    @Volatile private var spreads: Map<Char, Double> = emptyMap()
     /** Changes whenever [offset]s do, so a cached [KeyGrid] knows to be rebuilt. */
     @Volatile var version = 0
         private set
 
     /** [key]'s habitual miss, in pitches (zero until it is known). */
     fun offset(key: Char): KeyPoint = offsets[key.lowercaseChar()] ?: ZERO
+
+    /** How spread out [key]'s taps are against the other keys', 1 until known: below 1 a key you hit
+     * cleanly, above 1 one you often miss. */
+    fun spread(key: Char): Double = spreads[key.lowercaseChar()] ?: 1.0
 
     /** [grid] with each key aimed at its centre plus its offset, stamped with the [version] it reads. */
     fun personalised(grid: KeyGrid): KeyGrid {
@@ -25,12 +38,13 @@ internal class TouchOffsets {
         val stamp = version
         aimedLast?.let { if (it.source === grid && it.stamp == stamp) return it.result }
         val now = offsets
-        val result = if (now.isEmpty()) KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, grid.centres, stamp) else {
+        val scales = spreads
+        val result = if (now.isEmpty() && scales.isEmpty()) KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, grid.centres, stamp) else {
             val aimed = grid.centres.mapValues { (c, p) ->
                 val o = now[c] ?: return@mapValues p
                 KeyPoint(p.x + o.x * grid.pitchX, p.y + o.y * grid.pitchY)
             }
-            KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, aimed, stamp)
+            KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, aimed, stamp, scales)
         }
         aimedLast = Aimed(grid, stamp, result)
         return result
@@ -54,6 +68,7 @@ internal class TouchOffsets {
             if (hypot(dx, dy) > REACH) continue
             val s = stats.getOrPut(ch.lowercaseChar()) { Stat() }
             s.weight = s.weight * DECAY + 1; s.x = s.x * DECAY + dx; s.y = s.y * DECAY + dy
+            s.spreadWeight = s.spreadWeight * DECAY + 1; s.moment = s.moment * DECAY + dx * dx + dy * dy
             learned = true
         }
         if (learned) publish()
@@ -72,6 +87,7 @@ internal class TouchOffsets {
             if (hypot(dx, dy) > REACH) continue
             val s = stats[ch.lowercaseChar()] ?: continue
             s.weight = (s.weight - 1) / DECAY; s.x = (s.x - dx) / DECAY; s.y = (s.y - dy) / DECAY
+            s.spreadWeight = maxOf(0.0, (s.spreadWeight - 1) / DECAY); s.moment = maxOf(0.0, (s.moment - dx * dx - dy * dy) / DECAY)
             if (s.weight < 1e-9) stats.remove(ch.lowercaseChar())
             changed = true
         }
@@ -89,14 +105,34 @@ internal class TouchOffsets {
             next[c] = KeyPoint(x, y)
         }
         offsets = next
+        spreads = spreadsOf()
         version++
+    }
+
+    // Each key's spread (the root of its mean squared distance from its own mean tap, in pitches) against the
+    // average of those known, pulled toward 1 while it rests on few taps.
+    private fun spreadsOf(): Map<Char, Double> {
+        val known = HashMap<Char, Double>()
+        for ((c, s) in stats) {
+            if (s.spreadWeight < MIN_SPREAD_WEIGHT || s.weight <= 0) continue
+            val mx = s.x / s.weight; val my = s.y / s.weight
+            known[c] = Math.sqrt(maxOf(s.moment / s.spreadWeight - mx * mx - my * my, 0.0))
+        }
+        if (known.size < 2) return emptyMap()
+        val mean = known.values.average()
+        if (mean <= 1e-6) return emptyMap()
+        return known.mapValues { (c, sigma) ->
+            val trust = stats.getValue(c).spreadWeight.let { it / (it + SPREAD_SHRINK) }
+            Math.exp(Math.log(sigma / mean).coerceIn(-5.0, 5.0) * trust).coerceIn(MIN_SPREAD, MAX_SPREAD)
+        }
     }
 
     @Synchronized fun clear() { stats.clear(); publish() }
 
     @Synchronized fun write(): String = buildString {
         append(HEADER).append('\n')
-        for ((c, s) in stats) append(c).append('\t').append(s.weight).append('\t').append(s.x).append('\t').append(s.y).append('\n')
+        for ((c, s) in stats) append(c).append('\t').append(s.weight).append('\t').append(s.x).append('\t').append(s.y)
+            .append('\t').append(s.spreadWeight).append('\t').append(s.moment).append('\n')
     }
 
     @Synchronized fun read(text: String) {
@@ -105,11 +141,15 @@ internal class TouchOffsets {
         stats.clear()
         for (line in lines) {
             val f = line.split('\t')
-            if (f.size != 4 || f[0].length != 1) continue
+            // Four fields from before spread was kept: its spread starts over.
+            if ((f.size != 4 && f.size != 6) || f[0].length != 1) continue
             val w = f[1].toDoubleOrNull() ?: continue
             val x = f[2].toDoubleOrNull() ?: continue
             val y = f[3].toDoubleOrNull() ?: continue
-            if (w.isFinite() && x.isFinite() && y.isFinite() && w > 0) stats[f[0][0]] = Stat(minOf(w, LIMIT), x, y)
+            val sw = f.getOrNull(4)?.toDoubleOrNull() ?: 0.0
+            val m = f.getOrNull(5)?.toDoubleOrNull() ?: 0.0
+            if (w.isFinite() && x.isFinite() && y.isFinite() && w > 0 && sw.isFinite() && m.isFinite() && sw >= 0 && m >= 0)
+                stats[f[0][0]] = Stat(minOf(w, LIMIT), x, y, minOf(sw, LIMIT), m)
         }
         publish()
     }
@@ -124,6 +164,12 @@ internal class TouchOffsets {
         const val DECAY = .98
         const val MIN_WEIGHT = 8.0
         private const val SHRINK = 4.0
+        /** A key's spread counts after this many recent taps, and rests on them until [SPREAD_SHRINK] more come. */
+        const val MIN_SPREAD_WEIGHT = 12.0
+        private const val SPREAD_SHRINK = 12.0
+        /** How far a key's spread may differ from the average of the keys', as a factor. */
+        const val MIN_SPREAD = .8
+        const val MAX_SPREAD = 1.3
         /** The farthest a key's aim moves from its centre, in pitches. */
         const val MAX_OFFSET = .35
         /** Whether [committed] is [typed] or one slip from it, so taps are only matched to the word they typed. */
