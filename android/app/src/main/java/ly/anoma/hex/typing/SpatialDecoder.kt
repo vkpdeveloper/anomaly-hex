@@ -36,7 +36,10 @@ internal class SpatialDecoder(val model: TypingModel) {
     /** The words already in the field typed in: each costs [FieldWords.bonus] less ([fieldBonus]). */
     @Volatile var fieldWords: FieldWords? = null
     /** What a word's language-model cost, after the context, falls by for being in the field already. */
-    internal fun fieldBonus(text: String) = fieldWords?.bonus(text) ?: 0.0
+    internal fun fieldBonus(text: String): Double {
+        val words = fieldWords ?: return 0.0
+        return words.bonus(text)
+    }
     /** For Hinglish, English's model: its words are English, never spellings of a Hindi word ("sheet" isn't
      * "shit" as "theek" is "thik"). Read in the background; until then Hindi spellings stay apart. */
     @Volatile var english: TypingModel? = null
@@ -273,10 +276,15 @@ internal class SpatialDecoder(val model: TypingModel) {
         if (!cost.isFinite()) return none
         val readings = ArrayList<Reading>()
         // iOS applies the language score only to the five best spatial readings.
-        for ((w, spatial) in search(taps, 0, taps.size, 1, swears, previous).sortedWith(spatialOrder).take(5)) if (w != literal)
-            readings.add(Reading(model.text(w), spatial + lmWeight * (mixedCost(previous, w, beforePrevious) - fieldBonus(model.text(w))), model.frequencyCost(w)))
+        for ((w, spatial) in search(taps, 0, taps.size, 1, swears, previous).sortedWith(spatialOrder).take(5)) if (w != literal) {
+            val text = model.text(w)
+            readings.add(Reading(text, spatial + lmWeight * (mixedCost(previous, w, beforePrevious) - fieldBonus(text)), model.frequencyCost(w)))
+        }
         if (personal != null) for ((w, spatial) in search(taps, 0, taps.size, 1, swears, previous, personal).sortedWith(spatialOrder).take(3))
-            if (w != yours) readings.add(Reading(personal.text(w), spatial + lmWeight * (personalCost(personal.text(w), previous, beforePrevious) - fieldBonus(personal.text(w))), (USER_WORD_COST * 8).toInt()))
+            if (w != yours) {
+                val text = personal.text(w)
+                readings.add(Reading(text, spatial + lmWeight * (personalCost(text, previous, beforePrevious) - fieldBonus(text)), (USER_WORD_COST * 8).toInt()))
+            }
         if (taps.size >= 3 && apostrophes == 0) {
             fun alone(f: Found) = model.length(f.word) > 1 || model.frequencyCost(f.word) < 56
             fun half(a: Int, b: Int, prev: Int) = search(taps, a, b, 0, swears, prev).sortedWith(spatialOrder)
