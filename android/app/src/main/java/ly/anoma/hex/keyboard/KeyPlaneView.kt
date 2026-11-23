@@ -406,7 +406,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         // The second finger's key typed the first finger's at once (Rollover); the first undo takes it back too.
         val stray = if (first) pairDownAt else null
         val done = if (left) ime.engine.undoStep(stray) else ime.engine.redoStep(stray)
-        if (done && vibrates(context, ime.feedback.haptics)) performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+        if (done && caps.vibrates()) performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
@@ -612,5 +612,6 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         deleting = false
         for (key in deleteKeys) key.isPressed = false
     }
-    override fun onDetachedFromWindow() { cancelGestures(); super.onDetachedFromWindow() }
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); caps.attach() }
+    override fun onDetachedFromWindow() { cancelGestures(); caps.detach(); super.onDetachedFromWindow() }
 }

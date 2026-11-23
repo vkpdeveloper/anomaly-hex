@@ -4,7 +4,10 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.database.ContentObserver
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.TypedValue
@@ -29,7 +32,7 @@ internal enum class KeyFill(val fill: Int, val pressed: Int, val ink: Int) {
 }
 
 /** One key. The whole view is its touch target; its padding places the drawn keycap (KeyRowLayout sets it). */
-internal class KeyCap(context: Context, fill: KeyFill, description: String, pill: Boolean, private val haptics: () -> Boolean,
+internal class KeyCap(context: Context, fill: KeyFill, description: String, pill: Boolean, private val caps: KeyCaps,
                       click: () -> Unit) : FrameLayout(context) {
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     var label: TextView? = null
@@ -57,13 +60,17 @@ internal class KeyCap(context: Context, fill: KeyFill, description: String, pill
         addView(face, LayoutParams(-1, -1))
     }
     // A tap as each key goes down, as on Gboard. The click is the system's own, so it follows Touch
-    // sounds (AudioManager.playSoundEffect checks the setting).
+    // sounds (AudioManager.playSoundEffect checks the setting). The press, its pop-up and the typing
+    // before it run first; the tick and the click go out after, since the key can't draw until this
+    // returns and both are calls into other processes.
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
-            if (vibrates(context, haptics())) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            context.getSystemService(AudioManager::class.java)?.playSoundEffect(sound)
+        val down = event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN
+        val handled = super.dispatchTouchEvent(event)
+        if (down) {
+            if (caps.vibrates()) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            caps.audio?.playSoundEffect(sound)
         }
-        return super.dispatchTouchEvent(event)
+        return handled
     }
     // View normally posts its click after UP. Letter gestures commit on UP itself;
     // posting space or shift behind the next letter can reorder fast input.
@@ -93,8 +100,25 @@ internal fun vibrates(context: Context, haptics: Boolean) =
     haptics && Settings.System.getInt(context.contentResolver, "keyboard_vibration_enabled", 1) != 0
 
 /** Builds keys with the keyboard's colours, font and haptics setting. Sizes are in dp, not sp:
- * Gboard's keys keep their size whatever the system's font scale. */
+ * Gboard's keys keep their size whatever the system's font scale. It also holds what every key press
+ * asks: the system's Keyboard vibration (read once and kept current by an observer while the keys are
+ * on screen, not looked up in the settings provider on each press) and the audio service. */
 internal class KeyCaps(private val context: Context, private val haptics: () -> Boolean) {
+    val audio: AudioManager? = context.getSystemService(AudioManager::class.java)
+    private val vibration = Settings.System.getUriFor("keyboard_vibration_enabled")
+    private var systemVibration = true
+    private val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) { systemVibration = readVibration() }
+    }
+    private fun readVibration() = Settings.System.getInt(context.contentResolver, "keyboard_vibration_enabled", 1) != 0
+    /** The keys are on screen: follow the system's setting. */
+    fun attach() {
+        systemVibration = readVibration()
+        context.contentResolver.registerContentObserver(vibration, false, observer)
+    }
+    fun detach() = context.contentResolver.unregisterContentObserver(observer)
+    /** [vibrates] for a press: Hex's setting and the system's, as last seen. */
+    fun vibrates() = haptics() && systemVibration
     private val density = context.resources.displayMetrics.density
     private fun px(value: Float) = (value * density).roundToInt()
 
@@ -105,7 +129,7 @@ internal class KeyCaps(private val context: Context, private val haptics: () -> 
 
     fun cap(s: String, desc: String, fill: KeyFill = KeyFill.Letter, size: Float = KeyboardMetrics.LETTER,
             pill: Boolean = false, weight: Int = 400, click: () -> Unit): KeyCap {
-        val c = KeyCap(context, fill, desc, pill, haptics, click)
+        val c = KeyCap(context, fill, desc, pill, this, click)
         c.label = text(TextView(context), size, weight).apply {
             text = s; gravity = Gravity.CENTER
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END; setTextColor(context.getColor(fill.ink))
@@ -114,7 +138,7 @@ internal class KeyCaps(private val context: Context, private val haptics: () -> 
         return c
     }
     fun icon(res: Int, desc: String, fill: KeyFill, click: () -> Unit, pill: Boolean = false, size: Float = 24f): KeyCap {
-        val c = KeyCap(context, fill, desc, pill, haptics, click)
+        val c = KeyCap(context, fill, desc, pill, this, click)
         val image = ImageView(context).apply {
             setImageResource(res); imageTintList = ColorStateList.valueOf(context.getColor(fill.ink))
         }
