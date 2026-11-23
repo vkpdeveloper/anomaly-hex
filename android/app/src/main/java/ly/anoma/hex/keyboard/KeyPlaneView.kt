@@ -4,13 +4,16 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
@@ -32,6 +35,10 @@ import kotlin.math.roundToInt
  * ([Rollover]). */
 internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, private val host: KeyboardView,
                             private val feedback: LetterFeedback) : LinearLayout(context) {
+    private companion object {
+        /** Pages kept built: a language's letters and two symbol pages, the number pad, and one more. */
+        const val PAGES_KEPT = 5
+    }
     private val density = resources.displayMetrics.density
     private fun px(value: Float) = (value * density).roundToInt()
     private val caps = KeyCaps(context) { ime.feedback.haptics }
@@ -46,7 +53,32 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private var plane = PlaneRows(rowHeight, lastHeight, numberRow = false)
     /** The keys' whole height, which the emoji panel's grid fills in their place. */
     val keysHeight get() = plane.height
-    private val letters = LinkedHashMap<Char, KeyCap>()
+    /** What one page's keys are made of, and who needs to find them again: the rows, the letters by
+     * character, the keys that change case, shift's icon and the delete keys. Pages are built once and
+     * kept ([pages]), so switching back and forth between letters and symbols mounts views that already
+     * exist instead of making some forty keys, their drawables and labels inside the press that asked. */
+    private class Built(val views: List<View>) {
+        val letters = LinkedHashMap<Char, KeyCap>()
+        val caseKeys = ArrayList<CaseKey>()
+        var shiftIcon: ImageView? = null
+        val deleteKeys = ArrayList<KeyCap>()
+        /** Shift's icon for off, on and locked, loaded the first time each is shown, not on every shift. */
+        val icons = arrayOfNulls<Drawable>(3)
+    }
+    /** Everything a page's keys depend on; the enter key and row 4 are not part of it. */
+    private data class PageKey(val layoutCode: String, val symbols: Boolean, val more: Boolean, val numpad: Boolean, val numberRow: Boolean)
+    private fun pageKey(page: KeyboardPage) =
+        if (page.numpad) PageKey("", symbols = true, more = false, numpad = true, numberRow = false)
+        else PageKey(page.language.layoutCode, page.symbols, page.symbols && page.more, false, plane.numberRow)
+    // Least recently shown first; the four pages of a language and a number pad fit with room to spare.
+    private val pages = object : LinkedHashMap<PageKey, Built>(8, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<PageKey, Built>) = size > PAGES_KEPT
+    }
+    private var built = Built(emptyList())
+    /** The page being made: its keys register themselves here as they are built. */
+    private var building = built
+    private val letters get() = built.letters
+    private val deleteKeys get() = built.deleteKeys
     private var grid: KeyGrid? = null
     private var pendingAccents: Runnable? = null
     private val roll = Rollover()
@@ -82,9 +114,6 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private var bottomKind = -1
     /** A letter key and its two labels, made once so a shift, or a press, never builds a string. */
     private class CaseKey(val cap: KeyCap, val lower: String, val upper: String)
-    private val caseKeys = ArrayList<CaseKey>()
-    private var shiftIcon: ImageView? = null
-    private val deleteKeys = ArrayList<KeyCap>()
     private val pickKeyboard = Runnable {
         if (spaceKey.isPressed && spaceGesture.still) {
             spaceKey.isPressed = false; cursorSlide = null
@@ -208,22 +237,64 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             current = page; relabel(page); return
         }
         current = page
-        clearCallout(); grid = null; letters.clear(); caseKeys.clear(); shiftIcon = null; deleteKeys.clear()
+        clearCallout(); grid = null
         plane = PlaneRows(rowHeight, lastHeight, numbers)
         numberRow.visibility = if (plane.numbers(page) > 0) View.VISIBLE else View.GONE
         numberRow.layoutParams = numberRow.layoutParams.apply { height = plane.numbers(page) }
         rows.layoutParams = rows.layoutParams.apply { height = plane.rows(page) }
+        unpress(rows)
         rows.removeAllViews()
-        if (page.numpad) showNumpad() else showRows(page)
+        built = pages[pageKey(page)] ?: build(page)
+        for (view in built.views) rows.addView(view)
+        relabel(page)
         showBottom(page)
+        warmNext()
         val action = page.enter.label
         enterKey.label?.text = action.orEmpty()
-        enterIcon.setImageResource(enterIcon(page.enter.action))
+        val enterRes = enterIcon(page.enter.action)
+        if (enterRes != shownEnterIcon) { enterIcon.setImageResource(enterRes); shownEnterIcon = enterRes }
         enterIcon.visibility = if (action == null) View.VISIBLE else View.GONE
         enterKey.contentDescription = action ?: actionLabel(page.enter.action) ?: context.getString(R.string.keyboard_return)
     }
 
-    private fun showRows(page: KeyboardPage) {
+    private var shownEnterIcon = 0
+
+    /** A key still pressed when its page goes away would be pressed when the page comes back. */
+    private fun unpress(view: View) {
+        if (view is KeyCap) view.isPressed = false
+        if (view is ViewGroup) for (i in 0 until view.childCount) unpress(view.getChildAt(i))
+    }
+
+    /** Makes [page]'s keys and keeps them. */
+    private fun build(page: KeyboardPage): Built {
+        val views = ArrayList<View>()
+        val made = Built(views)
+        building = made
+        if (page.numpad) showNumpad(views) else showRows(page, views)
+        pages[pageKey(page)] = made
+        return made
+    }
+
+    // While the keyboard is idle, the pages one tap away are built, so the tap finds them ready. Each
+    // idle turn makes one page, never several in a row.
+    private var warming = false
+    private fun warmNext() {
+        if (warming) return
+        warming = true
+        Looper.myQueue().addIdleHandler {
+            warming = false
+            val page = current
+            if (page != null && isAttachedToWindow) {
+                val next = listOf(false to false, true to false, true to true)
+                    .map { (symbols, more) -> page.copy(symbols = symbols, more = more, numpad = false) }
+                    .firstOrNull { pageKey(it) !in pages }
+                if (next != null) { build(next); warmNext() }
+            }
+            false
+        }
+    }
+
+    private fun showRows(page: KeyboardPage, views: MutableList<View>) {
         val language = page.language
         val symbols = page.symbols
         val lines = page.lines
@@ -231,7 +302,8 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         val side = KeyboardMetrics.sideWidth(page, lines)
         for ((index, line) in lines.withIndex()) {
             val row = KeyRowLayout(context, columns, this.side, gap, insetTop, insetBottom)
-            rows.addView(row, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
+            row.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f)
+            views += row
             // Rows 1 and 2 centre their keys; row 3's share what shift and delete leave.
             var at = if (index < 2) (columns - line.length) / 2f else 0f
             val width = if (index < 2) 1f else (columns - 2 * side) / line.length
@@ -258,7 +330,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         // Gboard's arrow is wider and flatter than the symbol's: 22 by 21.5 dp.
         icon.layoutParams = FrameLayout.LayoutParams(px(34f), px(28f), Gravity.CENTER)
         icon.scaleType = ImageView.ScaleType.FIT_XY
-        shiftIcon = icon
+        building.shiftIcon = icon
         // Shift acts as it goes down and again as it lifts: a chord types capitals.
         key.setOnTouchListener { v, e ->
             when (e.actionMasked) {
@@ -287,7 +359,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
             if (g != null && p != null) ime.engine.letter(text, p.x, p.y, g) else ime.engine.type(text)
         }
         if (digit != null) caps.hint(k, digit)
-        if (!symbols) { letters[c] = k; caseKeys.add(CaseKey(k, lower, upper)) }
+        if (!symbols) { building.letters[c] = k; building.caseKeys.add(CaseKey(k, lower, upper)) }
         // What a hold offers depends only on the key and its case, so each is worked out once, when first
         // held, not on every press.
         fun held(upper: Boolean): List<String> {
@@ -426,7 +498,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
 
     private fun deleteKey(): KeyCap {
         val key = caps.icon(R.drawable.ic_delete, context.getString(R.string.keyboard_delete), KeyFill.Function, { ime.engine.delete() }, size = 35f)
-        deleteKeys += key
+        building.deleteKeys += key
         key.sound = AudioManager.FX_KEYPRESS_DELETE
         key.textEntry = false
         fun lift() {
@@ -468,10 +540,11 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     }
 
     /** Gboard's number pad: an operator list down the left, the digits, then %, space and delete. */
-    private fun showNumpad() {
+    private fun showNumpad(views: MutableList<View>) {
         val digitInsetBottom = rowHeight - insetTop - px(if (landscape) KeyboardMetrics.KEY_HEIGHT_LANDSCAPE else KeyboardMetrics.NUMPAD_KEY_HEIGHT)
         val pad = KeyGridLayout(context, 10f, 3, side, gap, insetTop, digitInsetBottom)
-        rows.addView(pad, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        pad.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        views += pad
         pad.add(operators(), 0, 0f, 1.5f, rowSpan = 3)
         val digit = 7f / 3
         for (r in 0..2) for (i in 0..2) {
@@ -538,9 +611,11 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     /** Shift changed and nothing else: new labels on the same keys. */
     private fun relabel(page: KeyboardPage) {
         val upper = upperNow
-        for (key in caseKeys) { val text = if (upper) key.upper else key.lower; key.cap.label?.text = text; key.cap.contentDescription = text }
-        shiftIcon?.setImageResource(shiftIconFor(page))
-        (shiftIcon?.parent?.parent as? View)?.contentDescription = shiftDescription(page)
+        for (key in built.caseKeys) { val text = if (upper) key.upper else key.lower; key.cap.label?.text = text; key.cap.contentDescription = text }
+        val icon = built.shiftIcon ?: return
+        val state = if (page.locked) 2 else if (page.shifted) 1 else 0
+        icon.setImageDrawable(built.icons[state] ?: context.getDrawable(shiftIconFor(page))!!.also { built.icons[state] = it })
+        (icon.parent?.parent as? View)?.contentDescription = shiftDescription(page)
     }
 
     private fun enterIcon(action: Int) = when (action) {
