@@ -7,7 +7,9 @@ package ly.anoma.hex.typing
 internal class PersonalTrigrams {
     // "first second" -> the words that followed those two, and how often.
     private val after = HashMap<String, HashMap<String, Int>>()
-    private var size = 0
+    /** How many triples are kept. */
+    var size = 0
+        private set
 
     fun learn(first: String, second: String, word: String, uses: Int = 1) {
         val followers = after.getOrPut(context(first, second)) { HashMap(4) }
@@ -46,7 +48,11 @@ internal class PersonalTrigrams {
         val it = after.entries.iterator()
         while (it.hasNext()) {
             val (k, followers) = it.next()
-            if (k.substringBefore(' ') == word || k.substringAfter(' ') == word) { size -= followers.size; it.remove(); continue }
+            // The context's first or second word, compared in place: this visits every triple kept.
+            val space = k.indexOf(' ')
+            if (space == word.length && k.startsWith(word) || k.length - space - 1 == word.length && k.endsWith(word)) {
+                size -= followers.size; it.remove(); continue
+            }
             if (followers.remove(word) != null) size--
             if (followers.isEmpty()) it.remove()
         }
@@ -55,17 +61,24 @@ internal class PersonalTrigrams {
     /** `t first second word uses` per triple, one per line, to append to [LearnedWords.write]. */
     fun write(out: StringBuilder) {
         for ((k, followers) in after) {
-            val context = k.replace(' ', '\t')
-            for ((word, n) in followers) out.append("t\t").append(context).append('\t').append(word).append('\t').append(n).append('\n')
+            val space = k.indexOf(' ')
+            for ((word, n) in followers) {
+                out.append("t\t").append(k, 0, space).append('\t').append(k, space + 1, k.length).append('\t').append(word).append('\t').append(n).append('\n')
+            }
         }
     }
 
     /** One line of what [write] wrote, added to what's here; false when [f] isn't a triple line. */
     fun read(f: List<String>): Boolean {
         if (f.size != 5 || f[0] != "t") return false
-        val n = f[4].toIntOrNull()?.takeIf { it > 0 } ?: return true
-        learn(f[1], f[2], f[3], n)
+        read(f[1], f[2], f[3], f[4])
         return true
+    }
+
+    /** The fields of a triple line, [count] as written; one that isn't a positive number is skipped. */
+    fun read(first: String, second: String, word: String, count: String) {
+        val n = count.toIntOrNull()?.takeIf { it > 0 } ?: return
+        learn(first, second, word, n)
     }
 
     // The singles go first, then the least used of the rest, down to nine tenths of the cap.

@@ -15,6 +15,13 @@ internal class LearnedWords {
         val count get() = typed + seeded
     }
     private val words = HashMap<String, Seen>()
+    // The words used at least [WORD_USES] times, in order, so [completions] reads one prefix's run of them
+    // instead of every word; kept as counts change and rebuilt when they change wholesale.
+    private val completable = java.util.TreeMap<String, Seen>()
+    // Bumped by every change, so the strip's repeated asks for one prefix are answered from [lastCompletions].
+    private var stamp = 0
+    private class Completions(val stamp: Int, val prefix: String, val limit: Int, val result: List<String>)
+    private var lastCompletions: Completions? = null
     // The words in [words] by `Spellings.key`, so [preferred] reads a word's few other spellings.
     private val spellings = HashMap<String, HashSet<String>>()
     // Addresses by their lowercase, as typed and how often.
@@ -39,7 +46,8 @@ internal class LearnedWords {
         if (!learnable(lower)) return false
         val seen = entry(lower, lower)
         val was = seen.count >= WORD_USES
-        seen.typed++; total++
+        seen.typed++; total++; stamp++
+        if (!was && seen.count >= WORD_USES) completable[lower] = seen
         if (!sentenceStart) seen.spelling = word
         val before = previous?.lowercase()?.takeIf(::learnable)
         before?.let { typedPairs.merge(pair(it, lower), 1, Int::plus); followers?.getOrPut(it) { HashSet(4) }?.add(lower) }
@@ -55,7 +63,8 @@ internal class LearnedWords {
         val lower = word.lowercase()
         val seen = words[lower]?.takeIf { it.typed > 0 } ?: return false
         val was = seen.count >= WORD_USES
-        seen.typed--; total--
+        seen.typed--; total--; stamp++
+        if (seen.count < WORD_USES) completable.remove(lower)
         if (seen.count == 0) forget(lower)
         val before = previous?.lowercase()?.takeIf(::learnable)
         if (before != null) {
@@ -77,6 +86,7 @@ internal class LearnedWords {
             seen.seeded = count; total += count
         }
         words.entries.filter { it.value.count == 0 }.forEach { forget(it.key) }
+        reindex()
         followers = null
         seededPairs = HashMap<String, Int>().also { m -> for ((a, b, n) in pairs) if (n > 0) m[pair(a.lowercase(), b.lowercase())] = n }
         revision++
@@ -86,13 +96,14 @@ internal class LearnedWords {
     @Synchronized fun forgetWord(word: String) {
         val lower = word.lowercase()
         words[lower]?.let { total -= it.count; forget(lower) }
+        stamp++
         for (m in listOf(typedPairs, seededPairs)) m.keys.removeAll { it.substringBefore(' ') == lower || it.substringAfter(' ') == lower }
         followers = null; triples.forget(lower)
         revision++
     }
 
     @Synchronized fun clear() {
-        words.clear(); spellings.clear(); typedPairs.clear(); seededPairs.clear(); followers = null; triples.clear(); typedAddresses.clear(); total = 0; revision++
+        words.clear(); completable.clear(); stamp++; spellings.clear(); typedPairs.clear(); seededPairs.clear(); followers = null; triples.clear(); typedAddresses.clear(); total = 0; revision++
     }
 
     /** Your words, spelled your way, used at least twice: the ones the keyboard treats as words. */
@@ -160,11 +171,22 @@ internal class LearnedWords {
         return -ln(MODEL_SHARE * exp(-modelCost) + (1 - MODEL_SHARE) * exp(-yours))
     }
 
-    /** Your words that start with [prefix] and are longer, most used first, those used at least twice. */
+    /** Your words that start with [prefix] and are longer, most used first (equally used ones alphabetically),
+     * those used at least twice. */
     @Synchronized fun completions(prefix: String, limit: Int = 3): List<String> {
+        lastCompletions?.let { if (it.stamp == stamp && it.limit == limit && it.prefix == prefix) return it.result }
         val lower = prefix.lowercase()
-        return words.entries.asSequence().filter { (w, s) -> s.count >= WORD_USES && w.length > lower.length && w.startsWith(lower) }
-            .sortedByDescending { it.value.count }.take(limit).map { it.value.spelling }.toList()
+        // The words with this prefix are one run of [completable]; keep the [limit] most used, by insertion.
+        val best = ArrayList<Seen>(limit + 1)
+        for ((w, s) in completable.tailMap(lower, true)) {
+            if (!w.startsWith(lower)) break
+            if (w.length <= lower.length) continue
+            val uses = s.count
+            var at = best.size
+            while (at > 0 && best[at - 1].count < uses) at--
+            if (at < limit) { best.add(at, s); if (best.size > limit) best.removeAt(limit) }
+        }
+        return best.map { it.spelling }.also { lastCompletions = Completions(stamp, prefix, limit, it) }
     }
 
     /** The words you most often write after [previous], at least twice each. */
@@ -188,52 +210,104 @@ internal class LearnedWords {
 
     /** One line per word, pair, triple and address, tab-separated: `w spelling typed seeded`, `p first second
      * typed`, `s first second seeded`, `t first second third typed`, `e address uses`. */
-    @Synchronized fun write(): String = buildString {
-        for (s in words.values) append("w\t").append(s.spelling).append('\t').append(s.typed).append('\t').append(s.seeded).append('\n')
-        for (a in typedAddresses.values) append("e\t").append(a.text).append('\t').append(a.uses).append('\n')
-        for ((k, n) in typedPairs) append("p\t").append(k.replace(' ', '\t')).append('\t').append(n).append('\n')
-        for ((k, n) in seededPairs) append("s\t").append(k.replace(' ', '\t')).append('\t').append(n).append('\n')
-        triples.write(this)
+    @Synchronized fun write(): String {
+        // Sized up front: a full store is a couple of megabytes, and growing a builder copies it each time.
+        val out = StringBuilder(words.size * 24 + typedAddresses.size * 40 + (typedPairs.size + seededPairs.size) * 28 + triples.size * 32 + 64)
+        for (s in words.values) out.append("w\t").append(s.spelling).append('\t').append(s.typed).append('\t').append(s.seeded).append('\n')
+        for (a in typedAddresses.values) out.append("e\t").append(a.text).append('\t').append(a.uses).append('\n')
+        for ((k, n) in typedPairs) appendPair(out, 'p', k, n)
+        for ((k, n) in seededPairs) appendPair(out, 's', k, n)
+        triples.write(out)
+        return out.toString()
+    }
+    // `tag first second count` for a pair kept as "first second".
+    private fun appendPair(out: StringBuilder, tag: Char, key: String, count: Int) {
+        val space = key.indexOf(' ')
+        // A key with more spaces than the one between two words (a seeded pair with a spaced word) keeps every one as a tab.
+        if (space != key.lastIndexOf(' ')) { out.append(tag).append('\t').append(key.replace(' ', '\t')).append('\t').append(count).append('\n'); return }
+        out.append(tag).append('\t').append(key, 0, space).append('\t').append(key, space + 1, key.length).append('\t').append(count).append('\n')
     }
 
     /** What [write] wrote, added to what's here; a line it can't read is skipped. */
     @Synchronized fun read(text: String) {
-        for (line in text.lineSequence()) {
-            val f = line.split('\t')
-            when {
-                f.size == 4 && f[0] == "w" -> {
-                    val typed = f[2].toIntOrNull() ?: continue; val seeded = f[3].toIntOrNull() ?: continue
-                    val lower = f[1].lowercase()
-                    if (!learnable(lower) || typed < 0 || seeded < 0) continue
-                    val seen = entry(lower, f[1])
-                    seen.typed += typed; seen.seeded += seeded; total += typed + seeded
-                }
-                f.size == 4 && f[0] == "p" -> f[3].toIntOrNull()?.let { typedPairs.merge(pair(f[1], f[2]), it, Int::plus); followers = null }
-                f.size == 5 && f[0] == "t" -> if (f.subList(1, 4).all { learnable(it.lowercase()) }) triples.read(f)
-                f.size == 4 && f[0] == "s" -> f[3].toIntOrNull()?.let { seededPairs[pair(f[1], f[2])] = it; followers = null }
-                f.size == 3 && f[0] == "e" -> {
-                    val uses = f[2].toIntOrNull()?.takeIf { it > 0 } ?: continue
-                    if (!EmailAddresses.valid(f[1])) continue
-                    typedAddresses.getOrPut(f[1].lowercase()) { Address(f[1], 0) }.uses += uses
-                }
+        // Lines end at \n, \r\n or \r, as lineSequence reads them, split at their tabs in place: a full file
+        // is some ninety thousand lines, and a list per line made it most of a second on a phone.
+        var start = 0
+        while (start < text.length) {
+            var end = start
+            while (end < text.length && text[end] != '\n' && text[end] != '\r') end++
+            readLine(text, start, end)
+            start = if (text.startsWith("\r\n", end)) end + 2 else end + 1
+        }
+        reindex()
+        revision++
+    }
+
+    private fun readLine(text: String, start: Int, end: Int) {
+        val cut = IntArray(4); var tabs = 0
+        for (i in start until end) if (text[i] == '\t') { if (tabs == cut.size) return; cut[tabs++] = i }
+        if (tabs < 2 || cut[0] - start != 1) return
+        fun field(i: Int) = text.substring(if (i == 0) start else cut[i - 1] + 1, if (i == tabs) end else cut[i])
+        when {
+            tabs == 3 && text[start] == 'w' -> {
+                val typed = field(2).toIntOrNull() ?: return; val seeded = field(3).toIntOrNull() ?: return
+                val spelling = field(1)
+                val lower = spelling.lowercase()
+                if (!learnable(lower) || typed < 0 || seeded < 0) return
+                val seen = entry(lower, spelling)
+                seen.typed += typed; seen.seeded += seeded; total += typed + seeded
+            }
+            tabs == 3 && text[start] == 'p' -> field(3).toIntOrNull()?.let { typedPairs.merge(pair(field(1), field(2)), it, Int::plus); followers = null }
+            tabs == 4 && text[start] == 't' -> {
+                val first = field(1); val second = field(2); val word = field(3)
+                if (learnable(first.lowercase()) && learnable(second.lowercase()) && learnable(word.lowercase())) triples.read(first, second, word, field(4))
+            }
+            tabs == 3 && text[start] == 's' -> field(3).toIntOrNull()?.let { seededPairs[pair(field(1), field(2))] = it; followers = null }
+            tabs == 2 && text[start] == 'e' -> {
+                val uses = field(2).toIntOrNull()?.takeIf { it > 0 } ?: return
+                val address = field(1)
+                if (!EmailAddresses.valid(address)) return
+                typedAddresses.getOrPut(address.lowercase()) { Address(address, 0) }.uses += uses
             }
         }
-        revision++
     }
 
     // The least used go first once the lists are full: one-off words and pairs, then the rest.
     private fun trim() {
         if (words.size > MAX_WORDS) {
-            val drop = words.entries.sortedBy { it.value.count }.take(words.size - MAX_WORDS * 9 / 10)
-            for ((w, s) in drop) { forget(w); total -= s.count }
+            val drop = leastUsed(words, words.size - MAX_WORDS * 9 / 10) { it.count }
+            for (w in drop) { total -= words.getValue(w).count; forget(w) }
+            stamp++
             typedPairs.keys.removeAll { k -> k.substringBefore(' ') !in words || k.substringAfter(' ') !in words }
             followers = null
         }
         if (typedPairs.size > MAX_PAIRS) {
-            val drop = typedPairs.entries.sortedBy { it.value }.take(typedPairs.size - MAX_PAIRS * 9 / 10).map { it.key }
-            for (k in drop) typedPairs.remove(k)
+            for (k in leastUsed(typedPairs, typedPairs.size - MAX_PAIRS * 9 / 10) { it }) typedPairs.remove(k)
             followers = null
         }
+    }
+
+    /** The [drop] keys of [map] with the fewest [uses], the earliest in its order among equal ones: the ones
+     * sorting by uses (stably) would drop first, found from the sorted uses alone instead of by sorting every
+     * entry, which was tens of milliseconds on a full store. */
+    private inline fun <V> leastUsed(map: HashMap<String, V>, drop: Int, uses: (V) -> Int): List<String> {
+        if (drop <= 0) return emptyList()
+        val sorted = IntArray(map.size); var i = 0
+        for (v in map.values) sorted[i++] = uses(v)
+        sorted.sort()
+        val floor = sorted[minOf(drop, sorted.size) - 1]
+        var ties = drop - sorted.count { it < floor }
+        val out = ArrayList<String>(drop)
+        for ((k, v) in map) {
+            val n = uses(v)
+            if (n < floor) out.add(k) else if (n == floor && ties > 0) { out.add(k); ties-- }
+        }
+        return out
+    }
+
+    private fun reindex() {
+        completable.clear(); stamp++
+        for ((w, s) in words) if (s.count >= WORD_USES) completable[w] = s
     }
 
     private fun entry(lower: String, spelling: String) = words.getOrPut(lower) {
@@ -241,7 +315,7 @@ internal class LearnedWords {
         Seen(0, 0, spelling)
     }
     private fun forget(lower: String) {
-        words.remove(lower)
+        words.remove(lower); completable.remove(lower)
         val key = Spellings.key(lower)
         spellings[key]?.let { if (it.remove(lower) && it.isEmpty()) spellings.remove(key) }
     }
