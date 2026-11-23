@@ -9,21 +9,39 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import ly.anoma.hex.R
 import ly.anoma.hex.useSans
+import android.graphics.Color
 import kotlin.math.roundToInt
 
 /** Both callouts live inside the input window. No popup takes focus away from the editor. */
 internal class LetterFeedback(private val host: ViewGroup) {
     private val context = host.context
     private fun dp(n: Int) = (context.resources.displayMetrics.density * n).roundToInt()
+    private val pad = dp(3)
+    private val rowHeight = dp(42)
     private fun face(id: Int, radius: Int, border: Boolean = false) = GradientDrawable().apply {
         setColor(context.getColor(id)); cornerRadius = dp(radius).toFloat()
         if (border) setStroke(dp(1), context.getColor(R.color.kb_function))
     }
-    private var panel: LinearLayout? = null
+    // One bar, its rows and their labels are made once and refilled for each pop-up: building a dozen
+    // views and drawables as the finger lands is what a press had to wait for.
+    private val bar = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        background = face(R.color.kb_key, 12, true); elevation = dp(4).toFloat(); setPadding(pad, pad, pad, pad)
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    }
+    private var shown = false
+    // The option under the finger. It takes the one shared [selection] drawable, so moving along the
+    // options recolours two labels instead of making a drawable for each.
+    private val selection = face(R.color.kb_enter, 9)
+    private val ink = context.getColor(R.color.kb_ink)
+    private val litInk = context.getColor(R.color.kb_enter_ink)
+    private var lit: TextView? = null
     // While a held key's list is open the keys behind it fade, as Gboard's do, so the list's edges never
-    // sit against half a key.
+    // sit against half a key. The fade is in the colour, not the view's alpha, which would draw the whole
+    // view into an offscreen layer.
     private val scrim = View(context).apply {
-        setBackgroundColor(context.getColor(R.color.keyboard)); alpha = 0.67f
+        val keyboard = context.getColor(R.color.keyboard)
+        setBackgroundColor((keyboard and 0xFFFFFF) or ((Color.alpha(keyboard) * 0.67f).roundToInt() shl 24))
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
     private var dimmed = false
@@ -44,12 +62,11 @@ internal class LetterFeedback(private val host: ViewGroup) {
     // host's coordinates; null for every other list.
     private var picking: Rect? = null
     private var listBottom = 0
-    private val pad get() = dp(3)
-    private val rowHeight get() = dp(42)
     val choosing get() = holding
     fun selected() = rows.getOrNull(row)?.getOrNull(index)
     fun clear() {
-        panel?.let { host.overlay.remove(it) }; panel = null; rows = emptyList(); holding = false; picking = null
+        if (shown) { host.overlay.remove(bar); shown = false }
+        rows = emptyList(); holding = false; picking = null
         if (dimmed) { host.overlay.remove(scrim); dimmed = false }
     }
     /** A key the keys were drawn again without, while its finger was down, has nothing to show a pop-up over. */
@@ -80,23 +97,14 @@ internal class LetterFeedback(private val host: ViewGroup) {
         val w = cell * columns + 2 * pad; val h = rowHeight * rows.size + 2 * pad
         left = (r.centerX() - pad - cell * index - cell / 2).coerceIn(edge, host.width - w - edge)
         val y = (r.top - h - dp(2)).coerceAtLeast(0)
-        val bar = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = face(R.color.kb_key, 12, true); elevation = dp(4).toFloat(); setPadding(pad, pad, pad, pad)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-        }
-        for (line in rows.asReversed()) bar.addView(LinearLayout(context).apply {
-            for (s in line) addView(TextView(context).apply {
-                text = s; gravity = Gravity.CENTER; setTextColor(context.getColor(R.color.kb_ink))
-                useSans(); setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, if (hold) 22f else 27f); includeFontPadding = false
-            }, LinearLayout.LayoutParams(cell, -1))
-        }, LinearLayout.LayoutParams(-1, rowHeight))
-        panel = bar; highlight()
+        fill(hold)
+        highlight()
+        bar.requestLayout()
         bar.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
         bar.layout(left, y, left + w, y + h)
         if (pick) { picking = Rect(r.left - pad, r.top, r.right + pad, r.bottom); listBottom = y + h; index = -1; highlight() }
         if (hold) { scrim.layout(0, 0, host.width, host.height); host.overlay.add(scrim); dimmed = true }
-        host.overlay.add(bar)
+        host.overlay.add(bar); shown = true
     }
     /** The finger moved to ([x], [y]) in the host's coordinates: the option its travel since the list
      * opened reaches, one per option's width across and one row per row's height up. */
@@ -113,17 +121,36 @@ internal class LetterFeedback(private val host: ViewGroup) {
         val next = (start + ((x - originX) / cell).roundToInt()).coerceIn(0, rows[nextRow].lastIndex)
         if (row != nextRow || index != next) { row = nextRow; index = next; highlight() }
     }
-    private fun highlight() {
-        val bar = panel ?: return
-        for ((r, line) in rows.withIndex()) {
-            val cells = bar.getChildAt(rows.lastIndex - r) as LinearLayout
-            for (i in line.indices) {
-                val label = cells.getChildAt(i) as TextView
-                val on = holding && r == row && i == index
-                label.background = if (on) face(R.color.kb_enter, 9) else null
-                label.setTextColor(context.getColor(if (on) R.color.kb_enter_ink else R.color.kb_ink))
+    /** Puts [rows] in the bar's rows and labels, making more only when a list is longer than any before. */
+    private fun fill(hold: Boolean) {
+        val textSize = if (hold) 22f else 27f
+        for (r in 0 until maxOf(rows.size, bar.childCount)) {
+            val line = if (r < bar.childCount) bar.getChildAt(r) as LinearLayout
+                else LinearLayout(context).also { bar.addView(it, LinearLayout.LayoutParams(-1, rowHeight)) }
+            val options = if (r < rows.size) rows[rows.lastIndex - r] else emptyList()
+            line.visibility = if (options.isEmpty()) View.GONE else View.VISIBLE
+            for (i in 0 until maxOf(options.size, line.childCount)) {
+                val label = if (i < line.childCount) line.getChildAt(i) as TextView else TextView(context).apply {
+                    gravity = Gravity.CENTER; useSans(); includeFontPadding = false; setTextColor(ink)
+                    line.addView(this, LinearLayout.LayoutParams(cell, -1))
+                }
+                if (i >= options.size) { label.visibility = View.GONE; continue }
+                label.visibility = View.VISIBLE
+                label.text = options[i]
+                label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP, textSize)
+                (label.layoutParams as LinearLayout.LayoutParams).width = cell
             }
         }
+        // Every label starts plain; [highlight] lights the one under the finger.
+        lit?.let { it.background = null; it.setTextColor(ink) }
+        lit = null
+    }
+    private fun highlight() {
+        val on = if (holding) rows.getOrNull(row)?.getOrNull(index)?.let { (bar.getChildAt(rows.lastIndex - row) as LinearLayout).getChildAt(index) as TextView } else null
+        if (on === lit) return
+        lit?.let { it.background = null; it.setTextColor(ink) }
+        on?.let { it.background = selection; it.setTextColor(litInk) }
+        lit = on
     }
     companion object {
         /** The (row, column) of a pick list's option a finger at ([x], [y]) is on: none while it is over the
