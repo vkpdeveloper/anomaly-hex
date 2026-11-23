@@ -40,6 +40,12 @@ class LearningBenchTest {
     private val words = env("HEX_LEARN_BENCH_WORDS")?.toInt() ?: 30_000
     private val sdX = env("HEX_LEARN_BENCH_SD")?.toDouble() ?: 0.22
     private val label = env("HEX_LEARN_BENCH_LABEL") ?: "run"
+    /** HEX_LEARN_BENCH_SPREAD=1: keys differ in how steady the thumb is on them (sd x0.8 mid-keyboard to x1.5 at the
+     * outer columns) instead of one spread for all. */
+    private val uneven = env("HEX_LEARN_BENCH_SPREAD") == "1"
+    /** HEX_LEARN_BENCH_SLIPS=1: each author has [HABITS] words they habitually misspell (two letters swapped or one
+     * dropped, the same way every time) and do so [SLIP_RATE] of the time they type them. */
+    private val slips = env("HEX_LEARN_BENCH_SLIPS") == "1"
     /** HEX_LEARN_BENCH_DEBUG=1 lists every word that did not come out as intended. */
     private val debug = env("HEX_LEARN_BENCH_DEBUG") == "1"
 
@@ -53,8 +59,9 @@ class LearningBenchTest {
         val started = System.nanoTime()
         for ((index, sample) in samples.take(limit).withIndex()) {
             val (learn, test) = split(sample.second)
-            val warm = Typist(index, learns = true)
-            val cold = Typist(index, learns = false)
+            val habits = if (slips) habitsOf(learn, index) else emptyMap()
+            val warm = Typist(index, learns = true, habits)
+            val cold = Typist(index, learns = false, habits)
             warm.type(learn, Tally(), baseId = 0)
             val w = Tally().also { it.timing = true }; val c = Tally().also { it.timing = true }
             warm.type(test, w, baseId = learn.size)
@@ -87,6 +94,19 @@ class LearningBenchTest {
         }
         return dir.listFiles { f -> f.name.endsWith(".txt") }.orEmpty().sortedBy { it.name }
             .map { it.name.removeSuffix(".txt") to it.readLines().filter { l -> l.isNotBlank() } }
+    }
+
+    /** The author's habitual misspellings: ten of their common words (ranks 5 to 60 among the words of 4 to 9 letters
+     * they wrote while learning) with one fixed slip each. */
+    private fun habitsOf(learn: List<String>, author: Int): Map<String, String> {
+        val counts = HashMap<String, Int>()
+        for (m in learn) for (t in m.split(' ')) { val w = t.trim(',', '.', '?', '!').lowercase(); if (w.length in 4..9 && w.all { it in 'a'..'z' }) counts.merge(w, 1, Int::plus) }
+        val common = counts.entries.sortedWith(compareBy({ -it.value }, { it.key })).map { it.key }.drop(4).take(56)
+        val r = Random(seed * 17 + author)
+        return common.shuffled(r).take(HABITS).associateWith { w ->
+            val at = 1 + r.nextInt(w.length - 2)
+            if (r.nextBoolean() && w[at] != w[at + 1]) w.substring(0, at) + w[at + 1] + w[at] + w.substring(at + 2) else w.removeRange(at, at + 1)
+        }
     }
 
     /** Messages in time order up to [words] words: the first 80% teach, the rest are typed. */
@@ -148,7 +168,7 @@ class LearningBenchTest {
         override fun all() = FieldState(text, caret, caret)
     }
 
-    private inner class Typist(private val author: Int, learns: Boolean) {
+    private inner class Typist(private val author: Int, learns: Boolean, private val habits: Map<String, String>) {
         private val field = BenchField()
         private val base: KeyGrid = Glides.grid()
         private val model = TypingModel.file(File("src/main/assets/typing/en.hextm"), "en")
@@ -172,6 +192,14 @@ class LearningBenchTest {
             KeyPoint(Math.cos(angle) * length, Math.sin(angle) * length)
         }
         private val spaceBar = base.space!!
+        // How steady the thumb is on each key, as a multiple of the spread: mid-keyboard keys more than the outer columns.
+        private val steadiness = base.centres.mapValues { (_, c) ->
+            if (!uneven) 1.0 else {
+                val mid = base.centres.values.let { (it.minOf { p -> p.x } + it.maxOf { p -> p.x }) / 2 }
+                val half = base.centres.values.let { (it.maxOf { p -> p.x } - it.minOf { p -> p.x }) / 2 }
+                .8 + .7 * Math.abs(c.x - mid) / half
+            }
+        }
         private val density = 3.5
         private val face = base.centres.mapValues { (_, c) ->
             KeyRect(c.x - (base.pitchX - 16) / 2, c.y - 142 / 2.0, c.x + (base.pitchX - 16) / 2, c.y + 142 / 2.0)
@@ -226,7 +254,9 @@ class LearningBenchTest {
             }
             val marks = tokens[at].substring(intended.length)
             val more = at + 1 < tokens.size
-            for ((j, ch) in intended.withIndex()) {
+            val slip = habits[intended.lowercase()]?.takeIf { Random(mix(seed, author.toLong(), id * 1_000_003L + at)).nextDouble() < SLIP_RATE }
+            val spelled = if (slip == null) intended else if (intended.first().isUpperCase()) slip.replaceFirstChar { it.uppercase() } else slip
+            for ((j, ch) in spelled.withIndex()) {
                 if (j > 0 && intended.length - j >= (if (marks.isEmpty()) 1 else 2) &&
                     strip.any { it.kind != Suggestion.Kind.Typed && it.kind != Suggestion.Kind.Emoji && it.text == intended }) {
                     key(t) { engine.pickSuggestion(intended) }; t.picksComplete++
@@ -287,8 +317,9 @@ class LearningBenchTest {
             val upper = ch.isUpperCase()
             if (engine.uppercase != upper) key(t) { engine.shiftDown(); engine.shiftUp() }
             val noise = Random(mix(seed, author.toLong(), id.toLong() * 1_000_003 + at * 1009L + j))
-            val x = centre.x + (grip.x + noise.nextGaussian() * sdX) * base.pitchX
-            val y = centre.y + (grip.y + noise.nextGaussian() * sdX * 0.9) * base.pitchY
+            val sd = sdX * steadiness.getValue(lower)
+            val x = centre.x + (grip.x + noise.nextGaussian() * sd) * base.pitchX
+            val y = centre.y + (grip.y + noise.nextGaussian() * sd * 0.9) * base.pitchY
             val hit = base.centres.minBy { (_, c) -> Math.hypot((c.x - x) / base.pitchX, (c.y - y) / base.pitchY) }.key
             t.taps++; if (hit != lower) t.rawMiss++
             val grid = engine.touch.personalised(base)
@@ -384,5 +415,6 @@ class LearningBenchTest {
         }
     }
 
+    private companion object { const val HABITS = 10; const val SLIP_RATE = .6 }
     private fun env(name: String) = System.getenv(name)?.takeIf { it.isNotBlank() }
 }
