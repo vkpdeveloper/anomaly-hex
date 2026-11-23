@@ -135,7 +135,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                 MotionEvent.ACTION_MOVE -> if (v.isPressed) {
                     val characters = spaceGesture.move(e.x, e.y, e.eventTime)
                     if (!spaceGesture.still) removeCallbacks(pickKeyboard)
-                    if (characters != null) (cursorSlide ?: ime.engine.cursorSlide().also { cursorSlide = it }).moveTo(characters)
+                    if (characters != null) (cursorSlide ?: ime.engine.cursorSlide(select = ime.engine.shiftHeld).also { cursorSlide = it }).moveTo(characters)
                 }
                 MotionEvent.ACTION_UP -> if (roll.up(v)) {
                     removeCallbacks(pickKeyboard); val pressed = v.isPressed; v.isPressed = false

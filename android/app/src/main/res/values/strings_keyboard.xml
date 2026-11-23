@@ -22,6 +22,8 @@
     <string name="keyboard_friendlier">Friendlier</string>
     <string name="keyboard_formal">Formal</string>
     <string name="keyboard_english">English</string>
+    <string name="keyboard_cut">Cut</string>
+    <string name="keyboard_copy">Copy</string>
     <string name="keyboard_nothing_to_rewrite">Nothing to rewrite</string>
     <string name="keyboard_rewrite_unchanged">No changes needed</string>
     <string name="keyboard_rewrite_changed">The text changed, so it wasn\'t rewritten</string>

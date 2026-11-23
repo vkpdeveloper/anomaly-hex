@@ -18,6 +18,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import ly.anoma.hex.R
+import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
@@ -87,6 +88,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val shot = ImageView(context)
     private var chipOffer: ChipOffer? = null
     private val noteText = TextView(context)
+    /** The selection's Cut, Copy and rewrites, or a chip for what was just typed ([StripAction]). */
+    private val actionScroll = HorizontalScrollView(context)
+    private val actionRow = LinearLayout(context)
+    private var actions = emptyList<StripAction>()
     private val undo = LinearLayout(context)
     private val undoText = TextView(context)
     private var undoOffer: UndoOffer? = null
@@ -204,6 +209,12 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
         }
         addView(noteText, LayoutParams(-1, -1).apply { marginStart = px(48f); marginEnd = px(48f) })
+
+        actionScroll.apply {
+            isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; isFillViewport = true
+            addView(actionRow.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }, LayoutParams(-2, -1))
+        }
+        addView(actionScroll, LayoutParams(-1, -1).apply { marginStart = px(46f); marginEnd = px(48f) })
 
         well.background = GradientDrawable().apply { setColor(color(R.color.kb_key)); cornerRadius = pill / 2f }
         well.clipToOutline = true
@@ -367,6 +378,40 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         update()
     }
 
+    fun actions(list: List<StripAction>) {
+        actions = list.filter { it !is StripAction.Rewrite || ime.rewriteShown }
+        actionRow.removeAllViews()
+        for (action in actions) {
+            val label = when (action) {
+                StripAction.Cut -> context.getString(R.string.keyboard_cut)
+                StripAction.Copy -> context.getString(R.string.keyboard_copy)
+                is StripAction.Rewrite -> context.getString(if (action.style == HexClient.Style.English) R.string.keyboard_english else R.string.keyboard_rewrite)
+                is StripAction.Insert -> action.label
+            }
+            val view = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isFocusable = true
+                background = pressable(color(R.color.kb_key), false, pill / 2f)
+                setPadding(px(14f), 0, px(14f), 0)
+                if (action is StripAction.Rewrite && action.style == HexClient.Style.Fix) {
+                    addView(ImageView(context).apply {
+                        setImageResource(R.drawable.ic_rewrite); imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+                        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, LinearLayout.LayoutParams(px(PIECE_ICON), px(PIECE_ICON)).apply { marginEnd = px(6f) })
+                }
+                addView(TextView(context).apply {
+                    text(this, 15f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END; maxWidth = px(PIECE_TEXT_WIDTH); text = label
+                })
+                contentDescription = label
+                setOnClickListener {
+                    if (action is StripAction.Rewrite) ime.rewrite(action.style) else ime.engine.act(action)
+                }
+            }
+            actionRow.addView(view, LinearLayout.LayoutParams(-2, pill).apply { marginStart = px(3f); marginEnd = px(3f) })
+        }
+        update()
+    }
+
     /** A short line in the toolbar's middle, such as why dictation couldn't start. */
     fun note(text: String) {
         note = text; removeCallbacks(clearNote); postDelayed(clearNote, NOTE_MS); update()
@@ -383,19 +428,21 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         noteText.text = note
         val undoing = idle && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
+        val acting = idle && !noting && !undoing && actions.isNotEmpty()
+        actionScroll.visibility = if (acting) VISIBLE else GONE
         // The field's own saved passwords and codes come before a copy or next-word guesses.
-        val filling = idle && !noting && !undoing && !typingWord &&
+        val filling = idle && !noting && !undoing && !acting && !typingWord &&
             (autofillRest.childCount > 0 || autofillPinned.childCount > 0)
         autofill.visibility = if (filling) VISIBLE else GONE
         // A fresh copy or photo takes the place of next-word guesses, as Gboard's does; a word being
         // typed keeps its suggestions.
         // Typing a word passes over the chip: it isn't offered again, and the clipboard keeps it.
         if (idle && !guessing) chipOffer?.let { passed -> chipOffer = null; ime.clips.used(passed) }
-        val offer = if (idle && !noting && !undoing && !filling && guessing) ime.clips.offer else null
+        val offer = if (idle && !noting && !undoing && !acting && !filling && guessing) ime.clips.offer else null
         // Unused, it goes once it is too old, while the keyboard stays up.
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
-        slots.visibility = if (idle && !noting && !undoing && !filling && suggesting && offer == null) VISIBLE else GONE
+        slots.visibility = if (idle && !noting && !undoing && !acting && !filling && suggesting && offer == null) VISIBLE else GONE
         clipScroll.visibility = if (offer is ChipOffer.Text || offer is ChipOffer.Code) VISIBLE else GONE
         shot.visibility = if (offer is ChipOffer.Image || offer is ChipOffer.Photo) VISIBLE else GONE
         val fresh = offer != chipOffer

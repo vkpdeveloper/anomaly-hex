@@ -23,6 +23,8 @@ internal interface KeyboardTextTarget {
     fun sendKey(code: Int)
     /** The whole text and selection, or null where it can't be read whole (too long, or no editor). */
     fun all(): FieldState? = null
+    /** The editor's own Cut, Copy, Paste or Select all (android.R.id.cut and the rest). */
+    fun contextAction(id: Int): Boolean = false
 }
 
 /** The current editor's InputConnection, looked up on every call: it changes with each field. */
@@ -43,6 +45,7 @@ internal class InputConnectionTarget(private val ime: InputMethodService) : Keyb
     override fun performEditorAction(id: Int) = ic?.performEditorAction(id) ?: false
     override fun defaultEditorAction() = ime.sendDefaultEditorAction(true)
     override fun sendKey(code: Int) = ime.sendDownUpKeyEvents(code)
+    override fun contextAction(id: Int) = ic?.performContextMenuAction(id) ?: false
     override fun all(): FieldState? {
         val got = ic?.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = MAX_FIELD }, 0) ?: return null
         val text = got.text?.toString() ?: return null

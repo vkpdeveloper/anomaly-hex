@@ -51,6 +51,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     }
     override fun suggestions(slots: List<Suggestion>) = toolbar.suggestions(slots)
     override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
+    override fun actions(list: List<StripAction>) = toolbar.actions(list)
 
     fun openEmoji() {
         keys.cancelGestures(); ime.engine.pause()

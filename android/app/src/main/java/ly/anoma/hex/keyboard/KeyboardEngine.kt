@@ -32,6 +32,8 @@ internal interface KeyboardSurface {
     fun suggestions(slots: List<Suggestion>)
     /** Offer an undo, or stop offering it. */
     fun undo(offer: UndoOffer?)
+    /** Chips for the selection or what was just typed, in the suggestions' place; none clears them. */
+    fun actions(list: List<StripAction>) {}
 }
 
 internal enum class UndoOffer { Dictation, Fixes, Rewrite }
@@ -270,6 +272,7 @@ internal class KeyboardEngine(
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
+        if ((oldSelStart != oldSelEnd) != (newSelStart != newSelEnd)) offerActions()
         (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
         val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) {
@@ -467,6 +470,7 @@ internal class KeyboardEngine(
         val typed = if (addressesHere && selStart == selEnd) EmailAddresses.typed(before()) else null
         val found = if (typed == null || typed.length < (if (addressField) 1 else 3)) emptyList()
             else emails.matching(typed, learned, withContacts = addressField || '@' in typed, limit = if (addressField) 3 else 1)
+        offerActions()
         if (found.isEmpty()) { surface?.suggestions(slots + emojiFor(slots)); return }
         addressOffer = AddressOffer(typed!!, found)
         val offered = found.map { Suggestion(it, Suggestion.Kind.Word) }
@@ -803,10 +807,15 @@ internal class KeyboardEngine(
     }
 
     /** A space-bar slide starts moving the cursor: the word in progress stays as typed. */
-    fun cursorSlide(): CursorSlide {
+    /** A slide on space; with shift held it selects as it goes, and shift then types no capital. */
+    fun cursorSlide(select: Boolean = false): CursorSlide {
         resetTyping(); clearSpaces(); surface?.suggestions(emptyList())
-        return CursorSlide(target, minOf(selStart, selEnd), maxOf(selStart, selEnd), readable = !secure)
+        val selecting = select && !secure
+        if (selecting) shift.typed()
+        return CursorSlide(target, minOf(selStart, selEnd), maxOf(selStart, selEnd), readable = !secure, selecting = selecting)
     }
+    /** Shift is held: a slide on space selects. */
+    val shiftHeld get() = shift.held
 
     /** A slide left from delete: null where it can't run (a password field, a selection, no known cursor). */
     fun deleteSlide(): DeleteSlide? {
@@ -827,6 +836,49 @@ internal class KeyboardEngine(
         if (!target.connected) return
         val clip = if (feedback.cleanLinks) Links.clean(text) else text
         edited(); resetTyping(); clearSpaces(); target.commit(clip); surface?.suggestions(emptyList()); refreshCaps()
+    }
+
+    private var actionsShown = emptyList<StripAction>()
+    /** The strip's chips: what to do with a selection, else nothing yet. */
+    private fun offerActions() {
+        val list = when {
+            secure || !target.connected -> emptyList()
+            selStart >= 0 && selStart != selEnd -> StripAction.selection
+            else -> emptyList()
+        }
+        if (list == actionsShown) return
+        actionsShown = list
+        surface?.actions(list)
+    }
+
+    /** A chip on the strip was tapped; Rewrite's are the keyboard's (HexKeyboard.rewrite). */
+    fun act(action: StripAction) {
+        if (!target.connected) return
+        edited(); resetTyping(); clearSpaces()
+        when (action) {
+            StripAction.Cut -> target.contextAction(android.R.id.cut)
+            StripAction.Copy -> {
+                target.contextAction(android.R.id.copy)
+                // Copied, the selection is done with: the caret goes to its end.
+                val end = maxOf(selStart, selEnd)
+                if (end >= 0) target.setSelection(end, end)
+            }
+            is StripAction.Insert -> {
+                val at = maxOf(selStart, selEnd)
+                target.beginBatch()
+                try {
+                    if (action.replace > 0) target.deleteBefore(action.replace)
+                    target.commit(action.text)
+                    val select = action.select
+                    if (select != null && at >= 0) {
+                        val start = at - action.replace
+                        target.setSelection(start + select.first, start + select.last + 1)
+                    }
+                } finally { target.endBatch() }
+            }
+            is StripAction.Rewrite -> return
+        }
+        surface?.suggestions(emptyList()); refreshCaps()
     }
 
     /** Dictation starts: the word in progress is left as typed. */
