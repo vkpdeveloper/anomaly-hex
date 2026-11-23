@@ -45,10 +45,26 @@ word later and picking another: the pick counts in its place. Search boxes that 
 suggestions learn too, though nothing is corrected there. It learns which word follows one
 word and which follows two ("see you" then "soon",
 [PersonalTrigrams](app/src/main/java/ly/anoma/hex/typing/PersonalTrigrams.kt)), so a space offers your
-own phrases; a prediction stays far under a millisecond with 60,000 phrases kept. It learns where your
+own phrases; a prediction stays far under a millisecond with 60,000 phrases kept. What you wrote
+lately counts most: every use fades by half each 30 days. Your counts weigh in by how much they show:
+a word or pair seen a few times barely moves the word list's own choice, one seen often wins, and
+autocorrect and glides read the two words before, not just one. Each of the eight apps you write in
+most also keeps its own small count on top, so chat and email habits stay apart. A run of words you
+write often ("let me know if that works") is offered as one wide chip once you have written it four
+times and it clearly leads after the words before
+([LearnedPhrases](app/src/main/java/ly/anoma/hex/typing/LearnedPhrases.kt)); tapping it types the
+whole run. Words of four letters or more already in the field you're writing in (a name earlier in the
+email) are read and completed more readily while you stay in it
+([FieldWords](app/src/main/java/ly/anoma/hex/typing/FieldWords.kt), kept in memory only, never in
+password fields). It learns your slips ([TypoMemory](app/src/main/java/ly/anoma/hex/typing/TypoMemory.kt)):
+a misspelling you fixed by hand, by picking from the strip or deleting and retyping, is corrected that
+way next time even where the tap decoder alone is unsure; one undo of an autocorrection stops that one
+change (typed to replacement) without banning the replacement elsewhere. An apostrophe typed inside a
+word stays part of it, so "cna't" becomes "can't". It learns where your
 thumbs land on each key ([TouchOffsets](app/src/main/java/ly/anoma/hex/typing/TouchOffsets.kt)): once
 a key has eight taps, the tap decoder reads that key as sitting where you aim, moved at most a third of
-a key, and older taps count less. Long-press a suggestion for **Forget word**: it is never offered
+a key, and older taps count less; once a key has a dozen taps it also learns how scattered they are, so
+a key you hit cleanly is trusted more than one you often miss. Long-press a suggestion for **Forget word**: it is never offered
 again, and the phrases it is in go too. Words you fix in text you just dictated (Hex's own dictation,
 within five minutes) are learned here at once and, with **Learn from my corrections**, sent to the
 paired computer (one it can't reach gets them at the next contact, even after a restart), which adds names and spellings to its Vocabulary
@@ -171,7 +187,7 @@ Hold the period on the letters page for Gboard's punctuation (`; / ( ) # ! , ?` 
 HEX_LEARN_BENCH=1 HEX_LEARN_BENCH_LABEL=mine ./gradlew :app:testDebugUnitTest --rerun --tests '*LearningBenchTest*' -i
 ```
 
-The table prints and `$TMPDIR/hex-learn-bench/<label>.json` is written; `HEX_LEARN_BENCH_BASE=<other.json>` prints the deltas against an earlier run. The numbers are the same on every run except the times. Other knobs: `HEX_LEARN_BENCH_AUTHORS` (first n), `HEX_LEARN_BENCH_WORDS` (per author), `HEX_LEARN_BENCH_SD` (tap noise in key pitches), `HEX_LEARN_BENCH_SEED`, `HEX_LEARN_BENCH_DIR` (where the samples live) and `HEX_LEARN_BENCH_DEBUG=1` (lists each word that came out wrong).
+The table prints and `$TMPDIR/hex-learn-bench/<label>.json` is written; `HEX_LEARN_BENCH_BASE=<other.json>` prints the deltas against an earlier run. The numbers are the same on every run except the times. Other knobs: `HEX_LEARN_BENCH_AUTHORS` (first n), `HEX_LEARN_BENCH_WORDS` (per author), `HEX_LEARN_BENCH_SD` (tap noise in key pitches), `HEX_LEARN_BENCH_SEED`, `HEX_LEARN_BENCH_DIR` (where the samples live), `HEX_LEARN_BENCH_SPREAD=1` (a thumb steadier mid-keyboard than at the edges), `HEX_LEARN_BENCH_SLIPS=1` (each author misspells ten common words the same way most times) and `HEX_LEARN_BENCH_DEBUG=1` (lists each word that came out wrong).
 
 ## Clipboard
 
