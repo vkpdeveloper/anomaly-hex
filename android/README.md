@@ -53,7 +53,10 @@ again, and the phrases it is in go too. Words you fix in text you just dictated 
 within five minutes) are learned here at once and, with **Learn from my corrections**, sent to the
 paired computer (one it can't reach gets them at the next contact, even after a restart), which adds names and spellings to its Vocabulary
 ([docs/phone-dictation.md](../docs/phone-dictation.md)); the computer's Vocabulary terms come back as
-words here. Nothing is learned in password fields, incognito tabs or apps that ask for no personalised
+words here. The keyboard also counts, as numbers only ([TypingStats](app/src/main/java/ly/anoma/hex/typing/TypingStats.kt)),
+the keys you type, suggestions you tap, autocorrections made and undone, and deletes; once there are
+a few hundred words, **Forget learned words** says how many keystrokes suggestions saved and how many
+autocorrections you undid. Nothing is learned or counted in password fields, incognito tabs or apps that ask for no personalised
 learning, and **Forget learned words** clears all of it.
 
 **Spell checker.** Hex is also the phone's spell checker once you choose it (**Keyboard › Spell
@@ -161,6 +164,14 @@ Hold the period on the letters page for Gboard's punctuation (`; / ( ) # ! , ?` 
 **Keyboard › Number row** (off by default) puts 1 to 0 above the letters, at once, even with the keyboard open. Row 1 then drops its small digits and their long press; the accents stay. The keyboard is one row taller on every page (the symbol pages and number pad stretch their rows to fill it), so changing pages never moves the editor. Taps and glides are measured from the letter rows, so the number row changes nothing autocorrect or glide typing sees.
 
 [English/Spanish typing benchmark, model sources and licences](benchmark/typing/README.md)
+
+**Learning benchmark** ([LearningBenchTest](app/src/test/java/ly/anoma/hex/keyboard/LearningBenchTest.kt), JVM, about a minute): how much the keyboard gains from learning a person's writing. It types the sent mail of ten authors from the public Enron email corpus (CMU, 2015 snapshot; [learn-corpus.py](scripts/learn-corpus.py) downloads it once, 440 MB, and cleans it into `$TMPDIR/hex-learn-bench/authors`: own mail only, no quotes, signatures, links, numbers or anything the English letters page can't type) through the real `KeyboardEngine` and English model with a seeded thumb (key centre plus Gaussian noise plus a fixed per-author grip habit, about 9% of letters landing on a neighbouring key). The first 80% of an author's first 30,000 words teach a keyboard, which then types the rest while still learning; the same text is typed on a keyboard that learns nothing. The thumb taps the strip's word or phrase when it offers the one intended, ends words with space or their mark, and undoes a correction that broke a word it typed right. It reports keystroke savings (1 - keystrokes / characters), word accuracy, corrections that broke or fixed a word, next-word hits in the strip, the gain from learning, and time per key. Taps only, no glides.
+
+```
+HEX_LEARN_BENCH=1 HEX_LEARN_BENCH_LABEL=mine ./gradlew :app:testDebugUnitTest --rerun --tests '*LearningBenchTest*' -i
+```
+
+The table prints and `$TMPDIR/hex-learn-bench/<label>.json` is written; `HEX_LEARN_BENCH_BASE=<other.json>` prints the deltas against an earlier run. The numbers are the same on every run except the times. Other knobs: `HEX_LEARN_BENCH_AUTHORS` (first n), `HEX_LEARN_BENCH_WORDS` (per author), `HEX_LEARN_BENCH_SD` (tap noise in key pitches), `HEX_LEARN_BENCH_SEED`, `HEX_LEARN_BENCH_DIR` (where the samples live) and `HEX_LEARN_BENCH_DEBUG=1` (lists each word that came out wrong).
 
 ## Clipboard
 
