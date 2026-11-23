@@ -3060,6 +3060,31 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   ├── OpenCode not running, a timeout (30 s at most) or a failure -> a short note, no edit
 │   └── Proof limits: RewriteTest and the route test with a fake rewrite (phone::rewrite);
 │       no device run and no real OpenCode request
+├── Grid menu › a tone (Shorter, Friendlier, Formal, English) -> Rewrite with that `style`
+│   (route tests; no device run, no real OpenCode request)
+├── Grid menu › Reply -> the chat in the app in front, read through the floating button's
+│   accessibility service (right is yours), with the typed text to `POST /phone/v1/replies`;
+│   up to three replies as strip chips, a tap replaces the field's text
+│   ├── Floating button off -> the strip says to turn it on; no chat -> "No chat on screen"
+│   └── Proof limits: ChatScreenTest, SelectionTest, the route test with a fake answer; no
+│       device run, no real chat app read, no real OpenCode request
+├── A dictation ending "scratch that" or "make it shorter" (and other tones) -> taken back, or
+│   rewritten with that tone (SpokenSendTest; unit tests only, no device run)
+├── Two-finger swipe left / right on the keys -> undo / redo a word, a run of deletes, or one
+│   larger edit, kept by Hex in any field; none in password fields; sending forgets them
+│   (UndoTest; seen on a Pixel emulator)
+├── A selection -> Cut, Copy, Rewrite, English on the strip; shift held while sliding on space
+│   selects (SelectionTest; Cut seen on a Pixel emulator, the shift slide unit-tested only)
+├── A sum before the caret (45*12) -> its answer as a chip that replaces it; an amount and a
+│   space (250 usd, 8 km, 30°c) -> its conversion in brackets, money at fixed rates for now
+│   (QuickMathTest; both seen on a Pixel emulator)
+├── Keyboard › Text shortcuts -> typing one (;eta, omw) offers its text; a {blank} is selected
+│   after it goes in (SnippetsTest; added in settings and used on a Pixel emulator)
+├── Keyboard › Free times (off; Calendar permission) -> "free" / "available" (with a day) and
+│   a space offer calendar gaps of 30 min or more between 9 am and 9 pm (FreeTimesTest; seen
+│   on a Pixel emulator with a local test calendar)
+├── A field that turns off suggestions -> the strip still shows; only autocorrect on space
+│   stops (seen on a Pixel emulator in Contacts search)
 ├── Type a word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
 │   third slot ("medicine" 💊 💉, "chai" ☕ 🫖); a tap ends the word and types the emoji
 │   ├── The emoji you pick for a word come first next time; a panel pick shows once picked twice

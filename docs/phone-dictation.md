@@ -144,9 +144,11 @@ there is no undo. The floating button never sends.
 ## Rewrite
 
 `POST /phone/v1/rewrite` with `Content-Type: application/json` and a body up
-to 64 KiB: `{"text": "…"}`, sent only when someone taps the keyboard's
-Rewrite. OpenCode rewrites the text for grammar, spelling, and clarity,
-keeping its meaning, tone, and language (`phone::rewrite`,
+to 64 KiB: `{"text": "…", "style": "fix"}`, sent only when someone taps the
+keyboard's Rewrite or one of its tones. OpenCode rewrites the text for
+grammar, spelling, and clarity, keeping its meaning, tone, and language; an
+optional `style` of `shorter`, `friendlier`, `formal`, or `english`
+(translate) changes that, and a missing or unknown one is `fix` (`phone::rewrite`,
 `dictation::processor::rewrite_typed_text`). It uses Global mode's OpenCode
 model, variant, and deadline (cut to 30 s), with Global's instructions too
 while its rewrite is on, through the running OpenCode service; Hex never
@@ -163,6 +165,23 @@ never logged or kept, and a failure answers a code, never partial text.
 
 The text goes to this computer and from there to whatever model OpenCode
 uses, which may be a cloud model.
+
+## Replies
+
+`POST /phone/v1/replies` with `Content-Type: application/json` and a body up
+to 64 KiB: `{"lines": [{"mine": false, "text": "…"}], "draft": "…"}`, sent
+only when someone taps the keyboard's Reply. `lines` is the chat on the
+phone's screen, oldest first (`mine` for the person's own messages), cut to
+its newest 40; `draft` is what they already typed, which replies build on.
+OpenCode drafts up to three short replies in the chat's language and the
+person's tone (`dictation::processor::draft_replies`), with the same model,
+deadline, and limits as Rewrite. Nothing is logged or kept.
+
+```ts
+200 {"replies": ["…", "…", "…"]}
+400 invalid-request / empty-text (no non-empty line)
+// otherwise as Rewrite
+```
 
 ## Security
 

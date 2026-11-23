@@ -6,7 +6,7 @@ A keyboard and a floating button that dictate with Hex on your computer. The pho
 
 Pair once under **Computer**: Hex finds the computer on the local network, or takes an address (Tailscale works anywhere), then its pairing code. The protocol, routes and limits are in [docs/phone-dictation.md](../docs/phone-dictation.md). The computer turns on **Labs › Phone dictation** and answers only private and Tailscale addresses.
 
-What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; the text you tap **Rewrite** on, to the paired computer, which sends it on to whatever model its OpenCode uses (which may be a cloud model); with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
+What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; the text you tap **Rewrite** on, and the chat on screen with what you typed when you tap **Reply**, to the paired computer, which sends it on to whatever model its OpenCode uses (which may be a cloud model); with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
 
 A transcript goes back to the field it was spoken in. If that field went away while the computer was transcribing (another field, or the keyboard closed), it's copied instead and the strip's chip offers it; an app that restarts the same field (chat apps do) still gets it. The keyboard shapes it with the language the computer says it heard: mid-sentence, a capital the model gave an ordinary first word goes. When the computer chooses the language itself, the text stays as it came.
 
@@ -60,8 +60,9 @@ picked twice. Picks are counts per word (at most 1,000 words), never learned in 
 apps that ask for no personalised learning, and **Forget learned words** clears them.
 
 **Grid menu.** The grid at the strip's start opens a menu in place of the strip and keys:
-**Clipboard**, **Fix mistakes** (only where the Fix button works), **Rewrite** (only with a
-computer paired, never in a password field) and **Settings**.
+**Clipboard**, **Fix mistakes** (only where the Fix button works), **Rewrite** and **Reply** (only
+with a computer paired, never in a password field), a row of tones (Shorter, Friendlier, Formal,
+English) and **Settings**.
 
 **Rewrite** sends the selection, or else the text within 1,000 characters of the caret as Fix
 mistakes reads it, to the paired computer, where OpenCode rewrites it for grammar, spelling and
@@ -70,7 +71,41 @@ text goes to the computer and from there to whatever model OpenCode uses, which 
 model; it leaves the phone only on the tap. The strip says Rewriting while you can keep typing,
 and the answer replaces the text in one edit only if the field hasn't changed meanwhile;
 otherwise it says so and leaves the text alone. **Undo rewrite** on the strip puts it back. The
-computer needs OpenCode running; Hex never starts it.
+computer needs OpenCode running; Hex never starts it. A tone rewrites the same text shorter,
+friendlier, more formal, or into English.
+
+**Reply** reads the chat in the app in front through the floating button's accessibility service
+(which has to be on; the strip says so otherwise), only on the tap and never kept: text on the right
+is yours, on the left theirs, leaving out the title bar, times and dates, up to the last 15 lines.
+Those lines and what you typed go to the paired computer, which drafts up to three replies with
+OpenCode; they show as chips on the strip, and a tap puts one in place of the field's text. They go
+once the field changes.
+
+**Selection.** A selection puts **Cut**, **Copy**, **Rewrite** and **English** on the strip in the
+suggestions' place (the last two with a computer paired). Hold shift and slide on space to select
+as the caret moves. **Undo and redo**: swipe two fingers left on the keys to undo, right to redo, a
+word with its space, a run of deletes, or one larger edit (a pick, a dictation, a paste, a rewrite)
+at a time. Hex keeps the steps itself, so they work in any field; a password field keeps none, and
+sending a message forgets them.
+
+**Sums and conversions.** A sum before the caret (`45*12`, `120*15%`, `(1000+4001)/2`) offers its
+answer on the strip, which replaces it; `45*12=` keeps the sum and adds the answer. An amount
+followed by a space (`250 usd`, `₹1000`, `8 km`, `70 kg`, `30°c`, `6 ft`) offers its conversion,
+which goes after it in brackets: money into the phone's own currency (dollars when it already is),
+at fixed rates for now. Dates and phone numbers (`23/11`, `98765-43210`) aren't sums, and a unit
+after a number is never autocorrected.
+
+**Keyboard › Text shortcuts** are yours to add: typing one offers its text on the strip. One that
+starts with a mark (`;eta`) shows from its mark and one letter (`;e`); a plain one (`omw`) only as
+its own whole word. A part in braces is a blank: `There in {10} min` goes in as "There in 10 min"
+with the 10 selected, so the next keys replace it. `;eta` comes as an example. They stay on the
+phone.
+
+**Keyboard › Free times** (off by default; it asks for the Calendar permission): "free" or
+"available", optionally with today, tomorrow or a weekday ("free on friday"), and a space offers the
+gaps in your calendars of at least half an hour between 9 am and 9 pm, as chips such as "today 3 to
+5 pm" (the day is said when you didn't type one). Only busy events count; all-day and declined ones
+don't. Hex reads just their start and end times, only then, and keeps nothing.
 
 **Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
 tap it to replace the shortcut. Space, marks and return leave the shortcut as typed. The paired
@@ -80,6 +115,16 @@ the computer is forgotten.
 **Say "send it" to send** (Keyboard settings, off by default): end a dictation with "send it" (or
 "bhej do") after a pause or a sentence's end, and Hex types the rest and presses the field's send
 key. Only where the enter key sends or goes, never in a password field.
+
+**Editing by voice.** End a dictation with "scratch that" to take it back (said alone, it takes back
+the one before), or with "make it shorter", "make it friendlier", "make it formal", "translate to
+English" or "fix the grammar" to have the paired computer rewrite what you said that way before it
+goes in. As with "send it", the command must follow a pause or a sentence's end, so "can you make it
+shorter" stays text.
+
+**Fields that turn off suggestions** (search boxes, some chat apps) still get the strip:
+suggestions, emoji and corrections show as anywhere, and tapping a word still offers its fixes. Only
+the automatic correction on space stops there, as on Gboard.
 
 **Email addresses.** While you type one, the strip offers addresses that complete it: the phone's
 accounts that Android shows Hex without a permission, addresses you've typed before, and, with
@@ -144,7 +189,7 @@ Saved passwords and usernames from the phone's autofill service, and a verificat
 
 ## Settings
 
-After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, number row, key pop-ups, haptics, glide typing, recent screenshots, Codes from texts, Remove tracking from links, Expand short links, Learn from Hex history, Say "send it" to send and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
+After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, text shortcuts, number row, key pop-ups, haptics, glide typing, recent screenshots, Codes from texts, Free times, Remove tracking from links, Expand short links, Learn from Hex history, Say "send it" to send and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
 
 **Privacy › Privacy policy** opens the [Android policy text](play/policy/privacy-policy.txt) even in airplane mode.
 
