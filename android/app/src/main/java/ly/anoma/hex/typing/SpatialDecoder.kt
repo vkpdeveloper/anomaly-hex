@@ -64,15 +64,25 @@ internal class SpatialDecoder(val model: TypingModel) {
     // Spanish's many one- and two-letter words ("a", "es", "va") make a letter read as a space too
     // cheap a split ("vaxes" -> "va es"): there, only a tap below the letters is one.
     private val spaceTapCost = if (model.language == "es") Double.POSITIVE_INFINITY else 5.0
+    // A grid's keys as letter codes and where taps for them are aimed ([KeyGrid.aimed]), in its own
+    // order: built once per grid, since a tap is scored against the same grid again and again.
+    private class Keys(val grid: KeyGrid, val codes: IntArray, val xs: DoubleArray, val ys: DoubleArray)
+    @Volatile private var keys: Keys? = null
+    private fun keysOf(grid: KeyGrid): Keys {
+        keys?.let { if (it.grid === grid) return it }
+        val entries = grid.aimed.entries.filter { model.code(it.key) != 0 }
+        return Keys(grid, IntArray(entries.size) { model.code(entries[it].key) },
+            DoubleArray(entries.size) { entries[it].value.x }, DoubleArray(entries.size) { entries[it].value.y }).also { keys = it }
+    }
     fun score(grid: KeyGrid, x: Double, y: Double): Tap {
         val costs = DoubleArray(model.alphabet + 1) { Double.POSITIVE_INFINITY }
         val sy = grid.verticalSpread
-        for ((c, p) in grid.aimed) {
-            val code = model.code(c)
-            if (code == 0) continue
-            val dx = (x - p.x) / (grid.pitchX * .29)
-            val dy = (y - p.y) / sy
-            costs[code] = .5 * (dx * dx + dy * dy)
+        val sx = grid.pitchX * .29
+        val k = keysOf(grid)
+        for (i in k.codes.indices) {
+            val dx = (x - k.xs[i]) / sx
+            val dy = (y - k.ys[i]) / sy
+            costs[k.codes[i]] = .5 * (dx * dx + dy * dy)
         }
         val min = costs.min()
         // An accented letter also comes from its base letter's key, even when it has a key of its
@@ -83,8 +93,16 @@ internal class SpatialDecoder(val model: TypingModel) {
             if (base != i && raw[base].isFinite()) costs[i] = minOf(raw[i], raw[base] + ACCENT_COST)
         }
         for (i in 1 until costs.size) costs[i] -= min
-        val choices = (1 until costs.size).filter { costs[it] <= MAX_TAP_COST }.sortedBy { costs[it] }.toIntArray()
-        return Tap(costs, choices, y > grid.bottomY, grid.missedSpaceCost, spaceCost(grid, x, y))
+        // The letters within reach, cheapest first (ties by code), by insertion: there are only a few.
+        val near = IntArray(costs.size)
+        var count = 0
+        for (code in 1 until costs.size) {
+            if (!(costs[code] <= MAX_TAP_COST)) continue
+            var at = count++
+            while (at > 0 && costs[near[at - 1]] > costs[code]) { near[at] = near[at - 1]; at-- }
+            near[at] = code
+        }
+        return Tap(costs, near.copyOf(count), y > grid.bottomY, grid.missedSpaceCost, spaceCost(grid, x, y))
     }
 
     // A tap on the bottom letter row's upper half, above the space bar, read as a space the
