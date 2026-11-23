@@ -245,12 +245,12 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
         return if (r != 0L && length(a) == word.length) a else -1
     }
     // Common prefixes get reused on consecutive words. No corpus-sized heap trie.
-    private data class Prefix(val text: String, val swears: Boolean, val context: Int)
+    private data class Prefix(val text: String, val swears: Boolean, val context: Int, val hidden: Int)
     private val prefixCache = object : LinkedHashMap<Prefix, IntArray>(96, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<Prefix, IntArray>?) = size > 96
     }
     fun completions(prefix: String, swears: Boolean, previous: Int): IntArray {
-        val key = Prefix(prefix, swears, neverSuggest.restrictedContext(previous))
+        val key = Prefix(prefix, swears, neverSuggest.restrictedContext(previous), neverSuggest.revision)
         return prefixCache.getOrPut(key) { rankCompletions(key) }
     }
     private fun rankCompletions(key: Prefix): IntArray {

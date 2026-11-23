@@ -220,7 +220,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 if (it) TinyfixFiles.enable(context, typing) else TinyfixFiles.disable(context, typing)
                             }
                             Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
-                            Rule(); Toggle("Suggest contacts' emails",
+                            Rule(); Toggle("Suggest contacts' names and emails",
                                 if (contactsRefused) "Allow Contacts in Hex's app info" else "Needs access to your contacts", contactEmails) {
                                 contactsAllowed = context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
                                 when {

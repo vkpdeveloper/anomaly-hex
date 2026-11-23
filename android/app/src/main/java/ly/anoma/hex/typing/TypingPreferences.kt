@@ -97,13 +97,14 @@ internal class TypingPreferences(context: Context) {
     fun forgetLearned(files: java.io.File) {
         java.io.File(files, LearnedWords.FILE).delete()
         java.io.File(files, TouchOffsets.FILE).delete()
+        java.io.File(files, Forgotten.FILE).delete()
         prefs.edit().putLong(FORGET_LEARNED, System.currentTimeMillis()).putLong("historyWordsAt", 0).apply()
     }
 
     // Remember only explicit rejection of this exact pair in this language; never save typed text.
     private fun pair(language: String, original: String, replacement: String): String {
         val bytes = (language + "\u0000" + original.lowercase() + "\u0000" + replacement.lowercase()).toByteArray()
-        return android.util.Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes), android.util.Base64.NO_WRAP)
+        return java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes))
     }
     fun blocked(language: String, original: String, replacement: String) =
         prefs.getInt(pair(language, original, replacement), 0) >= 2

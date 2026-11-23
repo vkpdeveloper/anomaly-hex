@@ -14,6 +14,7 @@ import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.speech.SpokenText
 import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
+import ly.anoma.hex.typing.Forgotten
 import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
 import ly.anoma.hex.typing.LearnedWords
@@ -57,6 +58,10 @@ internal class KeyboardEngine(
     private val learnedChanged: () -> Unit = {},
     /** Where your taps land on each key, learned from the words you finish under the same rules as [learned]. */
     val touch: TouchOffsets = TouchOffsets(),
+    /** The words you forgot from the strip: hidden from suggestions and never learned back from a slip. */
+    private val forgotten: Forgotten = Forgotten(),
+    /** [forgotten] changed and should be saved. */
+    private val forgottenChanged: () -> Unit = {},
     /** The addresses the strip offers as one is typed, with those in [learned]. */
     private val emails: EmailAddresses = EmailAddresses(),
     /** A typing model's emoji lists (by its language), or null for a language with none. */
@@ -329,17 +334,60 @@ internal class KeyboardEngine(
     // A language's decoder with what you write and your own words, and for Hinglish English's model,
     // read in the background, which tells its Hindi words from English ones (SpatialDecoder.english).
     private fun prepared(decoder: SpatialDecoder) = decoder.also {
-        it.learned = learned; loadPersonal(it)
+        it.learned = learned; it.model.neverSuggest.hide(forgotten.all()); loadPersonal(it)
         if (it.model.language == Spoken.Hinglish.code) background.execute {
             it.english = try { loadDecoder(Spoken.English.code).model } catch (_: java.io.IOException) { null }
         }
     }
     /** Android's personal dictionary changed: every loaded language reads it again, off the main thread. */
     fun personalWordsChanged() { for (decoder in models.values) loadPersonal(decoder) }
-    private fun loadPersonal(decoder: SpatialDecoder) {
+    private fun loadPersonal(decoder: SpatialDecoder, then: () -> Unit = {}) {
         val read = readPersonal ?: return
         val model = decoder.model
-        background.execute { decoder.personal = read(model, learned.words().filter { model.index(it.lowercase()) < 0 && !model.known(it.lowercase()) }) }
+        background.execute {
+            decoder.personal = read(model, learned.words().filter { it !in forgotten && model.index(it.lowercase()) < 0 && !model.known(it.lowercase()) })
+            then()
+        }
+    }
+
+    /** [word], long-pressed on the strip, is forgotten: no longer suggested or corrected to, dropped from
+     * what you wrote, and not learned again from one slip. A user action, so it works in any field. */
+    fun forget(word: String) {
+        if (!forgotten.add(word)) return
+        learned.forgetWord(word)
+        hiddenChanged(refresh = true)
+        forgottenChanged(); learnedChanged()
+    }
+    /** [forgotten] changed (a word forgotten or brought back, or all of them cleared). */
+    fun hiddenChanged(refresh: Boolean = false) {
+        for (decoder in models.values) {
+            decoder.model.neverSuggest.hide(forgotten.all())
+            loadPersonal(decoder) { if (refresh) main.post { showSuggestions(word) } }
+        }
+        if (refresh) showSuggestions(word)
+    }
+
+    /** [word] is yours from now on, as if used twice: kept as typed against an autocorrection, picked over
+     * one, or put back by undo. Forgotten words come back when you choose them. */
+    private fun teach(word: String) {
+        if (!learnHere) return
+        if (forgotten.remove(word)) { forgottenChanged(); for (d in models.values) d.model.neverSuggest.hide(forgotten.all()) }
+        repeat(LearnedWords.WORD_USES) { learned.learn(word, null, false) }
+        personalWordsChanged(); learnedChanged()
+    }
+    // What a picked strip word teaches: the word kept as typed, when the keyboard lacks it or would have
+    // corrected it, or a word picked over the autocorrection that space would have made.
+    private fun taught(w: TypingWord, typed: String, picked: String): String? {
+        if (!learnHere || typed.length < 2) return null
+        val lang = w.decoder.model.language
+        val fix = w.replacement()?.takeIf {
+            feedback.autocorrect && autocorrectHere && !it.equals(typed, ignoreCase = true) && !feedback.blocked(lang, typed, it)
+        }
+        return when {
+            picked == typed -> typed.takeIf { w.unknown() || fix != null }
+            fix != null && !picked.equals(fix, ignoreCase = true) -> picked
+            else -> null
+        }
     }
 
     /** The word that ends [b], the text before the cursor, is learned when [boundary] characters (a
@@ -348,6 +396,7 @@ internal class KeyboardEngine(
         if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         val f = LearnedWords.finished(b) ?: return
         word?.takeTouched()?.let { t -> if (TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid)) learnedChanged() }
+        if (f.word in forgotten) return
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
     }
@@ -593,12 +642,14 @@ internal class KeyboardEngine(
         if (old.isNotEmpty() && !endsWith(prefix + old)) { resetTyping(); surface?.suggestions(emptyList()); return }
         if (old.isEmpty() && !w.startsWord(before())) return
         val holds = SpaceRules.separates(target.after(1))
+        val taught = if (old.isEmpty()) null else taught(w, old, text)
         clearSpaces()
         if (replace(old, if (holds) text else "$text ")) {
             resetTyping()
             val b = before()
             if (holds) heldAnchor = b else pickedAnchor = b
             learn(b, if (holds) 0 else 1)
+            taught?.let(::teach)
             showPredictions(b)
             inputDone()
         }
@@ -732,7 +783,11 @@ internal class KeyboardEngine(
         val last = undo
         undo = null
         if (last != null && endsWith(last.replacement + " ") && replace(last.replacement + " ", last.original)) {
-            feedback.undo(last.language, last.original, last.replacement)
+            // What you put back is yours: it isn't corrected again (and, like the count, only where learning is allowed).
+            if (learnHere) {
+                feedback.undo(last.language, last.original, last.replacement)
+                if (' ' !in last.original) teach(last.original)
+            }
             val typed = last.original.substringAfterLast(' ')
             prefix = before().dropLast(typed.length).takeLast(40); word?.restored(typed, prefix)
             if (expectedCaret >= 0) expectedCaret += last.original.length - last.replacement.length - 1

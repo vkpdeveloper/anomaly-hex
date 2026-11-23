@@ -27,6 +27,7 @@
     <string name="keyboard_paste_clip">Paste %1$s</string>
     <string name="keyboard_paste_code">Paste code %1$s</string>
     <string name="keyboard_keep">Keep %1$s</string>
+    <string name="keyboard_forget">Forget %1$s</string>
     <string name="keyboard_suggest">Suggest %1$s</string>
     <string name="keyboard_correction">Correction %1$s</string>
     <string name="keyboard_numbers_label" translatable="false">\?123</string>

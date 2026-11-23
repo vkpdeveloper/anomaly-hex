@@ -69,6 +69,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private var guessing = false
     /** A word is being typed or the caret is in one: its suggestions take the autofill chips' place. */
     private var typingWord = false
+    /** The slot whose word a long press offered to forget, or -1. */
+    private var forgetting = -1
 
     // The autofill service's chips, which it draws and fills the field from: the rest scroll, the pinned
     // stay at the end by the mic.
@@ -124,7 +126,22 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
                 background = pressable(android.graphics.Color.TRANSPARENT, false)
                 setOnClickListener {
                     val slot = offered[i] ?: return@setOnClickListener
-                    if (slot.kind == Suggestion.Kind.Emoji) ime.engine.pickEmoji(slot.text) else ime.engine.pickSuggestion(slot.text)
+                    when {
+                        slot.kind == Suggestion.Kind.Emoji -> ime.engine.pickEmoji(slot.text)
+                        forgetting == i -> { forgetting = -1; ime.engine.forget(slot.text) }
+                        else -> ime.engine.pickSuggestion(slot.text)
+                    }
+                }
+                // A long press offers to forget the word (the slot reads "Forget word"; a tap does it, the
+                // next suggestions undo the offer). What you typed is yours to keep, and emoji aren't words.
+                setOnLongClickListener {
+                    val slot = offered[i]
+                    if (slot == null || slot.kind == Suggestion.Kind.Emoji || slot.kind == Suggestion.Kind.Typed) return@setOnLongClickListener false
+                    forgetting = i
+                    this@Toolbar.words[i].text = context.getString(R.string.keyboard_forget, slot.text)
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    fitWords()
+                    true
                 }
                 // As wide as its slot, so a new word only redraws the strip; a word sized to its text
                 // would measure the whole keyboard again on every key.
@@ -271,6 +288,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         } else { shown[1] = words.getOrNull(0); shown[0] = words.getOrNull(1); shown[2] = words.getOrNull(2) }
         emoji.forEachIndexed { i, slot -> shown[3 + i] = slot }
         offered = shown
+        forgetting = -1
         guessing = words.all { it.kind == Suggestion.Kind.Next }
         typingWord = wordInProgress(words)
         val emojiShown = emoji.isNotEmpty()

@@ -17,7 +17,8 @@ internal interface Lexicon {
  * moderately common one), the strip completes them, a word typed in lowercase takes the capitals you
  * gave it ("github" -> "GitHub") unless it is also an ordinary word ("will"), and a shortcut typed
  * offers its phrase ([shortcut]). Words in the model's alphabet only; nothing is written. */
-internal class PersonalWords(private val model: TypingModel, words: Collection<String>, shortcuts: Map<String, String>) : Lexicon {
+internal class PersonalWords(private val model: TypingModel, words: Collection<String>, shortcuts: Map<String, String>,
+                             hidden: (String) -> Boolean = { false }) : Lexicon {
     private val codes: Array<ByteArray>
     private val texts: Array<String>
     private val lookup = HashMap<String, Int>()
@@ -28,6 +29,7 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         val byCodes = LinkedHashMap<String, Pair<ByteArray, String>>()
         for (word in words) {
             val lower = word.lowercase()
+            if (hidden(lower)) continue
             if (lower.length !in 2..TypingWord.MAX_LENGTH || lower.any { !it.isLetter() && it != '\'' }) continue
             val encoded = ByteArray(lower.length)
             var ok = true
@@ -94,11 +96,13 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
 
         /** The personal dictionary's words and shortcuts for the model's language (or every language),
          * with the words you've written that the model lacks ([learned], `LearnedWords.words`) and the
-         * paired computer's [replacements]; your own shortcut wins one the computer also has.
+         * paired computer's [replacements] and your [contactNames]; your own shortcut wins one the computer also has.
          * Android lets only an enabled input method or spell checker read it, with no permission, and
          * answers anyone else with nothing; any failure reads as nothing. Read it off the main thread. */
         fun read(resolver: ContentResolver, model: TypingModel, learned: Collection<String> = emptyList(),
-                 replacements: Replacements = Replacements.None): PersonalWords {
+                 replacements: Replacements = Replacements.None, contactNames: Collection<String> = emptyList(),
+                 forgotten: Forgotten? = null): PersonalWords {
+            val hidden: (String) -> Boolean = { forgotten?.contains(it) == true }
             val words = ArrayList<String>(learned)
             val shortcuts = HashMap<String, String>()
             try {
@@ -115,10 +119,10 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
                     }
                 }
             } catch (_: RuntimeException) {
-                return PersonalWords(model, learned + replacements.words, replacements.shortcuts)
+                return PersonalWords(model, learned + contactNames + replacements.words, replacements.shortcuts, hidden)
             }
             val mine = shortcuts.keys.mapTo(HashSet()) { it.lowercase() }
-            return PersonalWords(model, words + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts)
+            return PersonalWords(model, words + contactNames + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts, hidden)
         }
     }
 }

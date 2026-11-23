@@ -4,7 +4,7 @@ import java.io.Reader
 
 /** These are output flags, not dictionary deletions. Index only the small curated list;
  * beam search and completion scans check a byte without decoding every spelling. */
-internal class NeverSuggest(model: TypingModel, source: Reader) {
+internal class NeverSuggest(private val model: TypingModel, source: Reader) {
     private val wordFlags = ByteArray(model.words)
     private val spellings = HashMap<String, Byte>() // Also protects literals outside HXTM.
     private class Following {
@@ -12,6 +12,12 @@ internal class NeverSuggest(model: TypingModel, source: Reader) {
         val spellings = HashMap<String, Byte>()
     }
     private val following = HashMap<Int, Following>()
+    // Words you removed from the strip ([Forgotten]): blocked for everyone, swears or not.
+    @Volatile private var hiddenIds = BooleanArray(0)
+    @Volatile private var hiddenSpellings = emptySet<String>()
+    /** Bumped by [hide], so a cache of what was allowed knows it is stale. */
+    @Volatile var revision = 0
+        private set
     private val unknownStarts = HashMap<String, Int>()
 
     init {
@@ -46,6 +52,20 @@ internal class NeverSuggest(model: TypingModel, source: Reader) {
         }
     }
 
+    /** [words] (in any case) are never suggested or corrected to, replacing the last ones. */
+    fun hide(words: Collection<String>) {
+        val ids = BooleanArray(model.words)
+        val spelled = HashSet<String>()
+        for (word in words) {
+            val lower = word.lowercase()
+            spelled.add(lower)
+            model.index(lower).takeIf { it >= 0 }?.let { ids[it] = true }
+        }
+        hiddenIds = ids; hiddenSpellings = spelled; revision++
+    }
+    fun hidden(spelling: String) = hiddenSpellings.let { it.isNotEmpty() && spelling.lowercase() in it }
+    private fun hidden(word: Int) = hiddenIds.let { word < it.size && it[word] }
+
     // Negative IDs still use HXTM's unknown-word probability, including a typed
     // phrase starter outside the model. Most previous words share the same prefix cache.
     fun context(spelling: String, id: Int) = if (id >= 0) id else unknownStarts[spelling] ?: -1
@@ -54,9 +74,9 @@ internal class NeverSuggest(model: TypingModel, source: Reader) {
     fun blocksFollowing(word: Int, swears: Boolean, previous: Int) =
         previous != -1 && denied(following[previous]?.ids?.get(word) ?: 0, swears)
     fun blocks(word: Int, swears: Boolean, previous: Int = -1) =
-        denied(wordFlags[word], swears) || blocksFollowing(word, swears, previous)
+        hidden(word) || denied(wordFlags[word], swears) || blocksFollowing(word, swears, previous)
     fun blocks(spelling: String, swears: Boolean, previous: Int) =
-        denied(spellings[spelling] ?: 0, swears) ||
+        hidden(spelling) || denied(spellings[spelling] ?: 0, swears) ||
             (previous != -1 && denied(following[previous]?.spellings?.get(spelling) ?: 0, swears))
 
     private companion object {

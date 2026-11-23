@@ -31,8 +31,10 @@ import ly.anoma.hex.R
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.speech.Spoken
+import ly.anoma.hex.typing.ContactNames
 import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
+import ly.anoma.hex.typing.Forgotten
 import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.Replacements
@@ -76,6 +78,15 @@ class HexKeyboard : InputMethodService() {
         val partial = File(filesDir, "$name.partial")
         runCatching { partial.writeText(text); partial.renameTo(File(filesDir, name)) }
     }
+    // The words you forgot from the strip, saved at once (a user action, rare) and read with the learned ones.
+    private val forgotten = Forgotten()
+    private fun forgottenChanged() {
+        val text = forgotten.write()
+        words.execute {
+            val partial = File(filesDir, Forgotten.FILE + ".partial")
+            runCatching { partial.writeText(text); partial.renameTo(File(filesDir, Forgotten.FILE)) }
+        }
+    }
     // The emoji you pick for words, kept beside the emoji panel's recent ones, and each layout's emoji
     // lists, read on first use (English's, and Hinglish's own with English's).
     private val emojiPrefs by lazy { getSharedPreferences("emoji", MODE_PRIVATE) }
@@ -96,8 +107,15 @@ class HexKeyboard : InputMethodService() {
     // Settings › Keyboard's switch and the Contacts permission are both on, read again a little after
     // they change (a sync changes many at once).
     private val emails = EmailAddresses()
+    // Your contacts' names are words too: typed or swiped right, completed with their capitals. In memory only.
+    @Volatile private var contactNames: List<String> = emptyList()
     private val readContacts = Runnable {
-        words.execute { emails.contacts = if (contactsAllowed()) EmailAddresses.contacts(contentResolver) else emptyList() }
+        words.execute {
+            val allowed = contactsAllowed()
+            emails.contacts = if (allowed) EmailAddresses.contacts(contentResolver) else emptyList()
+            contactNames = if (allowed) ContactNames.read(contentResolver) else emptyList()
+            main.post { engine.personalWordsChanged() }
+        }
     }
     private val contactsChanged = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) { main.removeCallbacks(readContacts); main.postDelayed(readContacts, CONTACTS_DELAY_MS) }
@@ -127,6 +145,7 @@ class HexKeyboard : InputMethodService() {
                 val got = dictation.router.send { host, computer -> HexClient.words(host, computer.port, computer.code) }
                 if (!feedback.learnFromHistory) return@launch
                 learned.seed(got.words, got.pairs)
+                forgotten.all().forEach(learned::forgetWord)
                 feedback.historyWordsAt = System.currentTimeMillis()
                 engine.learnedWordsChanged(); learnedChanged()
             } catch (e: CancellationException) {
@@ -158,9 +177,9 @@ class HexKeyboard : InputMethodService() {
     private val text by lazy { CachedText(InputConnectionTarget(this), SystemClock::uptimeMillis) }
     internal val engine by lazy {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
-            readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements)) }, learned = learned,
-            touch = touch,
-            learnedChanged = ::learnedChanged, emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
+            readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements), contactNames, forgotten) },
+            learned = learned, touch = touch, learnedChanged = ::learnedChanged, forgotten = forgotten, forgottenChanged = ::forgottenChanged,
+            emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
             emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() },
             freeTimes = { before ->
                 if (!feedback.freeTimes || !FreeTimes.allowed(this)) emptyList()
@@ -195,6 +214,7 @@ class HexKeyboard : InputMethodService() {
             }
             TypingPreferences.FORGET_LEARNED -> {
                 main.removeCallbacks(saveLearned); learned.clear(); touch.clear(); engine.learnedWordsChanged()
+                forgotten.clear(); engine.hiddenChanged()
                 emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
             }
             TypingPreferences.LEARN_FROM_HISTORY ->
@@ -258,8 +278,9 @@ class HexKeyboard : InputMethodService() {
         words.execute {
             runCatching { if (learnedFile.exists()) learned.read(learnedFile.readText()) }
             runCatching { if (touchFile.exists()) touch.read(touchFile.readText()) }
+            runCatching { File(filesDir, Forgotten.FILE).takeIf { it.exists() }?.let { forgotten.read(it.readText()) } }
             learnedLoaded = true
-            main.post { engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords() }
+            main.post { engine.hiddenChanged(); engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords() }
         }
         words.execute { emails.accounts = EmailAddresses.accounts(this) }
         contactsSettingChanged()

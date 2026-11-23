@@ -64,6 +64,14 @@ internal class LearnedWords {
         revision++
     }
 
+    /** Drops [word] and the pairs it is in, seeded or typed, so it stops counting and is no longer one of [words]. */
+    @Synchronized fun forgetWord(word: String) {
+        val lower = word.lowercase()
+        words[lower]?.let { total -= it.count; forget(lower) }
+        for (m in listOf(typedPairs, seededPairs)) m.keys.removeAll { it.substringBefore(' ') == lower || it.substringAfter(' ') == lower }
+        revision++
+    }
+
     @Synchronized fun clear() {
         words.clear(); spellings.clear(); typedPairs.clear(); seededPairs.clear(); followers = null; triples.clear(); typedAddresses.clear(); total = 0; revision++
     }

@@ -10,6 +10,7 @@
     <string name="keyboard_transcribing">正在转录</string>
     <string name="keyboard_recording">正在录音</string>
     <string name="keyboard_keep">保留 %1$s</string>
+    <string name="keyboard_forget">忘记 %1$s</string>
     <string name="keyboard_suggest">建议 %1$s</string>
     <string name="keyboard_numbers">数字和符号</string>
     <string name="keyboard_letters">字母</string>

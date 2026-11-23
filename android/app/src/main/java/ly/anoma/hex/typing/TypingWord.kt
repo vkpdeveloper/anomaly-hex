@@ -99,7 +99,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
                     it.lowercase() != previous && !model.neverSuggest.blocks(it.lowercase(), suggestSwearWords, index)
                 }
             }
-        }.orEmpty()
+        }.orEmpty().filterNot { model.neverSuggest.hidden(it) }
         val upper = addsCapitals && (capitalize ?: startsSentence(text))
         val out = ArrayList<String>(3)
         for (word in words) {
