@@ -68,6 +68,8 @@ internal class KeyboardEngine(
     private val emojiPicks: EmojiWords.Picks = EmojiWords.Picks(),
     /** [emojiPicks] changed and should be saved. */
     private val emojiPicked: () -> Unit = {},
+    /** Free times from the calendar for the text before the caret ([FreeTimes]), none while that's off. */
+    private val freeTimes: (String) -> List<StripAction> = { emptyList() },
     private val background: Executor = Executor { it.run() },
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
@@ -851,13 +853,14 @@ internal class KeyboardEngine(
         return snippetList
     }
     /** The strip's chips: what to do with a selection, else the answer to a sum or a conversion of an
-     * amount just typed ([QuickMath]), and the text shortcuts being typed ([Snippets]). */
+     * amount just typed ([QuickMath]), the text shortcuts being typed ([Snippets]), and free times after
+     * "free" ([FreeTimes]). */
     private fun offerActions() {
         val list = when {
             secure || !target.connected -> emptyList()
             selStart >= 0 && selStart != selEnd -> StripAction.selection
             numpad -> emptyList()
-            else -> target.before(QuickMath.READ)?.let { listOfNotNull(QuickMath.offer(it)) + Snippets.offer(it, snippets()) }
+            else -> target.before(QuickMath.READ)?.let { listOfNotNull(QuickMath.offer(it)) + Snippets.offer(it, snippets()) + freeTimes(it) }
                 .orEmpty().take(3)
         }
         if (list == actionsShown) return

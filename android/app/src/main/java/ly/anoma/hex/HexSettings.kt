@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.button.ButtonPreferences
 import ly.anoma.hex.fix.TinyfixFiles
+import ly.anoma.hex.keyboard.FreeTimes
 import ly.anoma.hex.keyboard.Snippet
 import ly.anoma.hex.keyboard.Snippets
 import ly.anoma.hex.keyboard.TextedCodes
@@ -107,6 +108,16 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
         smsRefused = !granted && (context as? android.app.Activity)
             ?.shouldShowRequestPermissionRationale(TextedCodes.PERMISSION) != true
         if (granted) typing.textedCodes = true
+    }
+    // Free times reads the calendar only with its permission, asked as Contacts is.
+    var calendarAllowed by remember { mutableStateOf(FreeTimes.allowed(context)) }
+    var calendarRefused by rememberSaveable { mutableStateOf(false) }
+    val freeTimes = remember(revision, calendarAllowed) { typing.freeTimes && calendarAllowed }
+    val askCalendar = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        calendarAllowed = granted
+        calendarRefused = !granted && (context as? android.app.Activity)
+            ?.shouldShowRequestPermissionRationale(FreeTimes.PERMISSION) != true
+        if (granted) typing.freeTimes = true
     }
     // On only with the Contacts permission too. Once Android stops asking (a second no), the switch opens
     // Hex's app info instead.
@@ -243,6 +254,16 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                     smsRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                         Uri.fromParts("package", context.packageName, null)))
                                     else -> askSms.launch(TextedCodes.PERMISSION)
+                                }
+                            }
+                            Rule(); Toggle("Free times",
+                                if (calendarRefused) "Allow Calendar in Hex's app info" else "Type \u201Cfree\u201D and a space to offer when you're free", freeTimes) {
+                                calendarAllowed = FreeTimes.allowed(context)
+                                when {
+                                    !it || calendarAllowed -> typing.freeTimes = it
+                                    calendarRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)))
+                                    else -> askCalendar.launch(FreeTimes.PERMISSION)
                                 }
                             }
                             Rule(); Toggle("Remove tracking from links", "When you copy a link", cleanLinks) {

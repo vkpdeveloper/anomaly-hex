@@ -77,6 +77,11 @@ internal class TypingPreferences(context: Context) {
     var replacements: String
         get() = prefs.getString(REPLACEMENTS, "").orEmpty()
         set(value) { prefs.edit().putString(REPLACEMENTS, value).apply() }
+    /** Off by default: "I'm free " offers your calendar's free times ([ly.anoma.hex.keyboard.FreeTimes]),
+     * only while Hex may read the calendar too. */
+    var freeTimes: Boolean
+        get() = prefs.getBoolean(FREE_TIMES, false)
+        set(value) { prefs.edit().putBoolean(FREE_TIMES, value).apply() }
     /** Your text shortcuts as [ly.anoma.hex.keyboard.Snippets.write] keeps them; null until first changed. */
     var snippets: String?
         get() = prefs.getString(SNIPPETS, null)
@@ -118,5 +123,6 @@ internal class TypingPreferences(context: Context) {
         const val TEXTED_CODES = "textedCodes"
         const val EXPAND_LINKS = "expandLinks"
         const val SNIPPETS = "snippets"
+        const val FREE_TIMES = "freeTimes"
     }
 }

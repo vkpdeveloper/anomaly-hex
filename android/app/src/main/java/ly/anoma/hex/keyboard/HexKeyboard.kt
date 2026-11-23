@@ -154,7 +154,13 @@ class HexKeyboard : InputMethodService() {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
             readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements)) }, learned = learned,
             learnedChanged = ::learnedChanged, emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
-            emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() }, background = words)
+            emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() },
+            freeTimes = { before ->
+                if (!feedback.freeTimes || !FreeTimes.allowed(this)) emptyList()
+                else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {
+                    FreeTimes.busy(contentResolver, it)
+                }
+            }, background = words)
     }
     internal val dictation by lazy {
         Dictation(this,
