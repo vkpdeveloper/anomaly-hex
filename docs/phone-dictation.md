@@ -149,8 +149,9 @@ once the person pauses editing, and sends only when the edits touch the
 dictated words, with about 300 characters of context around them. It also
 teaches its own `LearnedWords` the words the fix put there, so typing them
 works at once, with or without a computer. A correction the computer can't
-be reached for waits in memory (at most five, oldest dropped) and is sent at
-the next contact; Forget learned words or turning the setting off drops
+be reached for waits on the phone (at most five, oldest dropped, kept across
+keyboard restarts in `pending-corrections.tsv`) and is sent at the next
+contact; Forget learned words or turning the setting off drops
 them. A computer without the route (404) is skipped. No audio is sent or
 kept for this.
 

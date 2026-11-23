@@ -40,7 +40,9 @@ There is no setting.
 ([LearnedWords](app/src/main/java/ly/anoma/hex/typing/LearnedWords.kt)). A word you write twice joins
 your words; one you pick from the strip as you typed it, or keep by deleting an autocorrection with one
 backspace, or by picking it over the autocorrection, joins at once. Undoing an autocorrection also takes back what
-the corrected word just counted, so repeated undos never make it yours. It learns which word follows one
+the corrected word just counted, so repeated undos never make it yours, and so does tapping back into a
+word later and picking another: the pick counts in its place. Search boxes that show their app's own
+suggestions learn too, though nothing is corrected there. It learns which word follows one
 word and which follows two ("see you" then "soon",
 [PersonalTrigrams](app/src/main/java/ly/anoma/hex/typing/PersonalTrigrams.kt)), so a space offers your
 own phrases; a prediction stays far under a millisecond with 60,000 phrases kept. It learns where your
@@ -49,7 +51,7 @@ a key has eight taps, the tap decoder reads that key as sitting where you aim, m
 a key, and older taps count less. Long-press a suggestion for **Forget word**: it is never offered
 again, and the phrases it is in go too. Words you fix in text you just dictated (Hex's own dictation,
 within five minutes) are learned here at once and, with **Learn from my corrections**, sent to the
-paired computer, which adds names and spellings to its Vocabulary
+paired computer (one it can't reach gets them at the next contact, even after a restart), which adds names and spellings to its Vocabulary
 ([docs/phone-dictation.md](../docs/phone-dictation.md)); the computer's Vocabulary terms come back as
 words here. Nothing is learned in password fields, incognito tabs or apps that ask for no personalised
 learning, and **Forget learned words** clears all of it.
