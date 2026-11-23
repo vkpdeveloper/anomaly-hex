@@ -24,6 +24,7 @@ import ly.anoma.hex.typing.Suggestion
 import ly.anoma.hex.typing.TouchOffsets
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
+import ly.anoma.hex.typing.TypingStats
 import ly.anoma.hex.typing.TypingWord
 
 /** What the engine shows: the keys' page and the strip's slots. */
@@ -58,6 +59,8 @@ internal class KeyboardEngine(
     private val learnedChanged: () -> Unit = {},
     /** Where your taps land on each key, learned from the words you finish under the same rules as [learned]. */
     val touch: TouchOffsets = TouchOffsets(),
+    /** Counts of what the strip and autocorrect did, kept under the same rules as [learned]; numbers, never text. */
+    val stats: TypingStats = TypingStats(),
     /** The words you forgot from the strip: hidden from suggestions and never learned back from a slip. */
     private val forgotten: Forgotten = Forgotten(),
     /** [forgotten] changed and should be saved. */
@@ -430,6 +433,7 @@ internal class KeyboardEngine(
         unglided = null
         val counts = f.word !in forgotten
         counted = Counted(b, f, counts, touched)
+        stats.words++
         if (!counts) return
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
@@ -654,6 +658,7 @@ internal class KeyboardEngine(
         val start = if (expectedCaret >= 0) expectedCaret else minOf(selStart, selEnd)
         expectedCaret = if (start >= 0) start + text.length else -1
         if (target.commit(text)) {
+            if (learnHere) stats.keys++
             if (explicit) w.explicit(text) else w.letter(text, x, y, grid)
             showSuggestions(w)
         } else resetTyping()
@@ -698,6 +703,10 @@ internal class KeyboardEngine(
         val taught = if (old.isEmpty()) null else taught(w, old, text)
         clearSpaces()
         if (replace(old, if (holds) text else "$text ")) {
+            if (learnHere) {
+                if (old.isEmpty()) stats.predictions++ else stats.completions++
+                stats.saved += maxOf(0, text.length - old.length)
+            }
             resetTyping()
             val b = before()
             if (holds) heldAnchor = b else pickedAnchor = b
@@ -762,6 +771,7 @@ internal class KeyboardEngine(
     }
     private fun typeSpace(point: KeyPoint?, grid: KeyGrid?) {
         edited()
+        if (learnHere) stats.keys++
         val now = clock()
         val b = before()
         when {
@@ -783,6 +793,7 @@ internal class KeyboardEngine(
                 if (fix != null && !feedback.blocked(lang, fix.original, fix.replacement) && replace(fix.original, fix.replacement + " ")) {
                     // What went in is the keyboard's word, not one typed for a missed glide.
                     cancelChip(); unglided = null
+                    if (learnHere) stats.corrected++
                     undo = Undo(lang, fix.original, fix.replacement)
                     if (expectedCaret >= 0) expectedCaret += fix.replacement.length + 1 - fix.original.length
                     w.reset(); afterSpace(now); return
@@ -803,6 +814,7 @@ internal class KeyboardEngine(
         if (!target.connected) return
         edited(); typedHere = true
         if (value == " ") { space(); return }
+        if (learnHere) stats.keys++
         if (symbols && !numpad) symbolTyped = true
         val b = before()
         val mark = value.length == 1 && TypingWord.endsWord(value[0])
@@ -819,7 +831,10 @@ internal class KeyboardEngine(
             if (feedback.autocorrect && autocorrectHere && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
                 val fix = w.finish(value[0])
                 if (fix != null && !feedback.blocked(w.decoder.model.language, fix.original, fix.replacement) &&
-                    replace(fix.original, fix.replacement + value)) { unglided = null; resetTyping(); afterMark(value); return }
+                    replace(fix.original, fix.replacement + value)) {
+                    unglided = null; if (learnHere) stats.corrected++
+                    resetTyping(); afterMark(value); return
+                }
             }
         }
         resetTyping()
@@ -837,6 +852,7 @@ internal class KeyboardEngine(
     private fun doDelete() {
         if (!target.connected) return
         edited()
+        if (learnHere) stats.backspaces++
         // Right after a glide, delete takes the whole word back; the space before it stays.
         glided?.takeIf { it.anchor == before() }?.let { g ->
             clearSpaces()
@@ -859,6 +875,7 @@ internal class KeyboardEngine(
             counted = null
             // What you put back is yours: it isn't corrected again (and, like the count, only where learning is allowed).
             if (learnHere) {
+                stats.undone++
                 feedback.undo(last.language, last.original, last.replacement)
                 if (' ' !in last.original) teach(last.original)
             }

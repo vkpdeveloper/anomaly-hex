@@ -47,6 +47,7 @@ import ly.anoma.hex.keyboard.Snippets
 import ly.anoma.hex.keyboard.TextedCodes
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
+import ly.anoma.hex.typing.TypingStats
 
 private enum class Page(val title: String) {
     Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"),
@@ -141,6 +142,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val fixState by TinyfixFiles.state.collectAsState()
     LaunchedEffect(revision) { TinyfixFiles.refresh(context, typing) }
     var confirmForget by remember { mutableStateOf(false) }
+    val helped = remember(revision) { TypingStats.summary(context.filesDir) }
     val button = remember { ButtonPreferences(context) }
     val hideButton = remember(revision) { button.hideWithKeyboard }
     fun open(next: Page) { page = next }
@@ -282,7 +284,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Toggle("Say \"send it\" to send", "End a dictation with it to press send", sayToSend) {
                                 typing.sayToSend = it
                             }
-                            Rule(); Entry("Forget learned words", if (confirmForget) "Tap again to forget everything the keyboard learned" else null, "", {
+                            Rule(); Entry("Forget learned words", if (confirmForget) "Tap again to forget everything the keyboard learned" else helped, "", {
                                 if (confirmForget) { typing.forgetLearned(context.filesDir); confirmForget = false } else confirmForget = true
                             })
                         }

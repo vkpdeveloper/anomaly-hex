@@ -43,6 +43,7 @@ import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.TouchOffsets
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
+import ly.anoma.hex.typing.TypingStats
 
 /** The input method: the editor's lifecycle, the views and dictation. Typing lives in [KeyboardEngine];
  * dictation records here and is transcribed by Hex on the paired computer ([Dictation]). */
@@ -63,6 +64,8 @@ class HexKeyboard : InputMethodService() {
     // Where your taps land on the keys, learned and saved with [learned] and forgotten with it.
     private val touch = TouchOffsets()
     private val touchFile by lazy { File(filesDir, TouchOffsets.FILE) }
+    // How much the strip and autocorrect help, counted by the engine and saved with [learned].
+    private val stats = TypingStats()
     private val learnedFile by lazy { File(filesDir, LearnedWords.FILE) }
     @Volatile private var learnedLoaded = false
     private val main = Handler(Looper.getMainLooper())
@@ -70,7 +73,7 @@ class HexKeyboard : InputMethodService() {
     /** Both stores lock themselves, so they are written out on [words] too: serializing a full store
      * costs tens of milliseconds, which a main-thread turn must not spend. */
     private fun saveWords() {
-        words.execute { writeLearned(learned.write(), LearnedWords.FILE); writeLearned(touch.write(), TouchOffsets.FILE) }
+        words.execute { writeLearned(learned.write(), LearnedWords.FILE); writeLearned(touch.write(), TouchOffsets.FILE); writeLearned(stats.write(), TypingStats.FILE) }
     }
     private fun learnedChanged() {
         if (!learnedLoaded) return
@@ -218,7 +221,7 @@ class HexKeyboard : InputMethodService() {
     internal val engine by lazy {
         KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
             readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements), contactNames, forgotten) },
-            learned = learned, touch = touch, learnedChanged = ::learnedChanged, forgotten = forgotten, forgottenChanged = ::forgottenChanged,
+            learned = learned, touch = touch, stats = stats, learnedChanged = ::learnedChanged, forgotten = forgotten, forgottenChanged = ::forgottenChanged,
             emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
             emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() },
             freeTimes = { before ->
@@ -253,7 +256,7 @@ class HexKeyboard : InputMethodService() {
                 view?.fixChanged()
             }
             TypingPreferences.FORGET_LEARNED -> {
-                main.removeCallbacks(saveLearned); learned.clear(); touch.clear(); engine.learnedWordsChanged()
+                main.removeCallbacks(saveLearned); learned.clear(); touch.clear(); stats.clear(); engine.learnedWordsChanged()
                 forgotten.clear(); engine.hiddenChanged()
                 engine.dropWatch(); pendingCorrections.clear(); pendingChanged()
                 emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
@@ -320,6 +323,7 @@ class HexKeyboard : InputMethodService() {
         words.execute {
             runCatching { if (learnedFile.exists()) learned.read(learnedFile.readText()) }
             runCatching { if (touchFile.exists()) touch.read(touchFile.readText()) }
+            runCatching { File(filesDir, TypingStats.FILE).takeIf { it.exists() }?.let { stats.read(it.readText()) } }
             runCatching { File(filesDir, Forgotten.FILE).takeIf { it.exists() }?.let { forgotten.read(it.readText()) } }
             val pending = runCatching { File(filesDir, PendingCorrections.FILE).takeIf { it.exists() }?.readText() }.getOrNull()
             learnedLoaded = true

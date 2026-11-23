@@ -101,6 +101,7 @@ internal class TypingPreferences(context: Context) {
     fun forgetLearned(files: java.io.File) {
         java.io.File(files, LearnedWords.FILE).delete()
         java.io.File(files, TouchOffsets.FILE).delete()
+        java.io.File(files, TypingStats.FILE).delete()
         java.io.File(files, Forgotten.FILE).delete()
         java.io.File(files, ly.anoma.hex.keyboard.PendingCorrections.FILE).delete()
         prefs.edit().putLong(FORGET_LEARNED, System.currentTimeMillis()).putLong("historyWordsAt", 0).apply()
