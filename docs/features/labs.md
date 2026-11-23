@@ -305,6 +305,8 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Phone dictation no   labs.phone_dictation + labs.phone_dictation_port (0 = automatic)
 │                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi, with the Output steps of the mode for the phone's app (else Global),
 │                                        and its keyboard offers Global's one-word replacements as text shortcuts (docs/phone-dictation.md)
+│                                        its keyboard starts from this computer's History words and Vocabulary terms, and words fixed after a phone
+│                                        dictation come back through POST /phone/v1/corrections into Vocabulary (the phone's Learn from my corrections)
 ├── Copy a capture as one file no labs.copy_capture_zip (macOS, Linux, Windows)
 │                                        a finished Annotate capture goes on the clipboard as one file, <stem>.scrawl.slim.zip, written
 │                                        inside its bundle: the manifest, summary (with the bundle's path written as `.`), contact sheet,

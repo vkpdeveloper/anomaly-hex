@@ -6,7 +6,7 @@ A keyboard and a floating button that dictate with Hex on your computer. The pho
 
 Pair once under **Computer**: Hex finds the computer on the local network, or takes an address (Tailscale works anywhere), then its pairing code. The protocol, routes and limits are in [docs/phone-dictation.md](../docs/phone-dictation.md). The computer turns on **Labs › Phone dictation** and answers only private and Tailscale addresses.
 
-What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; with **Learn from Hex history** (on by default), the word counts the keyboard fetches from that computer every few hours; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
+What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; with **Learn from Hex history** (on by default), the word counts and Vocabulary terms the keyboard fetches from that computer every few hours; with **Learn from my corrections** (on by default), each word you fix in text you just dictated, with about 300 characters around it, to that computer only; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
 
 A transcript goes back to the field it was spoken in. If that field went away while the computer was transcribing (another field, or the keyboard closed), it's copied instead and the strip's chip offers it; an app that restarts the same field (chat apps do) still gets it. The keyboard shapes it with the language the computer says it heard: mid-sentence, a capital the model gave an ordinary first word goes. When the computer chooses the language itself, the text stays as it came.
 
@@ -35,6 +35,23 @@ and mein, kya and kiya, bhi and bhai, hai and hain stay apart, and a word Englis
 ("sheet") is never read as Hindi. It counts what the keyboard already learns, so password fields and
 apps that ask for no personalised learning teach it nothing, and **Forget learned words** clears it.
 There is no setting.
+
+**What it learns.** Like Gboard, the keyboard learns from what you write, only on the phone
+([LearnedWords](app/src/main/java/ly/anoma/hex/typing/LearnedWords.kt)). A word you write twice joins
+your words; one you pick from the strip as you typed it, or keep by deleting an autocorrection with one
+backspace, or by picking it over the autocorrection, joins at once. It learns which word follows one
+word and which follows two ("see you" then "soon",
+[PersonalTrigrams](app/src/main/java/ly/anoma/hex/typing/PersonalTrigrams.kt)), so a space offers your
+own phrases; a prediction stays far under a millisecond with 60,000 phrases kept. It learns where your
+thumbs land on each key ([TouchOffsets](app/src/main/java/ly/anoma/hex/typing/TouchOffsets.kt)): once
+a key has eight taps, the tap decoder reads that key as sitting where you aim, moved at most a third of
+a key, and older taps count less. Long-press a suggestion for **Forget word**: it is never offered
+again, and the phrases it is in go too. Words you fix in text you just dictated (Hex's own dictation,
+within five minutes) are learned here at once and, with **Learn from my corrections**, sent to the
+paired computer, which adds names and spellings to its Vocabulary
+([docs/phone-dictation.md](../docs/phone-dictation.md)); the computer's Vocabulary terms come back as
+words here. Nothing is learned in password fields, incognito tabs or apps that ask for no personalised
+learning, and **Forget learned words** clears all of it.
 
 **Spell checker.** Hex is also the phone's spell checker once you choose it (**Keyboard › Spell
 checker** opens Android's page for it). [HexSpellChecker](app/src/main/java/ly/anoma/hex/keyboard/HexSpellChecker.kt)
@@ -106,8 +123,8 @@ the automatic correction on space stops there, as on Gboard.
 
 **Email addresses.** While you type one, the strip offers addresses that complete it: the phone's
 accounts that Android shows Hex without a permission, addresses you've typed before, and, with
-**Keyboard › Suggest contacts' emails** (off by default; it asks for the Contacts permission), your
-contacts'. An address is learned once a space, comma, semicolon or return follows it, or you leave the
+**Keyboard › Suggest contacts' names and emails** (off by default; it asks for the Contacts permission), your
+contacts'; their names are also words the strip, autocorrect and glides know. An address is learned once a space, comma, semicolon or return follows it, or you leave the
 field, and never in password fields, URL fields or apps that ask for no personalised learning. Email
 fields offer up to three from the first letter, before the strip's words, and a tap puts one in with
 no space after it. Elsewhere one address takes the strip's last slot once three characters match, and
@@ -167,7 +184,7 @@ Saved passwords and usernames from the phone's autofill service, and a verificat
 
 ## Settings
 
-After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, text shortcuts, number row, key pop-ups, haptics, glide typing, recent screenshots, Codes from texts, Free times, Remove tracking from links, Expand short links, Learn from Hex history, Say "send it" to send and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
+After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, text shortcuts, number row, key pop-ups, haptics, glide typing, recent screenshots, Codes from texts, Free times, Remove tracking from links, Expand short links, Learn from Hex history, Learn from my corrections, Say "send it" to send and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
 
 **Privacy › Privacy policy** opens the [Android policy text](play/policy/privacy-policy.txt) even in airplane mode.
 
