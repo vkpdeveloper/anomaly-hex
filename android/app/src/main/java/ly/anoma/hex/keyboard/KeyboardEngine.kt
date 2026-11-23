@@ -9,6 +9,7 @@ import android.view.inputmethod.EditorInfo
 import java.util.concurrent.Executor
 import ly.anoma.hex.fix.Fix
 import ly.anoma.hex.fix.Tinyfix
+import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.speech.SpokenText
 import ly.anoma.hex.typing.EmailAddresses
@@ -80,19 +81,94 @@ internal class KeyboardEngine(
         /** How much text on each side of the caret the fix button reads and checks. Each word costs a
          * model run of about 3 ms, so this keeps a long field's check near a second. */
         const val FIX_WINDOW = 1_000
+        /** A pause this long in typing starts another undo step even mid-word. */
+        const val STEP_GAP_MS = 2_000L
     }
     private var editedAt = Long.MIN_VALUE / 2
+    // Undo's steps: a word with what ends it, a run of deletes, or one larger edit ([EditHistory]). Within a
+    // batch only its first edit can start one, so a batch is one step.
+    private enum class Step { Letter, Ending, Delete, Other }
+    private var lastStep: Step? = null
+    private var lastStepAt = Long.MIN_VALUE / 2
+    private var stepAt = Long.MIN_VALUE / 2
+    private var committedAt = Long.MIN_VALUE / 2
+    private var committed = 0
+    private var batches = 0
+    private var batchStepped = false
+    private fun step(kind: Step) {
+        // A password is never kept, even as an undo step.
+        if (secure || batches > 0 && batchStepped) return
+        val now = clock()
+        val starts = when (kind) {
+            // A word starts after anything but its own letters; marks and spaces end it, so they join it.
+            Step.Letter -> lastStep != Step.Letter
+            Step.Ending -> lastStep == null
+            Step.Delete -> lastStep != Step.Delete
+            Step.Other -> true
+        } || now - lastStepAt > STEP_GAP_MS
+        if (starts && history.checkpoint()) stepAt = now
+        lastStep = kind; lastStepAt = now
+        if (batches > 0) batchStepped = true
+    }
+    private fun stepFor(text: String) = when {
+        text.length == 1 && text[0].isLetterOrDigit() || text.length == 2 && Character.isSurrogatePair(text[0], text[1]) -> Step.Letter
+        text.isNotEmpty() && text.all { it.isWhitespace() || TypingWord.endsWord(it) } -> Step.Ending
+        else -> Step.Other
+    }
     // Every edit goes through here, so the selection changes that follow can be told from a tap in the text.
     private val target = object : KeyboardTextTarget by field {
         private fun <T> edit(block: () -> T): T { editedAt = clock(); return block() }
+        override fun commit(text: String) = edit {
+            step(stepFor(text)); committedAt = clock(); committed = text.length
+            field.commit(text)
+        }
+        override fun deleteBefore(length: Int) = edit { step(Step.Delete); field.deleteBefore(length) }
+        override fun deleteCodePointsBefore(count: Int) = edit { step(Step.Delete); field.deleteCodePointsBefore(count) }
+        override fun deleteAround(before: Int, after: Int) = edit { step(Step.Delete); field.deleteAround(before, after) }
+        override fun setSelection(start: Int, end: Int) = edit { field.setSelection(start, end) }
+        // A sent message's text never comes back by undo.
+        override fun performEditorAction(id: Int) = edit { field.performEditorAction(id).also { if (it) forgetSteps() } }
+        override fun defaultEditorAction() = edit { field.defaultEditorAction().also { if (it) forgetSteps() } }
+        override fun sendKey(code: Int) = edit { if (code == KeyEvent.KEYCODE_DEL) step(Step.Delete); field.sendKey(code) }
+        override fun beginBatch() { if (batches++ == 0) batchStepped = false; field.beginBatch() }
+        override fun endBatch() { if (batches > 0) batches--; field.endBatch() }
+    }
+    // Undo and redo edit the field directly, never starting a step of their own.
+    private val history = EditHistory(object : KeyboardTextTarget by field {
+        private fun <T> edit(block: () -> T): T { editedAt = clock(); return block() }
         override fun commit(text: String) = edit { field.commit(text) }
         override fun deleteBefore(length: Int) = edit { field.deleteBefore(length) }
-        override fun deleteCodePointsBefore(count: Int) = edit { field.deleteCodePointsBefore(count) }
-        override fun deleteAround(before: Int, after: Int) = edit { field.deleteAround(before, after) }
         override fun setSelection(start: Int, end: Int) = edit { field.setSelection(start, end) }
-        override fun performEditorAction(id: Int) = edit { field.performEditorAction(id) }
-        override fun defaultEditorAction() = edit { field.defaultEditorAction() }
-        override fun sendKey(code: Int) = edit { field.sendKey(code) }
+    })
+
+    private fun forgetSteps() { history.clear(); lastStep = null }
+
+    /** A two-finger swipe left on the keys: the field goes back a step. False when there is none. A step
+     * begun at or after [strayFrom] (the swipe's second finger typing the first's key) is taken back first. */
+    fun undoStep(strayFrom: Long? = null): Boolean = historyStep {
+        takeBackStray(strayFrom)
+        history.undo()
+    }
+    /** A two-finger swipe right: the step undo took back comes again, after a stray step as [undoStep]'s. */
+    fun redoStep(strayFrom: Long? = null): Boolean = historyStep {
+        takeBackStray(strayFrom)
+        history.redo()
+    }
+    // What the keyboard typed since [strayFrom]: a step of its own is forgotten, and a key that joined the
+    // word being typed is deleted, so neither undo nor redo keeps it.
+    private fun takeBackStray(strayFrom: Long?) {
+        if (strayFrom == null) return
+        if (stepAt >= strayFrom) history.forget()
+        else if (committedAt >= strayFrom) history.delete(committed)
+    }
+    private fun historyStep(step: () -> Boolean): Boolean {
+        if (secure || !target.connected) return false
+        edited(); resetTyping(); clearSpaces()
+        val done = step()
+        // Typing after this starts a step of its own.
+        lastStep = null
+        showPredictions(before()); refreshCaps()
+        return done
     }
     /** The word the caret was tapped into, split at the caret, while the strip shows its suggestions. */
     private class Tapped(val left: String, val right: String)
@@ -112,7 +188,12 @@ internal class KeyboardEngine(
     private val models = HashMap<String, SpatialDecoder>()
     private var word: TypingWord? = null
     private var editor: EditorInfo? = null
-    private var ordinaryField = false
+    // What the field allows, as Gboard reads it. The strip's words show in every text field but a password
+    // or email field: a field that asks for no suggestions or autocorrect still gets them to tap, as Gboard
+    // gives them, but nothing changes by itself there ([autocorrectHere]); and only [learnHere] is learned.
+    private var wordsHere = false
+    private var autocorrectHere = false
+    private var learnHere = false
     private var prefix = ""
     private var expectedCaret = -1
     private data class Undo(val language: String, val original: String, val replacement: String)
@@ -155,6 +236,7 @@ internal class KeyboardEngine(
 
     fun startInput(attribute: EditorInfo) {
         edited()
+        forgetSteps(); batches = 0
         editor = attribute
         val kind = attribute.inputType and InputType.TYPE_MASK_CLASS
         val variation = attribute.inputType and InputType.TYPE_MASK_VARIATION
@@ -164,11 +246,12 @@ internal class KeyboardEngine(
             InputType.TYPE_CLASS_NUMBER -> variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
             else -> false
         }
-        ordinaryField = kind == InputType.TYPE_CLASS_TEXT && !secure &&
-            attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0 &&
-            variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
-                InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_FILTER) &&
+        wordsHere = kind == InputType.TYPE_CLASS_TEXT && !secure && variation !in setOf(
+            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
+        autocorrectHere = wordsHere &&
+            variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_FILTER) &&
             attribute.inputType and (InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_FLAG_AUTO_COMPLETE) == 0
+        learnHere = autocorrectHere && attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0
         addressesHere = kind == InputType.TYPE_CLASS_TEXT && !secure &&
             attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0 &&
             variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_FILTER) &&
@@ -220,7 +303,7 @@ internal class KeyboardEngine(
         val start = b.dropLast(left.length)
         w.reread(whole, start.takeLast(40))
         var strip = w.strip(autocorrect = feedback.autocorrect).map {
-            if (it.kind == Suggestion.Kind.Fix && feedback.blocked(w.decoder.model.language, whole, it.text))
+            if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || feedback.blocked(w.decoder.model.language, whole, it.text)))
                 Suggestion(it.text, Suggestion.Kind.Word) else it
         }
         // A word the spell checker underlined as the wrong one ("form" for "from"): its fix in the middle.
@@ -261,7 +344,7 @@ internal class KeyboardEngine(
     /** The word that ends [b], the text before the cursor, is learned when [boundary] characters (a
      * space or mark that just went in after it, or none) follow it. */
     private fun learn(b: String, boundary: Int) {
-        if (word == null || secure || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
+        if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         val f = LearnedWords.finished(b) ?: return
         if (learned.learn(f.word, f.previous, f.sentenceStart)) personalWordsChanged()
         learnedChanged()
@@ -334,13 +417,13 @@ internal class KeyboardEngine(
     fun configureTyping(keepWord: Boolean = false) {
         val language = layoutLanguage().layoutCode
         val active = word
-        if (ordinaryField && keepWord && active != null && active.decoder.model.language == language && active.spatial == feedback.spatial &&
+        if (wordsHere && keepWord && active != null && active.decoder.model.language == language && active.spatial == feedback.spatial &&
             active.token.isNotEmpty() && endsWith(prefix + active.token)) {
             active.addsCapitals = feedback.autoCapitalize
             showPlane(); showSuggestions(active); return
         }
         resetTyping()
-        word = if (ordinaryField) {
+        word = if (wordsHere) {
             try {
                 TypingWord(models.getOrPut(language) { prepared(loadDecoder(language)) }, feedback.spatial)
                     .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize }
@@ -361,7 +444,7 @@ internal class KeyboardEngine(
             pendingChip = Runnable {
                 pendingChip = null
                 if (word === w && w.token == token) showStrip(w.strip(autocorrect = true).map {
-                    if (it.kind == Suggestion.Kind.Fix && feedback.blocked(w.decoder.model.language, token, it.text))
+                    if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || feedback.blocked(w.decoder.model.language, token, it.text)))
                         Suggestion(it.text, Suggestion.Kind.Word) else it
                 })
             }.also { main.postDelayed(it, CHIP_PAUSE_MS) }
@@ -414,7 +497,7 @@ internal class KeyboardEngine(
         clearSpaces(); resetTyping()
         val holds = SpaceRules.separates(target.after(1))
         if (!target.commit(if (holds) emoji else "$emoji ")) return
-        if (learnFor != null && ordinaryField) { emojiPicks.pick(learnFor, emoji); emojiPicked() }
+        if (learnFor != null && learnHere) { emojiPicks.pick(learnFor, emoji); emojiPicked() }
         val b = before()
         if (holds) heldAnchor = b else pickedAnchor = b
         showPredictions(b); inputDone()
@@ -423,7 +506,7 @@ internal class KeyboardEngine(
     /** An emoji from the emoji panel: typed as it is, and learned for the word right before it, if any. */
     fun emoji(text: String) {
         // The word before the cursor, typed then or before; the field's kind says whether to learn.
-        val after = if (ordinaryField && selStart == selEnd) EmojiWords.wordBefore(before()) else null
+        val after = if (learnHere && selStart == selEnd) EmojiWords.wordBefore(before()) else null
         type(text)
         if (after != null) { emojiPicks.pick(after, text); emojiPicked() }
     }
@@ -544,7 +627,7 @@ internal class KeyboardEngine(
             target.beginBatch()
             try {
                 if (target.deleteAround(t.left.length, t.right.length) && target.commit(text)) {
-                    learned.learn(text, null, false); learnedChanged()
+                    if (learnHere) { learned.learn(text, null, false); learnedChanged() }
                 }
             } finally { target.endBatch() }
         }
@@ -577,7 +660,7 @@ internal class KeyboardEngine(
         val w = word
         if (w != null && !symbols && canEndWord()) {
             val old = w.token; val lang = w.decoder.model.language
-            if (feedback.autocorrect && old.isNotEmpty() && endsWith(prefix + old)) {
+            if (feedback.autocorrect && autocorrectHere && old.isNotEmpty() && endsWith(prefix + old)) {
                 val fix = w.finish(' ', point, grid)
                 if (fix != null && !feedback.blocked(lang, fix.original, fix.replacement) && replace(fix.original, fix.replacement + " ")) {
                     cancelChip()
@@ -613,7 +696,7 @@ internal class KeyboardEngine(
         clearSpaces()
         val w = word
         if (mark && w != null && !symbols && canEndWord()) {
-            if (feedback.autocorrect && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
+            if (feedback.autocorrect && autocorrectHere && w.token.isNotEmpty() && endsWith(prefix + w.token)) {
                 val fix = w.finish(value[0])
                 if (fix != null && !feedback.blocked(w.decoder.model.language, fix.original, fix.replacement) &&
                     replace(fix.original, fix.replacement + value)) { resetTyping(); afterMark(value); return }
@@ -762,17 +845,28 @@ internal class KeyboardEngine(
 
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
      * the capital Whisper gave it ([SpokenText.continuing], [language] as dictated or "en" translated).
-     * With Say "send it" to send on, a dictation ending in it presses the field's send key ([SpokenSend]). */
-    fun insertDictation(text: String, language: String?) {
-        if (!target.connected) return
+     * With Say "send it" to send on, a dictation ending in it presses the field's send key ([SpokenSend]).
+     * One ending in a voice edit ([SpokenEdit]) acts on it: "scratch that" takes it back (or the dictation
+     * before, when it is all that was said), and a tone's command returns the tone to rewrite the text in. */
+    fun insertDictation(text: String, language: String?): HexClient.Style? {
+        if (!target.connected) return null
         val send = spokenSendAction()
         val body = if (send != null) SpokenSend.strip(text) else null
         if (send != null && body != null) {
             // Sent text can't be taken back, so no undo; nothing is sent when the text didn't go in.
             if (body.isEmpty() || insertSpoken(body, language, offer = false)) target.performEditorAction(send)
-            return
+            return null
         }
-        insertSpoken(text, language, offer = true)
+        val edit = if (secure) null else SpokenEdit.read(text)
+        when (val action = edit?.action) {
+            null -> insertSpoken(text, language, offer = true)
+            SpokenEdit.Action.Scratch -> if (edit.body.isEmpty() && offer is Dictated) undo()
+            is SpokenEdit.Action.Rewrite -> {
+                if (edit.body.isNotEmpty() && !insertSpoken(edit.body, language, offer = true)) return null
+                return action.style
+            }
+        }
+        return null
     }
     // The send key a dictation may press: the enter key's own action when it sends or goes, never in a password field.
     private fun spokenSendAction(): Int? {

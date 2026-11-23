@@ -111,12 +111,32 @@ object HexClient {
         }
     }
 
-    /** Sends text from the text box and returns it rewritten by OpenCode on the computer
+    /** How a rewrite changes the text, as the computer names it. */
+    enum class Style(val wire: String) { Fix("fix"), Shorter("shorter"), Friendlier("friendlier"), Formal("formal"), English("english") }
+
+    /** Sends text from the text box and returns it rewritten by OpenCode on the computer in [style]
      * (`POST /phone/v1/rewrite`). The computer allows itself up to 30 s. */
-    fun rewrite(host: String, port: Int, code: String, text: String): String {
-        val body = JSONObject().put("text", text).toString().encodeToByteArray()
-        val json = request(host, port, code, "POST", "/phone/v1/rewrite", body, 2_000, 45_000, "application/json")
+    fun rewrite(host: String, port: Int, code: String, text: String, style: Style = Style.Fix): String {
+        val request = JSONObject().put("text", text)
+        // A computer from before tones knows only the fix, and is sent nothing it would ignore.
+        if (style != Style.Fix) request.put("style", style.wire)
+        val json = request(host, port, code, "POST", "/phone/v1/rewrite", request.toString().encodeToByteArray(),
+            2_000, 45_000, "application/json")
         return json.optString("text").trim()
+    }
+
+    /** One line of a chat on the screen: [mine] for the person's own. */
+    data class ChatLine(val mine: Boolean, val text: String)
+
+    /** Up to three replies the person could send next in the chat [lines] (oldest first), building on what
+     * they started typing ([draft]), drafted by OpenCode on the computer (`POST /phone/v1/replies`). */
+    fun replies(host: String, port: Int, code: String, lines: List<ChatLine>, draft: String): List<String> {
+        val chat = org.json.JSONArray()
+        for (line in lines) chat.put(JSONObject().put("mine", line.mine).put("text", line.text))
+        val body = JSONObject().put("lines", chat).put("draft", draft).toString().encodeToByteArray()
+        val json = request(host, port, code, "POST", "/phone/v1/replies", body, 2_000, 45_000, "application/json")
+        val replies = json.optJSONArray("replies")
+        return (0 until (replies?.length() ?: 0)).mapNotNull { i -> replies!!.optString(i).trim().takeIf { it.isNotEmpty() } }
     }
 
     private fun request(

@@ -241,10 +241,10 @@ class HexKeyboard : InputMethodService() {
         }
     }
     internal val rewriteShown get() = !engine.secure && store.computer != null
-    /** The grid menu's Rewrite: the selection, else the text around the caret as the fix button reads it,
-     * rewritten by OpenCode through the paired computer. The answer replaces it in one edit only if it's
-     * the same field and the text hasn't changed meanwhile; Undo rewrite puts it back. */
-    internal fun rewrite() {
+    /** The grid menu's Rewrite and its tones: the selection, else the text around the caret as the fix
+     * button reads it, rewritten in [style] by OpenCode through the paired computer. The answer replaces it
+     * in one edit only if it's the same field and the text hasn't changed meanwhile; Undo rewrite puts it back. */
+    internal fun rewrite(style: HexClient.Style = HexClient.Style.Fix) {
         if (!rewriteShown) return
         if (rewriting) { view?.note(getString(R.string.keyboard_rewriting)); return }
         val span = engine.rewriteSpan()
@@ -253,7 +253,7 @@ class HexKeyboard : InputMethodService() {
         rewriting = true; rewritingNote.run()
         io.launch {
             val note = try {
-                val rewritten = dictation.router.send { host, computer -> HexClient.rewrite(host, computer.port, computer.code, span.text) }
+                val rewritten = dictation.router.send { host, computer -> HexClient.rewrite(host, computer.port, computer.code, span.text, style) }
                 rewriting = false
                 val here = forField == field && currentInputConnection != null && isInputViewShown
                 when {
@@ -353,7 +353,8 @@ class HexKeyboard : InputMethodService() {
      * hidden), it's copied instead, so the strip's chip offers it, rather than typed somewhere else or lost. */
     private fun commitSpeech(heard: HexClient.Heard) {
         if (dictatedFor == field && currentInputConnection != null && !engine.secure && isInputViewShown) {
-            engine.insertDictation(heard.text, heard.language)
+            // A voice edit's tone ("make it formal") rewrites the text with the dictation in it.
+            engine.insertDictation(heard.text, heard.language)?.let(::rewrite)
             return
         }
         runCatching {

@@ -112,6 +112,10 @@ internal object KeyboardMetrics {
      * travel under DELETE_STILL: a held thumb rolls further than the touch slop), delete repeats every
      * 50 ms after 400 ms, then takes a whole word every 150 ms once 20 characters have gone
      * ([DeleteRepeat]). */
+    /** Two fingers swiped sideways on the keys this far undo a step (left) or redo one (right),
+     * then another each SWIPE_STEP further. */
+    const val SWIPE_START = 40f
+    const val SWIPE_STEP = 56f
     const val DELETE_START = 53f
     const val DELETE_STEP = 36f
     const val DELETE_CANCEL = 32f

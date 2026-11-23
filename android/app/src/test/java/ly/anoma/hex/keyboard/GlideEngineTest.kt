@@ -227,6 +227,7 @@ internal class Field(var text: String) : KeyboardTextTarget {
     override fun performEditorAction(id: Int) = false
     override fun defaultEditorAction() = false
     override fun sendKey(code: Int) {}
+    override fun all() = FieldState(text, caret, caret)
 }
 
 /** In-memory preferences behind a context, for the classes that keep their settings in SharedPreferences. */

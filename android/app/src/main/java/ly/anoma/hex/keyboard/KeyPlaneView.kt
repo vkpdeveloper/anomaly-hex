@@ -353,6 +353,62 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         return k
     }
 
+    // Two fingers swiped sideways: left undoes, right redoes (KeyboardEngine.undoStep). Both must travel
+    // the same way, mostly sideways, so two thumbs typing never swipe; the keys under them are cancelled.
+    private val swipeStart = KeyboardMetrics.SWIPE_START * density
+    private val swipeStep = KeyboardMetrics.SWIPE_STEP * density
+    private var pair: List<Triple<Int, Float, Float>>? = null
+    private var pairDownAt = 0L
+    private var swipeX: Float? = null
+
+    override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { pair = null; swipeX = null }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                pair = if (e.pointerCount == 2) (0..1).map { Triple(e.getPointerId(it), e.getX(it), e.getY(it)) } else null
+                pairDownAt = e.eventTime
+            }
+            MotionEvent.ACTION_POINTER_UP -> pair = null
+            MotionEvent.ACTION_MOVE -> {
+                val from = pair ?: return false
+                val moves = from.map { (id, x, y) ->
+                    val i = e.findPointerIndex(id).takeIf { it >= 0 } ?: return false
+                    e.getX(i) - x to e.getY(i) - y
+                }
+                val sideways = moves.all { (dx, dy) -> kotlin.math.abs(dx) >= swipeStart && kotlin.math.abs(dx) > 2 * kotlin.math.abs(dy) }
+                if (sideways && moves[0].first > 0 == moves[1].first > 0) {
+                    // Intercepting cancels the keys under both fingers, each clearing its own press.
+                    val left = moves[0].first < 0
+                    swipeX = middle(e)
+                    swipe(left, first = true)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        val from = swipeX ?: return false
+        when (e.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                val x = middle(e)
+                if (kotlin.math.abs(x - from) >= swipeStep) { swipe(x < from, first = false); swipeX = x }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { swipeX = null; pair = null }
+        }
+        return true
+    }
+
+    private fun middle(e: MotionEvent) = (0 until e.pointerCount).sumOf { e.getX(it).toDouble() }.toFloat() / e.pointerCount
+
+    private fun swipe(left: Boolean, first: Boolean) {
+        // The second finger's key typed the first finger's at once (Rollover); the first undo takes it back too.
+        val stray = if (first) pairDownAt else null
+        val done = if (left) ime.engine.undoStep(stray) else ime.engine.redoStep(stray)
+        if (done && vibrates(context, ime.feedback.haptics)) performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
     override fun dispatchDraw(canvas: Canvas) {
         super.dispatchDraw(canvas)
         if (ime.feedback.glideTrail && glide.draw(canvas, rows.left.toFloat(), rows.top.toFloat(), SystemClock.uptimeMillis()))

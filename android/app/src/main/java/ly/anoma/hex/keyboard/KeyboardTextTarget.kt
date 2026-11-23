@@ -1,6 +1,7 @@
 package ly.anoma.hex.keyboard
 
 import android.inputmethodservice.InputMethodService
+import android.view.inputmethod.ExtractedTextRequest
 
 /** Everything the keyboard engine may read from or do to the editor. The IME passes its live
  * InputConnection; a test can pass a fake. Each call reaches the field focused at that moment. */
@@ -20,6 +21,8 @@ internal interface KeyboardTextTarget {
     fun performEditorAction(id: Int): Boolean
     fun defaultEditorAction(): Boolean
     fun sendKey(code: Int)
+    /** The whole text and selection, or null where it can't be read whole (too long, or no editor). */
+    fun all(): FieldState? = null
 }
 
 /** The current editor's InputConnection, looked up on every call: it changes with each field. */
@@ -40,4 +43,14 @@ internal class InputConnectionTarget(private val ime: InputMethodService) : Keyb
     override fun performEditorAction(id: Int) = ic?.performEditorAction(id) ?: false
     override fun defaultEditorAction() = ime.sendDefaultEditorAction(true)
     override fun sendKey(code: Int) = ime.sendDownUpKeyEvents(code)
+    override fun all(): FieldState? {
+        val got = ic?.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = MAX_FIELD }, 0) ?: return null
+        val text = got.text?.toString() ?: return null
+        if (got.startOffset != 0 || text.length > MAX_FIELD || got.selectionStart < 0) return null
+        return FieldState(text, got.selectionStart, got.selectionEnd)
+    }
+    private companion object {
+        /** Undo keeps the whole text at each step, so a longer field has none. */
+        const val MAX_FIELD = 20_000
+    }
 }

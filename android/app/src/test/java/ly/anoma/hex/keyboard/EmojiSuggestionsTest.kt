@@ -83,14 +83,25 @@ class EmojiSuggestionsTest {
         assertEquals("🍕", k.emoji.first())
     }
 
-    @Test fun passwordAndIncognitoFieldsOfferNoneAndLearnNothing() {
-        for (k in listOf(Keyboard(type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD),
-            Keyboard(options = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING))) {
+    // An incognito field still shows the strip, as Gboard's does, but learns nothing; a password field shows none.
+    @Test fun passwordFieldsOfferNoneAndIncognitoFieldsLearnNothing() {
+        for ((k, offers) in listOf(Keyboard(type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD) to false,
+            Keyboard(options = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) to true)) {
             k.chars("pizza ")
-            assertTrue(k.emoji.isEmpty())
+            assertEquals(offers, k.emoji.isNotEmpty())
             k.engine.emoji("🍕")
             assertTrue(k.picks.of("pizza").isEmpty())
         }
+    }
+
+    // A field that asks for no suggestions (React Native's autoCorrect={false}) still shows the strip,
+    // as Gboard does, but a space leaves the word as typed.
+    @Test fun aFieldThatAsksForNoSuggestionsShowsTheStripButNeverCorrects() {
+        val k = Keyboard(type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+        k.tap("teh")
+        assertTrue(k.strip.isNotEmpty())
+        k.engine.space()
+        assertEquals("teh ", k.field.text)
     }
 
     @Test fun picksSurviveBeingWrittenAndRead() {

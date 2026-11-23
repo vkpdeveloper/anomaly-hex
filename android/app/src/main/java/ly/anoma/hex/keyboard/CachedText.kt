@@ -114,6 +114,7 @@ internal class CachedText(
     override fun performEditorAction(id: Int) = field.performEditorAction(id).also { lose() }
     override fun defaultEditorAction() = field.defaultEditorAction().also { lose() }
     override fun sendKey(code: Int) { field.sendKey(code); lose() }
+    override fun all() = field.all()
 
     companion object {
         /** The text asked of EditorInfo each side of the cursor as a field starts: half of what it keeps. */
