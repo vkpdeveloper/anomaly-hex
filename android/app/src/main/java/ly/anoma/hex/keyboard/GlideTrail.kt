@@ -57,30 +57,38 @@ internal class GlideTrail(private val ink: Int, density: Float) {
         private set
 
     /** A letter key went down at [p]. [allowed] while the field and page take glides; [pitch] is a key's width. */
-    fun down(key: Any, p: KeyPoint, time: Long, allowed: Boolean, pitch: Double) {
+    fun down(key: Any, p: KeyPoint, time: Long, allowed: Boolean, pitch: Double) = down(key, p.x.toFloat(), p.y.toFloat(), time, allowed, pitch)
+
+    // The touch handler goes through the float forms: a point object for every move of every finger would
+    // be garbage made on the way to a frame.
+    fun down(key: Any, x: Float, y: Float, time: Long, allowed: Boolean, pitch: Double) {
         // A drag still owning the trail here is a letter still held: fast typing rolls over, so the
         // previous key often lifts only after this one went down.
         typing = owner != null || time - lastTap < TYPING_MS
         owner = key; active = false; size = 0
         this.allowed = allowed && pitch > 0
         this.pitch = pitch; downTime = time
-        startX = p.x.toFloat(); startY = p.y.toFloat()
-        add(key, p, time)
+        startX = x; startY = y
+        add(key, x, y, time)
     }
 
     /** The finger moved; true when this move makes the drag a glide. */
-    fun move(key: Any, p: KeyPoint, time: Long, choosing: Boolean): Boolean {
+    fun move(key: Any, p: KeyPoint, time: Long, choosing: Boolean) = move(key, p.x.toFloat(), p.y.toFloat(), time, choosing)
+
+    fun move(key: Any, x: Float, y: Float, time: Long, choosing: Boolean): Boolean {
         if (key !== owner || !allowed) return false
-        add(key, p, time)
-        if (active || choosing || hypot(p.x - startX, p.y - startY) < pitch * startKeys(time - downTime, typing)) return false
+        add(key, x, y, time)
+        if (active || choosing || hypot((x - startX).toDouble(), (y - startY).toDouble()) < pitch * startKeys(time - downTime, typing)) return false
         active = true
         return true
     }
 
-    fun add(key: Any, p: KeyPoint, time: Long) {
+    fun add(key: Any, p: KeyPoint, time: Long) = add(key, p.x.toFloat(), p.y.toFloat(), time)
+
+    fun add(key: Any, x: Float, y: Float, time: Long) {
         if (key !== owner || !allowed) return
         if (size == xs.size) { xs = xs.copyOf(size * 2); ys = ys.copyOf(size * 2); times = times.copyOf(size * 2) }
-        xs[size] = p.x.toFloat(); ys[size] = p.y.toFloat(); times[size] = time; size++
+        xs[size] = x; ys[size] = y; times[size] = time; size++
     }
 
     /** The finger lifted: the glide's whole path, or null when the drag never became one (a tap). */
@@ -105,6 +113,7 @@ internal class GlideTrail(private val ink: Int, density: Float) {
         var first = size - 1
         while (first > 0 && now - times[first - 1] < TRAIL_MS) first--
         if (first >= size - 1 && now - times[size - 1] >= TRAIL_MS) { if (owner == null) size = 0; return false }
+        val paint = paint
         for (i in maxOf(first, 1) until size) {
             val fresh = 1f - (now - times[i]).coerceIn(0, TRAIL_MS).toFloat() / TRAIL_MS
             paint.strokeWidth = tail + (head - tail) * fresh

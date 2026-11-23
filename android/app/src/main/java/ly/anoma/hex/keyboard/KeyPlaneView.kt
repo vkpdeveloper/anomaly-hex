@@ -80,7 +80,9 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     // stays mounted and its own finger-up ends a chord.
     private var current: KeyboardPage? = null
     private var bottomKind = -1
-    private val caseKeys = ArrayList<Pair<Char, KeyCap>>()
+    /** A letter key and its two labels, made once so a shift, or a press, never builds a string. */
+    private class CaseKey(val cap: KeyCap, val lower: String, val upper: String)
+    private val caseKeys = ArrayList<CaseKey>()
     private var shiftIcon: ImageView? = null
     private val deleteKeys = ArrayList<KeyCap>()
     private val pickKeyboard = Runnable {
@@ -194,7 +196,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         true
     }
 
-    private fun cased(c: Char) = if (current?.let { !it.symbols && it.shifted } == true) c.uppercaseChar().toString() else c.toString()
+    private val upperNow get() = current?.let { !it.symbols && it.shifted } == true
 
     /** Rebuilds the page on screen, so turning the number row on or off shows at once. */
     fun numberRowChanged() { current?.let(::showPage) }
@@ -275,23 +277,31 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         var downText: String? = null
         // Google Sans draws © at superscript size; Gboard shows it as tall as %.
         val size = if (!symbols) KeyboardMetrics.LETTER else if (c == '©') KeyboardMetrics.SYMBOL * 1.5f else KeyboardMetrics.SYMBOL
-        val k = caps.cap(cased(c), cased(c), size = size) {
+        val lower = c.toString(); val upper = c.uppercaseChar().toString()
+        fun cased() = if (upperNow) upper else lower
+        val lowerShown = listOf(lower); val upperShown = listOf(upper)
+        val k = caps.cap(cased(), cased(), size = size) {
             val g = if (symbols) null else geometry()
             val p = touch ?: g?.centres?.get(c)
-            val text = (downText ?: cased(c)).let { if (symbols || touch == null) it else likelier(c, it, touch!!) }
+            val text = (downText ?: cased()).let { if (symbols || touch == null) it else likelier(c, it, touch!!) }
             if (g != null && p != null) ime.engine.letter(text, p.x, p.y, g) else ime.engine.type(text)
         }
         if (digit != null) caps.hint(k, digit)
-        if (!symbols) { letters[c] = k; caseKeys.add(c to k) }
-        fun options(): List<String> {
+        if (!symbols) { letters[c] = k; caseKeys.add(CaseKey(k, lower, upper)) }
+        // What a hold offers depends only on the key and its case, so each is worked out once, when first
+        // held, not on every press.
+        fun held(upper: Boolean): List<String> {
             if (symbols) return LetterFeedback.symbolHolds(c)
-            val accents = LetterFeedback.options(cased(c).single(), layoutCode)
+            val accents = LetterFeedback.options(if (upper) c.uppercaseChar() else c, layoutCode)
             return if (digit == null) accents else listOf(digit.toString()) + accents.drop(1)
         }
+        val heldLower by lazy { held(false) }
+        val heldUpper by lazy { held(true) }
+        fun options() = if (!symbols && cased().single().isUpperCase()) heldUpper else heldLower
         if (options().isNotEmpty()) k.longClickLabel = context.getString(R.string.keyboard_more_characters)
         // Types the key as its finger lifts, or earlier when another key goes down first (Rollover).
         fun finish() {
-            val text = downText ?: cased(c)
+            val text = downText ?: cased()
             val selected = feedback.selected()
             val pressed = k.isPressed; k.isPressed = false; clearCallout()
             if (pressed && selected != null && selected != text) {
@@ -310,10 +320,10 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                     if (e.actionMasked == MotionEvent.ACTION_POINTER_DOWN && roll.up(k)) finish()
                     roll.down(k) { finish() }
                     clearCallout(); v.isPressed = true
-                    downText = cased(c)
+                    downText = cased()
                     touch = KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble())
-                    glide.down(v, touch!!, e.eventTime, !symbols && ime.engine.glides, geometry()?.pitchX ?: 0.0)
-                    if (ime.feedback.popups && ime.previewAllowed) feedback.present(k.face, listOf(cased(c)))
+                    glide.down(v, touch!!.x.toFloat(), touch!!.y.toFloat(), e.eventTime, !symbols && ime.engine.glides, geometry()?.pitchX ?: 0.0)
+                    if (ime.feedback.popups && ime.previewAllowed) feedback.present(k.face, if (upperNow) upperShown else lowerShown)
                     val options = options()
                     if (options.isNotEmpty()) {
                         pendingAccents = Runnable { if (v.isPressed) feedback.present(k.face, options) }
@@ -322,12 +332,11 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                 }
                 MotionEvent.ACTION_MOVE -> {
                     for (i in 0 until e.historySize)
-                        glide.add(v, KeyPoint((v.left + e.getHistoricalX(i)).toDouble(), (row.top + e.getHistoricalY(i)).toDouble()), e.getHistoricalEventTime(i))
-                    val p = KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble())
+                        glide.add(v, v.left + e.getHistoricalX(i), row.top + e.getHistoricalY(i), e.getHistoricalEventTime(i))
                     // A glide is no longer a held key: the next key down mustn't type its first letter.
                     // A key a later one already typed (Rollover) can't become one, and only its own
                     // hold is released, never a space or delete held since.
-                    if ((v.isPressed || glide.active) && glide.move(v, p, e.eventTime, feedback.choosing)) { clearCallout(); v.isPressed = false; roll.up(k) }
+                    if ((v.isPressed || glide.active) && glide.move(v, v.left + e.x, row.top + e.y, e.eventTime, feedback.choosing)) { clearCallout(); v.isPressed = false; roll.up(k) }
                     if (glide.active) { if (ime.feedback.glideTrail) postInvalidateOnAnimation() }
                     else if (feedback.choosing) feedback.move(xInHost(row, v, e.x), yInHost(row, v, e.y))
                     // A fast tap drifts off its key as the finger lifts or moves on: it still types,
@@ -335,7 +344,7 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
                     else if (e.x < -slop || e.x > v.width + slop || e.y < -slop || e.y > v.height + slop) clearCallout()
                 }
                 MotionEvent.ACTION_UP -> {
-                    glide.add(v, KeyPoint((v.left + e.x).toDouble(), (row.top + e.y).toDouble()), e.eventTime)
+                    glide.add(v, v.left + e.x, row.top + e.y, e.eventTime)
                     val path = glide.up(v, e.eventTime)
                     if (path != null) {
                         touch = null; downText = null
@@ -528,7 +537,8 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
     private fun shiftDescription(page: KeyboardPage) = context.getString(if (page.locked) R.string.keyboard_caps_lock else R.string.keyboard_shift)
     /** Shift changed and nothing else: new labels on the same keys. */
     private fun relabel(page: KeyboardPage) {
-        for ((c, key) in caseKeys) { val text = cased(c); key.label?.text = text; key.contentDescription = text }
+        val upper = upperNow
+        for (key in caseKeys) { val text = if (upper) key.upper else key.lower; key.cap.label?.text = text; key.cap.contentDescription = text }
         shiftIcon?.setImageResource(shiftIconFor(page))
         (shiftIcon?.parent?.parent as? View)?.contentDescription = shiftDescription(page)
     }
@@ -554,12 +564,6 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
      * area ([nearKeys]). A touch on the keycap itself always types its key. */
     private fun likelier(c: Char, text: String, touch: KeyPoint): String {
         val own = letters[c] ?: return text
-        val areas = HashMap<Char, KeyRect>()
-        for ((other, cap) in letters) if (other != c) {
-            val row = cap.parent as View
-            areas[if (text.single().isUpperCase()) other.uppercaseChar() else other] =
-                KeyRect(cap.left.toDouble(), row.top.toDouble(), cap.right.toDouble(), row.bottom.toDouble())
-        }
         val row = own.parent as View
         val face = KeyRect((own.left + own.paddingLeft).toDouble(), (row.top + own.paddingTop).toDouble(),
             (own.right - own.paddingRight).toDouble(), (row.top + own.height - own.paddingBottom).toDouble())
@@ -568,6 +572,15 @@ internal class KeyPlaneView(context: Context, private val ime: HexKeyboard, priv
         val miss = ime.engine.touch.offset(c)
         val pitch = geometry()
         val aimed = if (pitch == null) touch else KeyPoint(touch.x - miss.x * pitch.pitchX, touch.y - miss.y * pitch.pitchY)
+        // Nearly every tap is on its own keycap, which nearKeys answers with nothing: skip building the
+        // neighbours' areas for it.
+        if (aimed.x in face.left..face.right && aimed.y in face.top..face.bottom) return text
+        val areas = HashMap<Char, KeyRect>()
+        for ((other, cap) in letters) if (other != c) {
+            val otherRow = cap.parent as View
+            areas[if (text.single().isUpperCase()) other.uppercaseChar() else other] =
+                KeyRect(cap.left.toDouble(), otherRow.top.toDouble(), cap.right.toDouble(), otherRow.bottom.toDouble())
+        }
         val near = nearKeys(aimed, face, areas, TypingWord.REACH * density).mapValues { it.value / density }
         if (near.isEmpty()) return text
         return ime.engine.likelierLetter(text.single(), near, letters.keys).toString()
