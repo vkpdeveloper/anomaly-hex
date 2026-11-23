@@ -231,6 +231,10 @@ internal class KeyboardEngine(
     /** A glided word delete took back: the word typed in its place, at [Glided.anchor], is the one the
      * glide missed, and is yours at once, as Gboard learns it ([learn]). */
     private var unglided: Glided? = null
+    /** What the last [learn] counted, at [anchor] (the text before the cursor then), so undoing the
+     * autocorrection that put the word in takes it back. */
+    private class Counted(val anchor: String, val word: LearnedWords.Finished, val counts: Boolean, val touched: TypingWord.Touched?)
+    private var counted: Counted? = null
     var secure = true
         private set
     // Email addresses are offered and learned in text fields that allow suggestions and learning; an
@@ -270,7 +274,7 @@ internal class KeyboardEngine(
             attribute.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS == 0
         addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
-        addressesLearned.clear(); typedHere = false; unglided = null
+        addressesLearned.clear(); typedHere = false; unglided = null; counted = null
         if (!learnsCorrections()) dropWatch()
         resetTyping(); word = null; clearSpaces()
         numpad = kind == InputType.TYPE_CLASS_NUMBER || kind == InputType.TYPE_CLASS_PHONE ||
@@ -407,11 +411,14 @@ internal class KeyboardEngine(
         if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         // `finished` reads a word a space or mark ended; with none yet, the one about to go in.
         val f = LearnedWords.finished(if (boundary == 0) "$b " else b) ?: return
-        word?.takeTouched()?.let { t -> if (TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid)) learnedChanged() }
+        val touched = word?.takeTouched()?.takeIf { t -> TouchOffsets.alike(t.typed, f.word) && touch.learn(f.word, t.points, t.grid) }
+        if (touched != null) learnedChanged()
         val missed = unglided?.takeIf { g -> b.dropLast(boundary).dropLast(f.word.length) == g.anchor &&
             g.readings.keys.none { it.equals(f.word, ignoreCase = true) } }
         unglided = null
-        if (f.word in forgotten) return
+        val counts = f.word !in forgotten
+        counted = Counted(b, f, counts, touched)
+        if (!counts) return
         if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
         missed?.let { teach(f.word, f.sentenceStart) }
@@ -801,7 +808,16 @@ internal class KeyboardEngine(
         clearSpaces()
         val last = undo
         undo = null
+        val anchor = before()
         if (last != null && endsWith(last.replacement + " ") && replace(last.replacement + " ", last.original)) {
+            // The autocorrection's word counted when its space went in: undone, it takes nothing with it.
+            counted?.takeIf { it.anchor == anchor }?.let { c ->
+                val f = c.word
+                c.touched?.let { t -> touch.unlearn(f.word, t.points, t.grid) }
+                if (c.counts && learned.unlearn(f.word, f.previous, f.beforePrevious)) personalWordsChanged()
+                learnedChanged()
+            }
+            counted = null
             // What you put back is yours: it isn't corrected again (and, like the count, only where learning is allowed).
             if (learnHere) {
                 feedback.undo(last.language, last.original, last.replacement)

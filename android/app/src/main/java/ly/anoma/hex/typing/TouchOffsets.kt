@@ -50,6 +50,24 @@ internal class TouchOffsets {
         return learned
     }
 
+    /** Takes back the [learn] that just learned from [word] and [touches] on [grid], exactly: a word
+     * undone at once (an autocorrection you reverted) teaches the keys nothing. */
+    @Synchronized fun unlearn(word: String, touches: List<KeyPoint>, grid: KeyGrid) {
+        if (touches.size != word.length || word.isEmpty()) return
+        var changed = false
+        for ((i, ch) in word.withIndex().reversed()) {
+            val c = grid.centres[ch.lowercaseChar()] ?: continue
+            val dx = (touches[i].x - c.x) / grid.pitchX
+            val dy = (touches[i].y - c.y) / grid.pitchY
+            if (hypot(dx, dy) > REACH) continue
+            val s = stats[ch.lowercaseChar()] ?: continue
+            s.weight = (s.weight - 1) / DECAY; s.x = (s.x - dx) / DECAY; s.y = (s.y - dy) / DECAY
+            if (s.weight < 1e-9) stats.remove(ch.lowercaseChar())
+            changed = true
+        }
+        if (changed) publish()
+    }
+
     private fun publish() {
         val next = HashMap<Char, KeyPoint>()
         for ((c, s) in stats) {

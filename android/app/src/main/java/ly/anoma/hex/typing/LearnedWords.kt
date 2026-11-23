@@ -48,6 +48,24 @@ internal class LearnedWords {
         return (!was && seen.count >= WORD_USES).also { if (it) revision++ }
     }
 
+    /** Takes back one [learn] of [word] after [previous] and [beforePrevious], as it was called: a word
+     * that went in and was undone at once (an autocorrection you reverted) counts for nothing, so undoing
+     * it again and again never makes it yours. Returns whether [words] changed. */
+    @Synchronized fun unlearn(word: String, previous: String?, beforePrevious: String? = null): Boolean {
+        val lower = word.lowercase()
+        val seen = words[lower]?.takeIf { it.typed > 0 } ?: return false
+        val was = seen.count >= WORD_USES
+        seen.typed--; total--
+        if (seen.count == 0) forget(lower)
+        val before = previous?.lowercase()?.takeIf(::learnable)
+        if (before != null) {
+            val k = pair(before, lower)
+            typedPairs[k]?.let { n -> if (n > 1) typedPairs[k] = n - 1 else { typedPairs.remove(k); followers = null } }
+            beforePrevious?.lowercase()?.takeIf(::learnable)?.let { triples.unlearn(it, before, lower) }
+        }
+        return (was && seen.count < WORD_USES).also { if (it) revision++ }
+    }
+
     /** The paired computer's counts, replacing the last ones it sent; typed counts stay. */
     @Synchronized fun seed(counts: List<Pair<String, Int>>, pairs: List<Triple<String, String, Int>>) {
         for (seen in words.values) { total -= seen.seeded; seen.seeded = 0 }

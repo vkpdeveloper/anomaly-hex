@@ -64,6 +64,25 @@ class PersonalWordsLearningTest {
         assertEquals("teh teh ", k.field.text)
     }
 
+    @Test fun anUndoneAutocorrectionTakesItsCountsBack() {
+        val k = Keyboard()
+        k.tap("you"); k.engine.space(); k.tap("zorbly"); k.engine.space()
+        val words = k.learned.write(); val touches = k.engine.touch.write()
+        k.tap("wprld"); k.engine.space()
+        assertEquals("you zorbly world ", k.field.text)
+        k.engine.delete()
+        assertEquals("you zorbly wprld", k.field.text)
+        assertTrue(k.learned.write(), k.learned.write().lines().none { "world" in it.split('\t') })
+        assertTrue(k.learned.cost("world", null).isInfinite())
+        assertEquals(listOf("wprld"), k.learned.words())
+        // What came before is as it was, the taps on "wprld" aside: the keys learned nothing from "world".
+        assertEquals(words.lines().filter { it.isNotEmpty() }.toSet(), k.learned.write().lines().filter { it.isNotEmpty() && "wprld" !in it.split('\t') }.toSet())
+        assertEquals(stats(touches), stats(k.engine.touch.write()).filterKeys { it in stats(touches) })
+    }
+    private fun stats(text: String) = text.lines().drop(1).filter { it.isNotEmpty() }.associate { line ->
+        line.split('\t').let { f -> f[0] to f.drop(1).map { "%.6f".format(it.toDouble()) } }
+    }
+
     @Test fun aWordKeptAsTypedIsYoursAtOnce() {
         val k = Keyboard()
         k.tap("zorbex")

@@ -15,6 +15,16 @@ internal class PersonalTrigrams {
         if (size > MAX_TRIPLES) trim()
     }
 
+    /** Takes back one use of [word] after [first] then [second]. */
+    fun unlearn(first: String, second: String, word: String) {
+        val k = context(first, second)
+        val followers = after[k] ?: return
+        val n = followers[word] ?: return
+        if (n > 1) { followers[word] = n - 1; return }
+        followers.remove(word); size--
+        if (followers.isEmpty()) after.remove(k)
+    }
+
     /** What most often followed [first] then [second], used at least [min] times and starting with
      * [prefix], most used first (at most [limit]; allocation only for what it returns). */
     fun next(first: String, second: String, prefix: String = "", limit: Int = 3, min: Int = LearnedWords.WORD_USES): List<String> {
