@@ -6,12 +6,16 @@ import android.content.Context
 import android.provider.ContactsContract
 
 /** The email addresses the strip offers while one is typed: yours (the phone's accounts Hex can see,
- * which needs no permission), the ones you've typed ([LearnedWords.addresses]) and, with the Contacts
- * permission and Settings › Keyboard's switch, your contacts'. Thread-safe. */
+ * which needs no permission, and with the Contacts permission and Settings › Keyboard's switch, every
+ * account syncing contacts, such as each Google account signed in), the ones you've typed
+ * ([LearnedWords.addresses]) and, with that permission and switch, your contacts'. Thread-safe. */
 internal class EmailAddresses {
     /** Set off the main thread; empty until read. */
     @Volatile var accounts: List<String> = emptyList()
     @Volatile var contacts: List<String> = emptyList()
+    /** The accounts the contacts read names; Android hides other apps' accounts, Google's included,
+     * from [accounts]. */
+    @Volatile var signedIn: List<String> = emptyList()
 
     /** Addresses that start with [typed] (in any case) and are longer: yours first, then the ones you've
      * typed most, then your contacts' when [withContacts], each once. */
@@ -23,6 +27,7 @@ internal class EmailAddresses {
                 out.none { it.equals(address, ignoreCase = true) }) out.add(address)
         }
         accounts.forEach(::add)
+        signedIn.forEach(::add)
         learned.addresses(typed, limit).forEach(::add)
         if (withContacts) contacts.forEach(::add)
         return out
@@ -35,6 +40,7 @@ internal class EmailAddresses {
         private const val OPENERS = ",;<([{\"'"
         private const val CLOSERS = ".,;:!?)]}>\"'"
         private const val MAX_CONTACTS = 5_000
+        private const val MAX_ACCOUNTS = 100
 
         /** Whether [text] is a whole email address. */
         fun valid(text: String) = text.length <= 254 && ADDRESS.matches(text)
@@ -56,6 +62,24 @@ internal class EmailAddresses {
         fun accounts(context: Context): List<String> = try {
             AccountManager.get(context).accounts.map { it.name.trim() }.filter(::valid).distinctBy { it.lowercase() }
         } catch (_: RuntimeException) { emptyList() }
+
+        /** The phone's accounts that hold contacts and are email addresses: every Google account signed in
+         * has its groups there even with no contacts. Empty without the permission; read it off the main
+         * thread. */
+        fun signedIn(resolver: ContentResolver): List<String> {
+            val out = LinkedHashMap<String, String>()
+            for (uri in listOf(ContactsContract.Groups.CONTENT_URI, ContactsContract.Settings.CONTENT_URI, ContactsContract.RawContacts.CONTENT_URI)) {
+                try {
+                    resolver.query(uri, arrayOf(ContactsContract.RawContacts.ACCOUNT_NAME), null, null, null)?.use { cursor ->
+                        while (cursor.moveToNext() && out.size < MAX_ACCOUNTS) {
+                            val name = cursor.getString(0)?.trim() ?: continue
+                            if (valid(name)) out.putIfAbsent(name.lowercase(), name)
+                        }
+                    }
+                } catch (_: RuntimeException) {}
+            }
+            return out.values.toList()
+        }
 
         /** Your contacts' email addresses, at most [MAX_CONTACTS]; empty without the permission. Read it off
          * the main thread. */

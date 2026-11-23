@@ -127,7 +127,8 @@ the automatic correction on space stops there, as on Gboard.
 **Email addresses.** While you type one, the strip offers addresses that complete it: the phone's
 accounts that Android shows Hex without a permission, addresses you've typed before, and, with
 **Keyboard › Suggest contacts' names and emails** (off by default; it asks for the Contacts permission), your
-contacts'; their names are also words the strip, autocorrect and glides know. An address is learned once a space, comma, semicolon or return follows it, or you leave the
+contacts' and every account on the phone that syncs contacts, such as each Google account you're
+signed in to (Android hides those from other apps otherwise); their names are also words the strip, autocorrect and glides know. An address is learned once a space, comma, semicolon or return follows it, or you leave the
 field, and never in password fields, URL fields or apps that ask for no personalised learning. Email
 fields offer up to three from the first letter, before the strip's words, and a tap puts one in with
 no space after it. Elsewhere one address takes the strip's last slot once three characters match, and

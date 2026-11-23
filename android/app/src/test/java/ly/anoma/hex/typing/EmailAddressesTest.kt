@@ -24,10 +24,11 @@ class EmailAddressesTest {
         val emails = EmailAddresses().apply {
             accounts = listOf("vk@mine.dev")
             contacts = listOf("vera@friends.org", "VK@mine.dev")
+            signedIn = listOf("vaibhav.second@gmail.com", "vk@mine.dev")
         }
         val learned = LearnedWords().apply { learnAddress("vikram@work.com") }
-        assertEquals(listOf("vk@mine.dev", "vikram@work.com"), emails.matching("v", learned, withContacts = false))
-        assertEquals(listOf("vk@mine.dev", "vikram@work.com", "vera@friends.org"), emails.matching("V", learned, withContacts = true))
+        assertEquals(listOf("vk@mine.dev", "vaibhav.second@gmail.com", "vikram@work.com"), emails.matching("v", learned, withContacts = false))
+        assertEquals(listOf("vk@mine.dev", "vaibhav.second@gmail.com", "vikram@work.com"), emails.matching("V", learned, withContacts = true))
         assertEquals(listOf("vera@friends.org"), emails.matching("ve", learned, withContacts = true))
         assertEquals(emptyList<String>(), emails.matching("vk@mine.dev", learned, withContacts = true))
         assertEquals(emptyList<String>(), emails.matching("", learned, withContacts = true))

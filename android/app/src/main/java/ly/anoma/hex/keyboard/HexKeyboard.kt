@@ -104,7 +104,8 @@ class HexKeyboard : InputMethodService() {
         return EmojiWords(names.map { EmojiWords.parse(assets.open("typing/$it.emoji").bufferedReader().use { r -> r.readText() }) },
             shows = paint::hasGlyph).also { emojiLists[language] = it }
     }
-    // The email addresses the strip offers: the phone's accounts, read once, and your contacts' while
+    // The email addresses the strip offers: the phone's accounts, read once, and the signed-in accounts
+    // and your contacts' while
     // Settings › Keyboard's switch and the Contacts permission are both on, read again a little after
     // they change (a sync changes many at once).
     private val emails = EmailAddresses()
@@ -114,6 +115,7 @@ class HexKeyboard : InputMethodService() {
         words.execute {
             val allowed = contactsAllowed()
             emails.contacts = if (allowed) EmailAddresses.contacts(contentResolver) else emptyList()
+            emails.signedIn = if (allowed) EmailAddresses.signedIn(contentResolver) else emptyList()
             contactNames = if (allowed) ContactNames.read(contentResolver) else emptyList()
             main.post { engine.personalWordsChanged() }
         }
