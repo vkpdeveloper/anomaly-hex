@@ -20,15 +20,25 @@ internal class TouchOffsets {
 
     /** [grid] with each key aimed at its centre plus its offset, stamped with the [version] it reads. */
     fun personalised(grid: KeyGrid): KeyGrid {
-        val now = offsets
+        // The stamp is read first: publishing sets the offsets before it bumps the version, so a stamp that
+        // is behind its offsets only rebuilds once more, and one ahead of them can't happen.
         val stamp = version
-        if (now.isEmpty()) return KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, grid.centres, stamp)
-        val aimed = grid.centres.mapValues { (c, p) ->
-            val o = now[c] ?: return@mapValues p
-            KeyPoint(p.x + o.x * grid.pitchX, p.y + o.y * grid.pitchY)
+        aimedLast?.let { if (it.source === grid && it.stamp == stamp) return it.result }
+        val now = offsets
+        val result = if (now.isEmpty()) KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, grid.centres, stamp) else {
+            val aimed = grid.centres.mapValues { (c, p) ->
+                val o = now[c] ?: return@mapValues p
+                KeyPoint(p.x + o.x * grid.pitchX, p.y + o.y * grid.pitchY)
+            }
+            KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, aimed, stamp)
         }
-        return KeyGrid(grid.centres, grid.pitchX, grid.pitchY, grid.space, aimed, stamp)
+        aimedLast = Aimed(grid, stamp, result)
+        return result
     }
+    // The last grid aimed, so asking again for the same grid hands back the same one (the decoder keeps
+    // a grid's keys by identity, and every touch asks).
+    private class Aimed(val source: KeyGrid, val stamp: Int, val result: KeyGrid)
+    @Volatile private var aimedLast: Aimed? = null
 
     /** Learns from [word], finished with these [touches] (one per letter, in [grid]'s coordinates, the
      * grid they were scored on). A touch counts only when it fell within [REACH] pitches of the

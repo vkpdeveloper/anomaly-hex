@@ -52,6 +52,23 @@ class TypingFastPathsTest {
         }
     }
 
+    // Every touch asks for the aimed grid: the same grid comes back until a key's aim moves.
+    @Test fun anAimedGridIsReusedUntilTheAimChanges() {
+        val g = Glides.grid()
+        val touch = TouchOffsets()
+        val first = touch.personalised(g)
+        assertEquals(true, first === touch.personalised(g))
+        val e = g.centres.getValue('e')
+        repeat(12) { touch.learn("eee", List(3) { KeyPoint(e.x + g.pitchX * .2, e.y) }, g) }
+        val moved = touch.personalised(g)
+        assertEquals(false, moved === first)
+        assertEquals(true, moved === touch.personalised(g))
+        assertEquals(true, moved.aimed.getValue('e').x > e.x)
+        assertEquals(g.centres.getValue('a'), moved.aimed.getValue('a'))
+        val other = Glides.grid()
+        assertEquals(false, touch.personalised(other) === moved)
+    }
+
     @Test fun nextWordsAreTheThreeCheapestPairs() {
         for (previous in listOf("the", "i", "of", "to", "thank", "mentally", "zebra").map { model.index(it) }.filter { it >= 0 }) {
             val first = model.nextWords(previous, false, fill = false)
