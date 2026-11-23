@@ -117,15 +117,30 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
      * commonest words. */
     fun nextWords(previous: Int, swears: Boolean, fill: Boolean = true): List<String> {
         if (previous < 0) return completions("", swears, previous).map { text(it) }
-        val best = ArrayList<Int>(4)
+        // A common word's row holds thousands of pairs, and the same few words recur.
+        return nextCache.getOrPut(NextKey(previous, swears, fill, neverSuggest.revision)) { rankNextWords(previous, swears, fill) }
+    }
+    // The never-suggest revision keys it too: hiding a word must drop it from the next ones at once.
+    private data class NextKey(val previous: Int, val swears: Boolean, val fill: Boolean, val hidden: Int)
+    private val nextCache = object : LinkedHashMap<NextKey, List<String>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<NextKey, List<String>>?) = size > 64
+    }
+    private fun rankNextWords(previous: Int, swears: Boolean, fill: Boolean): List<String> {
+        // The three cheapest pairs, earlier slots first among equal costs.
+        val best = IntArray(3); var count = 0
+        val context = neverSuggest.restrictedContext(previous)
         for (at in int(rows + 4 * previous) until int(rows + 4 * (previous + 1))) {
-            if (neverSuggest.blocks(int(seconds + 4 * at), swears, previous)) continue
+            if (neverSuggest.blocks(int(seconds + 4 * at), swears, context)) continue
             val cost = u8(bi + at)
-            val i = best.indexOfFirst { u8(bi + it) > cost }
-            if (i >= 0) best.add(i, at) else if (best.size < 3) best.add(at)
-            if (best.size > 3) best.removeAt(3)
+            var i = 0
+            while (i < count && u8(bi + best[i]) <= cost) i++
+            if (i == 3) continue
+            if (count < 3) count++
+            for (j in count - 1 downTo i + 1) best[j] = best[j - 1]
+            best[i] = at
         }
-        val result = best.mapTo(ArrayList()) { text(int(seconds + 4 * it)) }
+        val result = ArrayList<String>(3)
+        for (i in 0 until count) result.add(text(int(seconds + 4 * best[i])))
         if (fill && result.size < 3) for (i in completions("", swears, previous)) { val w = text(i); if (w !in result) result.add(w); if (result.size == 3) break }
         return result
     }
@@ -135,6 +150,14 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
      * word's pair row, which share their sort order. */
     fun completionsAfter(prefix: String, previous: Int, swears: Boolean): IntArray {
         if (prefix.length !in 1..3) return IntArray(0)
+        // The strip asks again at its pause for the same word.
+        val hidden = neverSuggest.revision
+        lastAfter?.let { if (it.prefix == prefix && it.previous == previous && it.swears == swears && it.hidden == hidden) return it.result }
+        return rankCompletionsAfter(prefix, previous, swears).also { lastAfter = After(prefix, previous, swears, hidden, it) }
+    }
+    private class After(val prefix: String, val previous: Int, val swears: Boolean, val hidden: Int, val result: IntArray)
+    private var lastAfter: After? = null
+    private fun rankCompletionsAfter(prefix: String, previous: Int, swears: Boolean): IntArray {
         val r = range(prefix)
         if (r == 0L) return IntArray(0)
         val lo = (r ushr 32).toInt(); val hi = r.toInt()
@@ -159,7 +182,7 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
                 next = if (link < end) int(seconds + 4 * link) else hi
             }
             val rank = cost * 256 + unigram
-            if (length(i) <= prefix.length || length(i) > prefix.length + 8 || rank >= ranks[1]) continue
+            if (rank >= ranks[1] || length(i) <= prefix.length || length(i) > prefix.length + 8) continue
             if (neverSuggest.blocks(i, swears, context)) continue
             if (rank < ranks[0]) { best[1] = best[0]; ranks[1] = ranks[0]; best[0] = i; ranks[0] = rank }
             else { best[1] = i; ranks[1] = rank }
@@ -168,29 +191,31 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
     }
     // exp(-cost) for each stored unigram cost byte (cost = byte / 8 nats).
     private val frequency = DoubleArray(256) { kotlin.math.exp(-it / 8.0) }
-    private var wordStart: DoubleArray? = null
-    private var lastContinuation: Pair<String, DoubleArray?>? = null
+    // Recent prefixes' continuations, kept for the next word that starts the same ("th", "the"): a short
+    // prefix's range holds thousands of words. A prefix nothing continues is stored as [NONE].
+    private val continuationCache = object : LinkedHashMap<String, DoubleArray>(96, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, DoubleArray>?) = size > 96
+    }
     /** How much of the word list's frequency goes on from `prefix` with each letter, by letter code
      * (iOS TypingDecoderModel.continuations): null when no word starts with it, or every one ends
-     * there. The word start's, the costliest (every word), and the last prefix's are kept. */
+     * there. */
     fun continuations(prefix: String): DoubleArray? {
-        if (prefix.isEmpty()) wordStart?.let { return it }
-        lastContinuation?.let { if (it.first == prefix) return it.second }
-        val r = range(prefix)
-        val mass = if (r == 0L) null else {
-            val depth = prefix.length
-            val out = DoubleArray(alphabet + 1)
-            var any = false
-            for (i in (r ushr 32).toInt() until r.toInt()) {
-                val code = byte(i, depth)
-                if (code <= 0 || code == apostrophe) continue
-                out[code] += frequency[u8(uni + i)]
-                any = true
+        val cached = continuationCache.getOrPut(prefix) {
+            val r = range(prefix)
+            if (r == 0L) NONE else {
+                val depth = prefix.length
+                val out = DoubleArray(alphabet + 1)
+                var any = false
+                for (i in (r ushr 32).toInt() until r.toInt()) {
+                    val code = byte(i, depth)
+                    if (code <= 0 || code == apostrophe) continue
+                    out[code] += frequency[u8(uni + i)]
+                    any = true
+                }
+                if (any) out else NONE
             }
-            out.takeIf { any }
         }
-        if (prefix.isEmpty()) wordStart = mass else lastContinuation = prefix to mass
-        return mass
+        return cached.takeIf { it !== NONE }
     }
     private fun range(prefix: String): Long {
         var a = 0; var b = words
@@ -272,6 +297,7 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
     companion object {
         private const val UNCOUNTED = 256
         private fun spelling(language: String) = if (language == "hien") "en" else language
+        private val NONE = DoubleArray(0)
         private fun mapped(channel: FileChannel, offset: Long, size: Long): ByteBuffer {
             require(size in 1L..32_000_000L)
             return channel.map(FileChannel.MapMode.READ_ONLY, offset, size).order(ByteOrder.LITTLE_ENDIAN)
