@@ -67,9 +67,10 @@ class HexKeyboard : InputMethodService() {
     @Volatile private var learnedLoaded = false
     private val main = Handler(Looper.getMainLooper())
     private val saveLearned = Runnable { saveWords() }
+    /** Both stores lock themselves, so they are written out on [words] too: serializing a full store
+     * costs tens of milliseconds, which a main-thread turn must not spend. */
     private fun saveWords() {
-        val text = learned.write(); val touches = touch.write()
-        words.execute { writeLearned(text, LearnedWords.FILE); writeLearned(touches, TouchOffsets.FILE) }
+        words.execute { writeLearned(learned.write(), LearnedWords.FILE); writeLearned(touch.write(), TouchOffsets.FILE) }
     }
     private fun learnedChanged() {
         if (!learnedLoaded) return

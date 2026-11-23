@@ -366,8 +366,12 @@ internal class KeyboardEngine(
     private fun loadPersonal(decoder: SpatialDecoder, then: () -> Unit = {}) {
         val read = readPersonal ?: return
         val model = decoder.model
+        // Which of your words the model lacks asks the model's word list, whose search keeps a plain
+        // cache that only the main thread may touch (it also decodes the strip), so that is asked here.
+        // The background read then needs only the model's alphabet.
+        val mine = learned.yours(model).filter { it !in forgotten }
         background.execute {
-            decoder.personal = read(model, learned.yours(model).filter { it !in forgotten })
+            decoder.personal = read(model, mine)
             then()
         }
     }
