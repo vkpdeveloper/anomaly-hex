@@ -272,7 +272,7 @@ internal class KeyboardEngine(
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
-        if ((oldSelStart != oldSelEnd) != (newSelStart != newSelEnd)) offerActions()
+        if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) offerActions()
         (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
         val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) {
@@ -306,7 +306,8 @@ internal class KeyboardEngine(
         val start = b.dropLast(left.length)
         w.reread(whole, start.takeLast(40))
         var strip = w.strip(autocorrect = feedback.autocorrect).map {
-            if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || feedback.blocked(w.decoder.model.language, whole, it.text)))
+            if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || QuickMath.endsInUnit(b) ||
+                    feedback.blocked(w.decoder.model.language, whole, it.text)))
                 Suggestion(it.text, Suggestion.Kind.Word) else it
         }
         // A word the spell checker underlined as the wrong one ("form" for "from"): its fix in the middle.
@@ -447,7 +448,8 @@ internal class KeyboardEngine(
             pendingChip = Runnable {
                 pendingChip = null
                 if (word === w && w.token == token) showStrip(w.strip(autocorrect = true).map {
-                    if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || feedback.blocked(w.decoder.model.language, token, it.text)))
+                    if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || QuickMath.endsInUnit(before()) ||
+                            feedback.blocked(w.decoder.model.language, token, it.text)))
                         Suggestion(it.text, Suggestion.Kind.Word) else it
                 })
             }.also { main.postDelayed(it, CHIP_PAUSE_MS) }
@@ -664,7 +666,8 @@ internal class KeyboardEngine(
         val w = word
         if (w != null && !symbols && canEndWord()) {
             val old = w.token; val lang = w.decoder.model.language
-            if (feedback.autocorrect && autocorrectHere && old.isNotEmpty() && endsWith(prefix + old)) {
+            // "250 usd" stays as typed: its conversion chip needs the unit.
+            if (feedback.autocorrect && autocorrectHere && old.isNotEmpty() && endsWith(prefix + old) && !QuickMath.endsInUnit(b)) {
                 val fix = w.finish(' ', point, grid)
                 if (fix != null && !feedback.blocked(lang, fix.original, fix.replacement) && replace(fix.original, fix.replacement + " ")) {
                     cancelChip()
@@ -839,12 +842,14 @@ internal class KeyboardEngine(
     }
 
     private var actionsShown = emptyList<StripAction>()
-    /** The strip's chips: what to do with a selection, else nothing yet. */
+    /** The strip's chips: what to do with a selection, else the answer to a sum or a conversion of an
+     * amount just typed ([QuickMath]). */
     private fun offerActions() {
         val list = when {
             secure || !target.connected -> emptyList()
             selStart >= 0 && selStart != selEnd -> StripAction.selection
-            else -> emptyList()
+            numpad -> emptyList()
+            else -> listOfNotNull(target.before(QuickMath.READ)?.let { QuickMath.offer(it) })
         }
         if (list == actionsShown) return
         actionsShown = list

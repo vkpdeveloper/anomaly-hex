@@ -45,6 +45,19 @@ class SelectionTest {
         assertEquals("540", k.field.text)
     }
 
+    @Test fun aSumBeforeTheCaretOffersItsAnswer() {
+        val k = Keyboard("45*1")
+        k.engine.type("2")
+        k.engine.updateSelection(4, 4, 5, 5)
+        assertEquals(listOf(StripAction.Insert("= 540", 5, "540")), k.actions)
+    }
+
+    @Test fun aCurrencyAfterAnAmountIsNeverCorrected() {
+        val k = Keyboard("")
+        for (c in "250 usd ") if (c == ' ') k.engine.space() else k.engine.type(c.toString())
+        assertEquals("250 usd ", k.field.text)
+    }
+
     // A field whose selection is kept, as an editor's is.
     private class Selecting(var text: String, caret: Int) : KeyboardTextTarget by Field(text) {
         var selection = caret to caret
