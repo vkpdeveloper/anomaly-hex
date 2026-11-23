@@ -267,7 +267,11 @@ internal class KeyboardEngine(
         autocorrectHere = wordsHere &&
             variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_FILTER) &&
             attribute.inputType and (InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_FLAG_AUTO_COMPLETE) == 0
-        learnHere = autocorrectHere && attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0
+        // A search box that shows its app's own completions isn't corrected, but what you write there is
+        // yours, as on Gboard.
+        learnHere = wordsHere && attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0 &&
+            variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_FILTER) &&
+            attribute.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS == 0
         addressesHere = kind == InputType.TYPE_CLASS_TEXT && !secure &&
             attribute.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING == 0 &&
             variation !in setOf(InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_FILTER) &&
@@ -700,14 +704,20 @@ internal class KeyboardEngine(
     }
 
     // The tapped word goes whole, both sides of the caret, and the pick takes its place with no space.
+    // The word it replaces was the wrong one: what it counted after the words before it is taken back,
+    // and the pick counts there instead, so fixing a word later teaches as an undone autocorrection does.
     private fun pickForTapped(t: Tapped, text: String) {
         resetTyping()
         if (!secure && target.before(t.left.length) == t.left && target.after(t.right.length) == t.right &&
             target.selected().isNullOrEmpty()) {
+            val old = t.left + t.right
+            val f = LearnedWords.finished(before().dropLast(t.left.length) + old + " ")
             target.beginBatch()
             try {
-                if (target.deleteAround(t.left.length, t.right.length) && target.commit(text)) {
-                    if (learnHere) { learned.learn(text, null, false); learnedChanged() }
+                if (target.deleteAround(t.left.length, t.right.length) && target.commit(text) && learnHere) {
+                    if (f != null && !text.equals(old, ignoreCase = true) && learned.unlearn(old, f.previous, f.beforePrevious)) personalWordsChanged()
+                    if (learned.learn(text, f?.previous, f?.sentenceStart ?: false, f?.beforePrevious)) personalWordsChanged()
+                    learnedChanged()
                 }
             } finally { target.endBatch() }
         }

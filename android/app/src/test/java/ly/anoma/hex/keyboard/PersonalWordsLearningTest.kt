@@ -83,6 +83,33 @@ class PersonalWordsLearningTest {
         line.split('\t').let { f -> f[0] to f.drop(1).map { "%.6f".format(it.toDouble()) } }
     }
 
+    @Test fun aWordFixedLaterByTappingIntoItTeachesThePickInstead() {
+        val k = Keyboard()
+        k.chars("going their now ")
+        assertTrue(k.learned.write().lines().any { it == "p\tgoing\ttheir\t1" })
+        val end = k.field.text.length; val inside = "going th".length
+        k.field.setSelection(inside, inside); k.now = 10_000
+        k.engine.updateSelection(end, end, inside, inside)
+        k.engine.pickSuggestion("there")
+        assertEquals("going there now ", k.field.text)
+        val lines = k.learned.write().lines()
+        assertTrue(lines.toString(), lines.none { it.startsWith("p\tgoing\ttheir") || it.startsWith("w\ttheir") })
+        assertTrue(lines.toString(), "p\tgoing\tthere\t1" in lines)
+    }
+
+    @Test fun aSearchBoxWithItsOwnCompletionsLearnsButNotWhenPrivate() {
+        val search = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_AUTO_COMPLETE
+        val k = Keyboard(type = search)
+        k.chars("zorbex zorbex ")
+        assertEquals(listOf("zorbex"), k.learned.words())
+        for (off in listOf(Keyboard(type = search, options = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING),
+                Keyboard(type = search or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS),
+                Keyboard(type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI))) {
+            off.chars("zorbex zorbex ")
+            assertEquals("", off.learned.write())
+        }
+    }
+
     @Test fun aWordKeptAsTypedIsYoursAtOnce() {
         val k = Keyboard()
         k.tap("zorbex")
@@ -149,9 +176,10 @@ class PersonalWordsLearningTest {
         var strip = emptyList<Suggestion>()
         val learned = LearnedWords()
         val forgotten = Forgotten()
+        var now = 0L
         val engine = KeyboardEngine(field, prefs, { Spoken.English }, { SpatialDecoder(model) },
             readPersonal = { m, mine -> PersonalWords(m, mine + contacts, emptyMap(), { it in forgotten }) },
-            learned = learned, forgotten = forgotten, clock = { 0L })
+            learned = learned, forgotten = forgotten, clock = { now })
 
         init {
             engine.surface = object : KeyboardSurface {
