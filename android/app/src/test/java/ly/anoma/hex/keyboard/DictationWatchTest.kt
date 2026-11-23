@@ -84,6 +84,19 @@ class DictationWatchTest {
         assertNull(queue.first())
     }
 
+    @Test fun waitingCorrectionsSurviveARestart() {
+        val queue = PendingCorrections()
+        val fixes = listOf(DictationFix("Note:\thi rowan\n", "hi rowan", "Note:\thi Raunak\n", emptyList()),
+            DictationFix("ok ✓ café", "ok", "okay ✓ café", emptyList()))
+        fixes.forEach(queue::add)
+        val again = PendingCorrections().apply { read(queue.write() + "not\ta line\n") }
+        assertEquals(2, again.size)
+        assertEquals(fixes[0], again.first())
+        again.remove(fixes[0])
+        assertEquals(fixes[1], again.first())
+        assertEquals("", PendingCorrections().write())
+    }
+
     @Test fun aFixedDictationIsLearnedHereAndSent() {
         val k = Keyboard()
         k.engine.insertDictation("Tell rowan hello.", "en")

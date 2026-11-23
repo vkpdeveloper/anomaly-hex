@@ -158,10 +158,15 @@ class HexKeyboard : InputMethodService() {
             } finally { fetching = false }
         }
     }
-    // Fixes to dictated text the computer hasn't taken yet: a few, in memory, sent at the next contact.
+    // Fixes to dictated text the computer hasn't taken yet: a few, kept on the phone until the next contact.
     private val pendingCorrections = PendingCorrections()
     private var sendingCorrections = false
-    private fun correctionFound(fix: DictationFix) { pendingCorrections.add(fix); sendCorrections() }
+    private fun correctionFound(fix: DictationFix) { pendingCorrections.add(fix); pendingChanged(); sendCorrections() }
+    private fun pendingChanged() {
+        if (!learnedLoaded) return
+        val text = pendingCorrections.write()
+        words.execute { writeLearned(text, PendingCorrections.FILE) }
+    }
     /** Sends the waiting corrections, oldest first, and learns the terms the computer took from them. A
      * computer that can't be reached keeps them; one that refuses a correction (an older Hex) drops it. */
     private fun sendCorrections() {
@@ -173,11 +178,11 @@ class HexKeyboard : InputMethodService() {
                     val fix = pendingCorrections.first() ?: break
                     try {
                         val terms = dictation.router.send { host, computer -> HexClient.correct(host, computer.port, computer.code, fix.baseline, fix.inserted, fix.edited) }
-                        pendingCorrections.remove(fix)
+                        pendingCorrections.remove(fix); pendingChanged()
                         if (Corrections.learn(learned, Corrections.termWords(terms))) engine.learnedWordsChanged()
                         if (terms.isNotEmpty()) learnedChanged()
                     } catch (_: HexError.Failed) {
-                        pendingCorrections.remove(fix)
+                        pendingCorrections.remove(fix); pendingChanged()
                     }
                 }
             } catch (e: CancellationException) {
@@ -247,13 +252,13 @@ class HexKeyboard : InputMethodService() {
             TypingPreferences.FORGET_LEARNED -> {
                 main.removeCallbacks(saveLearned); learned.clear(); touch.clear(); engine.learnedWordsChanged()
                 forgotten.clear(); engine.hiddenChanged()
-                engine.dropWatch(); pendingCorrections.clear()
+                engine.dropWatch(); pendingCorrections.clear(); pendingChanged()
                 emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
             }
             TypingPreferences.LEARN_FROM_HISTORY ->
                 if (feedback.learnFromHistory) fetchHistoryWords(force = true)
                 else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
-            TypingPreferences.LEARN_FROM_CORRECTIONS -> if (!feedback.learnFromCorrections) pendingCorrections.clear()
+            TypingPreferences.LEARN_FROM_CORRECTIONS -> if (!feedback.learnFromCorrections) { pendingCorrections.clear(); pendingChanged() }
             TypingPreferences.CONTACT_EMAILS -> contactsSettingChanged()
             TypingPreferences.REPLACEMENTS -> engine.personalWordsChanged()
             TypingPreferences.NUMBER_ROW -> view?.numberRowChanged()
@@ -313,8 +318,13 @@ class HexKeyboard : InputMethodService() {
             runCatching { if (learnedFile.exists()) learned.read(learnedFile.readText()) }
             runCatching { if (touchFile.exists()) touch.read(touchFile.readText()) }
             runCatching { File(filesDir, Forgotten.FILE).takeIf { it.exists() }?.let { forgotten.read(it.readText()) } }
+            val pending = runCatching { File(filesDir, PendingCorrections.FILE).takeIf { it.exists() }?.readText() }.getOrNull()
             learnedLoaded = true
-            main.post { engine.hiddenChanged(); engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords() }
+            main.post {
+                // Corrections found before the file was read go after the ones it kept.
+                pending?.let { val found = pendingCorrections.write(); pendingCorrections.clear(); pendingCorrections.read(it); pendingCorrections.read(found); pendingChanged() }
+                engine.hiddenChanged(); engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords(); sendCorrections()
+            }
         }
         words.execute { emails.accounts = EmailAddresses.accounts(this) }
         contactsSettingChanged()

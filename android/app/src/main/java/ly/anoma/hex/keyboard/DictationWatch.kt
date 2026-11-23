@@ -114,7 +114,8 @@ internal object Corrections {
 }
 
 /** Corrections the computer hasn't taken yet, newest last, never more than [max]: one it was unreachable
- * for waits for the next contact. Memory only, since each holds text from a field. */
+ * for waits for the next contact, across restarts ([write], [read]; the phone's own words already
+ * learned theirs, so a read one carries no [DictationFix.words]). */
 internal class PendingCorrections(private val max: Int = MAX) {
     private val queue = ArrayDeque<DictationFix>()
     @Synchronized fun add(fix: DictationFix) { queue.addLast(fix); while (queue.size > max) queue.removeFirst() }
@@ -123,5 +124,23 @@ internal class PendingCorrections(private val max: Int = MAX) {
     @Synchronized fun clear() = queue.clear()
     @get:Synchronized val size get() = queue.size
 
-    companion object { const val MAX = 5 }
+    /** One line per correction, its three texts in Base64, oldest first. */
+    @Synchronized fun write(): String = queue.joinToString("") { f ->
+        listOf(f.baseline, f.inserted, f.edited).joinToString("\t", postfix = "\n") { encoder.encodeToString(it.toByteArray()) }
+    }
+    /** What [write] wrote, after what's here; a line it can't read is skipped. */
+    @Synchronized fun read(text: String) {
+        for (line in text.lineSequence()) {
+            val f = line.split('\t').takeIf { it.size == 3 } ?: continue
+            val (baseline, inserted, edited) = runCatching { f.map { String(decoder.decode(it)) } }.getOrNull() ?: continue
+            add(DictationFix(baseline, inserted, edited, emptyList()))
+        }
+    }
+
+    companion object {
+        const val MAX = 5
+        const val FILE = "pending-corrections.tsv"
+        private val encoder = java.util.Base64.getEncoder()
+        private val decoder = java.util.Base64.getDecoder()
+    }
 }
