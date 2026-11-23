@@ -67,7 +67,13 @@ open_compose() {
   dev am force-stop $messages
   dev am start -a android.intent.action.SENDTO -d sms:5551234 $messages >/dev/null
   sleep 3
-  field; wait_for shown; sleep 1
+  # A tap that lands while the conversation is still opening does nothing: tap again.
+  for _ in 1 2 3; do
+    field
+    for _ in $(seq 12); do shown && break; sleep 0.25; done
+    shown && break
+  done
+  wait_for shown; sleep 1
 }
 clear_field() { dev input keycombination CTRL_LEFT A; dev input keyevent 67; }
 trace_start() { dev atrace --async_start -a ly.anoma.hex -b 65536 "$@" >/dev/null; }
