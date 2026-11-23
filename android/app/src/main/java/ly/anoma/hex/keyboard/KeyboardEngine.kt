@@ -842,14 +842,23 @@ internal class KeyboardEngine(
     }
 
     private var actionsShown = emptyList<StripAction>()
+    private var snippetsStored: String? = null
+    private var snippetList = Snippets.starter
+    /** Your text shortcuts, read again only when the setting changes. */
+    private fun snippets(): List<Snippet> {
+        val stored = feedback.snippets
+        if (stored != snippetsStored) { snippetsStored = stored; snippetList = Snippets.read(stored) }
+        return snippetList
+    }
     /** The strip's chips: what to do with a selection, else the answer to a sum or a conversion of an
-     * amount just typed ([QuickMath]). */
+     * amount just typed ([QuickMath]), and the text shortcuts being typed ([Snippets]). */
     private fun offerActions() {
         val list = when {
             secure || !target.connected -> emptyList()
             selStart >= 0 && selStart != selEnd -> StripAction.selection
             numpad -> emptyList()
-            else -> listOfNotNull(target.before(QuickMath.READ)?.let { QuickMath.offer(it) })
+            else -> target.before(QuickMath.READ)?.let { listOfNotNull(QuickMath.offer(it)) + Snippets.offer(it, snippets()) }
+                .orEmpty().take(3)
         }
         if (list == actionsShown) return
         actionsShown = list

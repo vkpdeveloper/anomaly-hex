@@ -77,6 +77,10 @@ internal class TypingPreferences(context: Context) {
     var replacements: String
         get() = prefs.getString(REPLACEMENTS, "").orEmpty()
         set(value) { prefs.edit().putString(REPLACEMENTS, value).apply() }
+    /** Your text shortcuts as [ly.anoma.hex.keyboard.Snippets.write] keeps them; null until first changed. */
+    var snippets: String?
+        get() = prefs.getString(SNIPPETS, null)
+        set(value) { prefs.edit().putString(SNIPPETS, value).apply() }
     /** When the computer's replacements last arrived, in wall-clock milliseconds; 0 for never. */
     var replacementsAt: Long
         get() = prefs.getLong("replacementsAt", 0)
@@ -113,5 +117,6 @@ internal class TypingPreferences(context: Context) {
         const val CLEAN_LINKS = "cleanLinks"
         const val TEXTED_CODES = "textedCodes"
         const val EXPAND_LINKS = "expandLinks"
+        const val SNIPPETS = "snippets"
     }
 }

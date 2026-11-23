@@ -14,16 +14,19 @@ internal class Replacements(val words: List<String>, val shortcuts: Map<String, 
         fun write(pairs: List<Pair<String, String>>) =
             pairs.joinToString("\n") { (phrase, output) -> escape(phrase) + "\t" + escape(output) }
 
+        /** The pairs [write] kept; a line that isn't one is skipped. */
+        fun pairs(stored: String): List<Pair<String, String>> =
+            if (stored.isEmpty()) emptyList()
+            else stored.split('\n').map { it.split('\t') }.filter { it.size == 2 }.map { unescape(it[0]) to unescape(it[1]) }
+
         /** What [write] kept, as words and shortcuts; anything unreadable reads as nothing. */
         fun read(stored: String): Replacements {
             if (stored.isEmpty()) return None
             val words = ArrayList<String>()
             val shortcuts = LinkedHashMap<String, String>()
-            for (line in stored.split('\n')) {
-                val fields = line.split('\t')
-                if (fields.size != 2) continue
-                val phrase = unescape(fields[0]).trim()
-                val output = unescape(fields[1]).trim()
+            for ((rawPhrase, rawOutput) in pairs(stored)) {
+                val phrase = rawPhrase.trim()
+                val output = rawOutput.trim()
                 if (output.isEmpty() || !oneWord(phrase)) continue
                 if (phrase.equals(output, ignoreCase = true)) words.add(output)
                 else shortcuts.putIfAbsent(phrase.lowercase(), output)

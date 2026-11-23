@@ -41,15 +41,18 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.button.ButtonPreferences
 import ly.anoma.hex.fix.TinyfixFiles
+import ly.anoma.hex.keyboard.Snippet
+import ly.anoma.hex.keyboard.Snippets
 import ly.anoma.hex.keyboard.TextedCodes
 import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
 
 private enum class Page(val title: String) {
     Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"),
-    Layout("Keyboard layout"), Policy("Privacy policy"), Licences("Open-source licences"), Licence("Open-source licences");
+    Layout("Keyboard layout"), Shortcuts("Text shortcuts"), Shortcut("Text shortcut"), Policy("Privacy policy"), Licences("Open-source licences"), Licence("Open-source licences");
     val parent get() = when (this) {
-        Layout -> Keyboard
+        Layout, Shortcuts -> Keyboard
+        Shortcut -> Shortcuts
         Policy, Licences -> Privacy
         Licence -> Licences
         else -> Home
@@ -92,6 +95,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val sayToSend = remember(revision) { typing.sayToSend }
     val cleanLinks = remember(revision) { typing.cleanLinks }
     val expandLinks = remember(revision) { typing.expandLinks }
+    val snippets = remember(revision) { Snippets.read(typing.snippets) }
+    // The shortcut being edited: its place in the list, or -1 for a new one.
+    var editing by rememberSaveable { mutableIntStateOf(-1) }
     // Codes from texts is on only with the SMS permission too, asked as Contacts is.
     var smsAllowed by remember { mutableStateOf(TextedCodes.allowed(context)) }
     var smsRefused by rememberSaveable { mutableStateOf(false) }
@@ -219,6 +225,8 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             // Android's spell checker setting: with Hex, a misspelled word's fixes show on the strip.
                             Rule(); Entry("Spell checker", if (hexChecks) "Hex underlines words it doesn't know" else "Choose Hex to underline mistakes", "↗",
                                 { openSpellCheckers(context) })
+                            Rule(); Entry("Text shortcuts", snippets.firstOrNull()?.let { "Type ${it.shortcut} for \u201C${it.filled().first}\u201D" },
+                                action = { open(Page.Shortcuts) })
                             Rule(); Toggle("Number row", "1 to 0 above the letters", numberRow) { typing.numberRow = it }
                             Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
                             Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
@@ -280,6 +288,25 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                                 if (it == selectedLayout) "✓" else "", { typing.layout = it; open(page.parent) })
                         }
                     }
+                    Page.Shortcuts -> {
+                        if (snippets.isNotEmpty()) Card {
+                            snippets.forEachIndexed { i, it ->
+                                if (i != 0) Rule()
+                                Entry(it.shortcut, it.text, action = { editing = i; open(Page.Shortcut) })
+                            }
+                        }
+                        Card { Entry("Add shortcut", value = "+", action = { editing = -1; open(Page.Shortcut) }) }
+                    }
+                    Page.Shortcut -> ShortcutEditor(snippets.getOrNull(editing), snippets.filterIndexed { i, _ -> i != editing }) { changed ->
+                        val list = snippets.toMutableList()
+                        when {
+                            changed == null -> if (editing in list.indices) list.removeAt(editing)
+                            editing in list.indices -> list[editing] = changed
+                            else -> list += changed
+                        }
+                        typing.snippets = Snippets.write(list)
+                        open(Page.Shortcuts)
+                    }
                     Page.Policy, Page.Licences, Page.Licence -> {
                         val asset = when (page) { Page.Policy -> "privacy-policy.txt"; Page.Licences -> "licenses/credits.txt"; else -> "licenses/$licence" }
                         val text = remember(asset) { context.assets.open(asset).bufferedReader().use { it.readText() } }
@@ -295,6 +322,33 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                 }
             }
         }
+    }
+}
+
+/** A text shortcut's two fields, with Save, and Delete for one already kept; [done] gets null for Delete. */
+@Composable private fun ShortcutEditor(snippet: Snippet?, others: List<Snippet>, done: (Snippet?) -> Unit) {
+    var shortcut by rememberSaveable { mutableStateOf(snippet?.shortcut ?: ";") }
+    var text by rememberSaveable { mutableStateOf(snippet?.text.orEmpty()) }
+    val taken = others.any { it.shortcut == shortcut.trim() }
+    val ready = shortcut.trim().length >= 2 && shortcut.trim().none { it.isWhitespace() } && text.isNotBlank() && !taken
+    Card {
+        Field("Shortcut", shortcut, single = true) { shortcut = it }
+        Rule(); Field("Text", text, single = false) { text = it }
+    }
+    Label(if (taken) "You already have that shortcut" else "Put a part in { } to select it, like There in {10} min",
+        size = 13, muted = true, lines = 2, mod = Modifier.padding(horizontal = 16.dp))
+    Card {
+        Entry("Save", value = if (ready) "✓" else "", action = if (ready) ({ done(Snippet(shortcut.trim(), text)) }) else null)
+        if (snippet != null) { Rule(); Entry("Delete", value = "", action = { done(null) }) }
+    }
+}
+@Composable private fun Field(title: String, value: String, single: Boolean, change: (String) -> Unit) {
+    val ink = colorResource(R.color.ink)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Label(title, size = 13, muted = true)
+        BasicTextField(value = value, onValueChange = change, singleLine = single, maxLines = if (single) 1 else 6,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            textStyle = TextStyle(color = ink, fontFamily = sans, fontSize = 16.sp), cursorBrush = SolidColor(ink))
     }
 }
 
