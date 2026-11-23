@@ -34,6 +34,7 @@ use crate::app_settings::AppSettings;
 use crate::transcription::models::TranscriptionSelection;
 use crate::transcription::service::{TranscriptionService, TranscriptionServiceHandle};
 
+mod corrections;
 mod origin;
 mod replacements;
 mod words;
@@ -625,8 +626,38 @@ fn handle(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Opti
         ("GET", "/phone/v1/replacements") => {
             Some(HttpResponse::json(200, &replacements::current()))
         }
+        ("POST", "/phone/v1/corrections") => correct(request, stream, shared),
         _ => Some(HttpResponse::code(404, "not_found")),
     }
+}
+
+/// Learns the words a phone's fix taught (`phone::corrections`). The body
+/// is read here, bounded, and its text never reaches a log.
+fn correct(request: HttpRequest, stream: &mut TcpStream, shared: &Shared) -> Option<HttpResponse> {
+    if !request.has_content_type("application/json") {
+        return Some(HttpResponse::code(415, "unsupported-body"));
+    }
+    let Some(content_length) = request.content_length else {
+        return Some(HttpResponse::code(411, "length-required"));
+    };
+    if content_length > corrections::MAX_BODY_BYTES {
+        return Some(HttpResponse::code(413, "resource-exhausted"));
+    }
+    let mut body = request.body_prefix;
+    if let Err(error) = super::read_body_bounded(
+        stream,
+        content_length,
+        &mut body,
+        &shared.stop,
+        corrections::MAX_BODY_BYTES,
+        super::UPLOAD_DEADLINE,
+    ) {
+        return Some(super::http::body_read_response(error));
+    }
+    Some(match corrections::learn_and_save(&body) {
+        Some(learned) => HttpResponse::json(200, &learned),
+        None => HttpResponse::code(400, "invalid-body"),
+    })
 }
 
 fn transcribe(
@@ -991,6 +1022,44 @@ mod tests {
             b"hi",
         );
         assert!(text.starts_with("HTTP/1.1 415"), "{text}");
+
+        // Corrections: the same code, a JSON body within the bound. Only
+        // bodies that teach nothing are sent, so no settings are written.
+        let post = |head: &str, body: &[u8]| {
+            request(
+                port,
+                &format!(
+                    "POST /phone/v1/corrections HTTP/1.1\r\n{head}Content-Length: {}\r\n\r\n",
+                    body.len()
+                ),
+                body,
+            )
+        };
+        let json = "Authorization: Bearer 7KQ2M9XD4FTA\r\nContent-Type: application/json\r\n";
+        let unpaired = post("Content-Type: application/json\r\n", b"{}");
+        assert!(unpaired.starts_with("HTTP/1.1 401"), "{unpaired}");
+        let plain = post(
+            "Authorization: Bearer 7KQ2M9XD4FTA\r\nContent-Type: text/plain\r\n",
+            b"{}",
+        );
+        assert!(plain.starts_with("HTTP/1.1 415"), "{plain}");
+        let garbage = post(json, b"not json");
+        assert!(garbage.starts_with("HTTP/1.1 400"), "{garbage}");
+        let too_big = request(
+            port,
+            &format!(
+                "POST /phone/v1/corrections HTTP/1.1\r\n{json}Content-Length: {}\r\n\r\n",
+                corrections::MAX_BODY_BYTES + 1
+            ),
+            b"",
+        );
+        assert!(too_big.starts_with("HTTP/1.1 413"), "{too_big}");
+        let same = br#"{"baseline":"send it now","inserted":"send it now","edited":"send it now"}"#;
+        let unchanged = post(json, same);
+        assert!(unchanged.starts_with("HTTP/1.1 200"), "{unchanged}");
+        let body: serde_json::Value =
+            serde_json::from_str(unchanged.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["learned"], serde_json::json!([]));
         drop(server);
     }
 

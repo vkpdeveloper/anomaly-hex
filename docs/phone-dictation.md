@@ -101,12 +101,58 @@ this computer's History, within its retention, never a dictation itself
 never cross a sentence or clause mark, and are sent only when seen twice.
 
 ```json
-{"words": [["Vaibhav", 12], ["the", 9]], "pairs": [["the", "build", 3]]}
+{"words": [["Vaibhav", 12], ["the", 9]], "pairs": [["the", "build", 3]],
+ "vocabulary": ["Raunak", "OpenCode"]}
 ```
 
-At most 5,000 words and 10,000 pairs, commonest first. The keyboard keeps
-them on the phone, beside the words you type there (`LearnedWords`), and
-Forget learned words clears both.
+At most 5,000 words and 10,000 pairs, commonest first. `vocabulary` is this
+computer's Vocabulary terms (Settings › Output, at most 500), so the names a
+dictation here is biased toward are also words on the phone; an older phone
+ignores the field and an older computer leaves it out. A term of several
+words becomes one word each. The keyboard keeps all of it on the phone,
+beside the words you type there (`LearnedWords`), and Forget learned words
+clears it.
+
+`POST /phone/v1/corrections` with `Content-Type: application/json` and a
+body up to 64 KiB: what the person fixed in text the keyboard dictated, so
+the next dictation gets those words right (`phone::corrections`).
+
+```json
+{"baseline": "Note: hi rowan ak how are you",
+ "inserted": "hi rowan ak how are you",
+ "edited": "Note: hi Raunak how are you"}
+```
+
+`baseline` is the field's text around the insertion as dictated, `inserted`
+the dictated words, `edited` the same text after the fix. The computer
+decides what the fix taught with the rule behind Labs › Learn from
+corrections on macOS (`correction_terms::learned_terms`: only names and
+casing the person put where dictated words were, at most five, none it
+already has) and adds them to Vocabulary through the same save as that lab
+(`correction_watch::save`), so Parakeet leans toward them from the next
+dictation. Labs › Phone dictation is the opt-in: Learn from corrections need
+not be on, and it works on every OS Phone dictation does. The text is
+compared and dropped, never logged or stored; the log says only how many
+terms were learned.
+
+```ts
+200 {"learned": ["Raunak"]}   the terms added, [] when the fix taught nothing
+400 invalid-body  401 wrong-code  411 length-required
+413 resource-exhausted  415 unsupported-body
+```
+
+The keyboard (Settings › Keyboard › Learn from my corrections, on by
+default) follows a dictation it inserted in a field that learns, never a
+password, incognito, or no-personalised-learning field, until the field is
+left, another dictation starts, or five minutes pass. It reads the field
+once the person pauses editing, and sends only when the edits touch the
+dictated words, with about 300 characters of context around them. It also
+teaches its own `LearnedWords` the words the fix put there, so typing them
+works at once, with or without a computer. A correction the computer can't
+be reached for waits in memory (at most five, oldest dropped) and is sent at
+the next contact; Forget learned words or turning the setting off drops
+them. A computer without the route (404) is skipped. No audio is sent or
+kept for this.
 
 `GET /phone/v1/replacements`: Global's text replacements (Settings ›
 Output), as the keyboard's text shortcuts, fetched at most hourly whenever

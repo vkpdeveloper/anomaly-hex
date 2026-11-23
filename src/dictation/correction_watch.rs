@@ -248,37 +248,39 @@ fn finish(stop: Stop, baseline: &str, inserted: &str, latest: &str) -> usize {
     if terms.is_empty() {
         return 0;
     }
-    save(&terms)
+    save(&terms).len()
 }
 
 /// Saves `terms` the way `hex vocabulary add` does: read the saved
 /// settings, add each new term through [`vocabulary::add`], and write the
 /// list in one update, which also applies it to this process. The open
-/// window adopts the save through the runtime's own settings reload. Returns
-/// how many terms were added.
-#[cfg(target_os = "macos")]
-fn save(terms: &[String]) -> usize {
+/// window adopts the save through the runtime's own settings reload (macOS;
+/// the other apps read settings again on their own). Returns the terms
+/// actually added. Shared by the macOS watch and the phone's corrections
+/// route (`local_api::phone`), so both learn into the same list.
+pub(crate) fn save(terms: &[String]) -> Vec<String> {
     let mut settings = match crate::app_settings::AppSettings::load() {
         Ok(settings) => settings,
         Err(error) => {
             tracing::warn!(%error, "could not read settings to learn vocabulary");
-            return 0;
+            return Vec::new();
         }
     };
     let base = settings.clone();
     let (entries, added) = with_terms(&settings.vocabulary, terms);
     if added.is_empty() {
-        return 0;
+        return Vec::new();
     }
     settings.vocabulary = entries;
     if let Err(error) = base.update(&settings) {
         tracing::warn!(%error, "could not save the learned vocabulary");
-        return 0;
+        return Vec::new();
     }
+    #[cfg(target_os = "macos")]
     if let Some(runtime) = crate::macos_rune::runtime() {
         let _ = runtime.send(crate::macos_rune::Request::ReloadSettings);
     }
-    added.len()
+    added
 }
 
 #[cfg(test)]

@@ -27,10 +27,21 @@ pub(super) struct Words {
     pub words: Vec<(String, u32)>,
     /// `[first, second, count]` in lowercase, commonest first.
     pub pairs: Vec<(String, String, u32)>,
+    /// This computer's Vocabulary terms (Settings › Output), so the phone
+    /// can type the names a dictation here is biased toward. Older phones
+    /// ignore the field.
+    pub vocabulary: Vec<String>,
 }
 
 /// The counts for the History in the data folder; nothing when it can't be read.
 pub(super) fn from_history(now_ms: u64) -> Words {
+    Words {
+        vocabulary: crate::dictation::vocabulary::terms(),
+        ..history_counts(now_ms)
+    }
+}
+
+fn history_counts(now_ms: u64) -> Words {
     let Ok(root) = crate::app_paths::support_dir() else {
         return Words::default();
     };
@@ -126,7 +137,11 @@ pub(super) fn count<'a>(texts: impl Iterator<Item = &'a str>) -> Words {
         .collect();
     pairs.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| (&a.0, &a.1).cmp(&(&b.0, &b.1))));
     pairs.truncate(MAX_PAIRS);
-    Words { words, pairs }
+    Words {
+        words,
+        pairs,
+        vocabulary: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +174,20 @@ mod tests {
                 .any(|(a, b, _)| a == "build" && b == "then")
         );
         assert!(!words.pairs.iter().any(|(a, _, _)| a == "ask"));
+    }
+
+    #[test]
+    fn vocabulary_is_a_plain_list_of_terms_beside_the_counts() {
+        let words = Words {
+            vocabulary: vec!["Raunak".into(), "OpenCode".into()],
+            ..count(["the build"].into_iter())
+        };
+        let json = serde_json::to_value(&words).unwrap();
+        assert_eq!(
+            json["vocabulary"],
+            serde_json::json!(["Raunak", "OpenCode"])
+        );
+        assert!(json["words"].is_array() && json["pairs"].is_array());
     }
 
     #[test]
