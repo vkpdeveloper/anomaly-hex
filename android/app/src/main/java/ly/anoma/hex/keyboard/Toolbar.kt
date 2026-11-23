@@ -39,6 +39,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         const val CHIP_CHROME = 12f + 14f + 20.2f + 8.2f
         const val PIECE_ICON = 16f
         const val PIECE_TEXT_WIDTH = 150f
+        const val REPLY_TEXT_WIDTH = 260f
         const val EMOJI = 21f
         const val EMOJI_SLOT = 46f
         const val NOTE_MS = 3_000L
@@ -387,6 +388,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
                 StripAction.Copy -> context.getString(R.string.keyboard_copy)
                 is StripAction.Rewrite -> context.getString(if (action.style == HexClient.Style.English) R.string.keyboard_english else R.string.keyboard_rewrite)
                 is StripAction.Insert -> action.label
+                is StripAction.Reply -> action.text
             }
             val view = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isFocusable = true
@@ -400,7 +402,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
                 }
                 addView(TextView(context).apply {
                     text(this, 15f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END; maxWidth = px(PIECE_TEXT_WIDTH); text = label
+                    ellipsize = TextUtils.TruncateAt.END; text = label
+                    maxWidth = px(if (action is StripAction.Reply) REPLY_TEXT_WIDTH else PIECE_TEXT_WIDTH)
                 })
                 contentDescription = label
                 setOnClickListener {

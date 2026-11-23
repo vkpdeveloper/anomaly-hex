@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import ly.anoma.hex.button.ChatScreen
 import ly.anoma.hex.R
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
@@ -239,11 +240,12 @@ class HexKeyboard : InputMethodService() {
     private val store by lazy { Store(this) }
     /** A rewrite is waiting for the computer; another tap only says so. */
     private var rewriting = false
+    private var busyNote = R.string.keyboard_rewriting
     // The toolbar's note lasts three seconds; this keeps "Rewriting" up until the answer comes.
     private val rewritingNote = object : Runnable {
         override fun run() {
             if (!rewriting) return
-            view?.note(getString(R.string.keyboard_rewriting)); main.postDelayed(this, REWRITING_NOTE_MS)
+            view?.note(getString(busyNote)); main.postDelayed(this, REWRITING_NOTE_MS)
         }
     }
     internal val rewriteShown get() = !engine.secure && store.computer != null
@@ -252,11 +254,11 @@ class HexKeyboard : InputMethodService() {
      * in one edit only if it's the same field and the text hasn't changed meanwhile; Undo rewrite puts it back. */
     internal fun rewrite(style: HexClient.Style = HexClient.Style.Fix) {
         if (!rewriteShown) return
-        if (rewriting) { view?.note(getString(R.string.keyboard_rewriting)); return }
+        if (rewriting) { view?.note(getString(busyNote)); return }
         val span = engine.rewriteSpan()
         if (span == null) { view?.note(getString(R.string.keyboard_nothing_to_rewrite)); return }
         val forField = field
-        rewriting = true; rewritingNote.run()
+        rewriting = true; busyNote = R.string.keyboard_rewriting; rewritingNote.run()
         io.launch {
             val note = try {
                 val rewritten = dictation.router.send { host, computer -> HexClient.rewrite(host, computer.port, computer.code, span.text, style) }
@@ -268,6 +270,33 @@ class HexKeyboard : InputMethodService() {
                     !here || !engine.applyRewrite(span, rewritten) -> R.string.keyboard_rewrite_changed
                     else -> null
                 }?.let(::getString)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                rewriteError(e)
+            } finally { rewriting = false; main.removeCallbacks(rewritingNote) }
+            note?.let { view?.note(it) }
+        }
+    }
+    /** The grid menu's Reply: the chat on screen, read through the floating button's service, goes to the
+     * paired computer with what's typed so far; up to three replies come back as chips on the strip. */
+    internal fun reply() {
+        if (!rewriteShown) return
+        if (rewriting) { view?.note(getString(busyNote)); return }
+        val lines = ChatScreen.read() ?: run { view?.note(getString(R.string.keyboard_reply_needs_button)); return }
+        if (lines.isEmpty()) { view?.note(getString(R.string.keyboard_no_chat)); return }
+        val draft = currentInputConnection?.getTextBeforeCursor(2_000, 0)?.toString().orEmpty()
+        val forField = field
+        rewriting = true; busyNote = R.string.keyboard_replying; rewritingNote.run()
+        io.launch {
+            val note = try {
+                val replies = dictation.router.send { host, computer -> HexClient.replies(host, computer.port, computer.code, lines, draft) }
+                rewriting = false
+                when {
+                    replies.isEmpty() -> getString(R.string.keyboard_rewrite_failed)
+                    forField != field || currentInputConnection == null || !isInputViewShown -> null
+                    else -> { main.post { engine.offerReplies(replies) }; null }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

@@ -12,6 +12,8 @@ internal sealed interface StripAction {
     /** [label] on the chip; a tap puts [text] in place of the [replace] characters before the caret and
      * selects [select] within it, if given. */
     data class Insert(val label: String, val replace: Int, val text: String, val select: IntRange? = null) : StripAction
+    /** A reply drafted for the chat on screen (Reply in the grid menu); a tap puts it in place of the field's text. */
+    data class Reply(val text: String) : StripAction
 
     companion object {
         /** What a selection offers. */

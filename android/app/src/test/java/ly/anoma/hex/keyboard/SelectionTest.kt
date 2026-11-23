@@ -58,6 +58,16 @@ class SelectionTest {
         assertEquals("250 usd ", k.field.text)
     }
 
+    @Test fun aReplyReplacesWhatWasTypedAndGoesOnceTheTextChanges() {
+        val k = Keyboard("sure")
+        k.engine.offerReplies(listOf("Sure, see you at 8!", "On my way"))
+        assertEquals(listOf(StripAction.Reply("Sure, see you at 8!"), StripAction.Reply("On my way")), k.actions)
+        k.engine.act(StripAction.Reply("Sure, see you at 8!"))
+        assertEquals("Sure, see you at 8!", k.field.text)
+        k.engine.updateSelection(4, 4, 19, 19)
+        assertTrue(k.actions.isEmpty())
+    }
+
     // A field whose selection is kept, as an editor's is.
     private class Selecting(var text: String, caret: Int) : KeyboardTextTarget by Field(text) {
         var selection = caret to caret

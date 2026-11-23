@@ -25,6 +25,10 @@
     <string name="keyboard_cut">Cut</string>
     <string name="keyboard_copy">Copy</string>
     <string name="keyboard_nothing_to_rewrite">Nothing to rewrite</string>
+    <string name="keyboard_reply">Reply</string>
+    <string name="keyboard_replying">Writing replies</string>
+    <string name="keyboard_no_chat">No chat on screen</string>
+    <string name="keyboard_reply_needs_button">Turn on the floating button so Hex can read the chat</string>
     <string name="keyboard_rewrite_unchanged">No changes needed</string>
     <string name="keyboard_rewrite_changed">The text changed, so it wasn\'t rewritten</string>
     <string name="keyboard_rewrite_no_opencode">OpenCode isn\'t running on your computer</string>

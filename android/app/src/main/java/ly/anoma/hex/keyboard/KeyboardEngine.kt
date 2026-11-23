@@ -269,6 +269,7 @@ internal class KeyboardEngine(
         symbols = numpad
         more = false; symbolTyped = false; shift.reset()
         selStart = attribute.initialSelStart; selEnd = attribute.initialSelEnd
+        replies = emptyList()
         refreshCaps(force = true)
     }
 
@@ -844,6 +845,13 @@ internal class KeyboardEngine(
     }
 
     private var actionsShown = emptyList<StripAction>()
+    /** Replies drafted for the chat on screen, offered while the field still holds [repliesFor]. */
+    private var replies = emptyList<String>()
+    private var repliesFor: String? = null
+    fun offerReplies(list: List<String>) {
+        replies = list; repliesFor = target.all()?.text
+        offerActions()
+    }
     private var snippetsStored: String? = null
     private var snippetList = Snippets.starter
     /** Your text shortcuts, read again only when the setting changes. */
@@ -859,6 +867,7 @@ internal class KeyboardEngine(
         val list = when {
             secure || !target.connected -> emptyList()
             selStart >= 0 && selStart != selEnd -> StripAction.selection
+            replies.isNotEmpty() && target.all()?.text == repliesFor -> replies.map { StripAction.Reply(it) }
             numpad -> emptyList()
             else -> target.before(QuickMath.READ)?.let { listOfNotNull(QuickMath.offer(it)) + Snippets.offer(it, snippets()) + freeTimes(it) }
                 .orEmpty().take(3)
@@ -893,8 +902,17 @@ internal class KeyboardEngine(
                     }
                 } finally { target.endBatch() }
             }
+            is StripAction.Reply -> {
+                val length = target.all()?.text?.length
+                target.beginBatch()
+                try {
+                    if (length != null) { target.setSelection(length, length); target.deleteBefore(length) }
+                    target.commit(action.text)
+                } finally { target.endBatch() }
+            }
             is StripAction.Rewrite -> return
         }
+        replies = emptyList()
         surface?.suggestions(emptyList()); refreshCaps()
     }
 

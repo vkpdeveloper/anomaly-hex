@@ -134,6 +134,7 @@ class ButtonService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
+        ChatScreen.service = this
         prefs = ButtonPreferences(this)
         // Turned on in Accessibility counts as turned on in Hex.
         prefs.on = true
@@ -175,6 +176,7 @@ class ButtonService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onUnbind(intent: Intent?): Boolean {
+        if (ChatScreen.service === this) ChatScreen.service = null
         // Turned off in Accessibility counts as turned off in Hex.
         if (::prefs.isInitialized) {
             prefs.prefs.unregisterOnSharedPreferenceChangeListener(changed)
@@ -184,6 +186,7 @@ class ButtonService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        if (ChatScreen.service === this) ChatScreen.service = null
         main.removeCallbacks(settle)
         main.removeCallbacks(clearMessage)
         recorder?.cancel()
