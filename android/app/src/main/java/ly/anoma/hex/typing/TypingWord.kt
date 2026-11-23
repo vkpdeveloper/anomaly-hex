@@ -164,9 +164,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (readings && token.length >= 3) for (r in decision().readings) add(reading(r.text))
         for (s in short) add(s)
         // Your own words before the rest of the dictionary's (iOS lists UILexicon terms with them).
-        decoder.personal?.completions(token)?.forEach { add(yours(it)) }
+        decoder.personal?.completions(token)?.let { for (w in it) { if (pool.size >= size) break; add(yours(w)) } }
         // Then the words you write most, as Gboard completes from what it learned.
-        decoder.learned?.completions(token)?.forEach { add(if (it.any(Char::isUpperCase)) yours(it) else shown(it)) }
+        decoder.learned?.completions(token)?.let { for (w in it) { if (pool.size >= size) break; add(if (w.any(Char::isUpperCase)) yours(w) else shown(w)) } }
         for (w in model.completions(lower, suggestSwearWords, previous)) add(shown(model.text(w)))
         if (readings && token.length < 3) for (r in decision().readings) add(reading(r.text))
         if (pool.isEmpty()) return listOf(typed)

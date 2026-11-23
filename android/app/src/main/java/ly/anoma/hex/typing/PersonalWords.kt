@@ -63,9 +63,21 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
 
     /** Your words that start with `prefix` and are longer, in your spelling. */
     fun completions(prefix: String): List<String> {
-        val lower = prefix.lowercase()
-        return texts.filter { it.length > prefix.length && it.lowercase().startsWith(lower) }.sortedBy { it.length }
+        last?.let { if (it.first == prefix) return it.second }
+        // The words sharing the prefix's letters are one run of the sorted list.
+        var lo = 0; var hi = codes.size
+        for ((depth, c) in prefix.lowercase().withIndex()) {
+            val code = model.code(c)
+            val run = if (code == 0 || lo >= hi) 0L else child(lo, hi, depth, code)
+            if (run == 0L) { lo = 0; hi = 0; break }
+            lo = (run ushr 32).toInt(); hi = run.toInt()
+        }
+        val found = ArrayList<String>()
+        for (i in lo until hi) if (texts[i].length > prefix.length) found.add(texts[i])
+        // The strip asks twice per keystroke and again at its pause for the same prefix.
+        return found.sortedBy { it.length }.also { last = prefix to it }
     }
+    @Volatile private var last: Pair<String, List<String>>? = null
 
     /** Your phrase for a shortcut typed as [typed], cased as Apple's keyboard writes it (#2153, #2173):
      * a shortcut typed with a leading capital, but not all capitals, capitalises the phrase's first
