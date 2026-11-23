@@ -22,21 +22,28 @@ internal class LearnedWords {
     private val typedAddresses = HashMap<String, Address>()
     private val typedPairs = HashMap<String, Int>()
     private var seededPairs = HashMap<String, Int>()
+    private val triples = PersonalTrigrams()
+    // The words that followed each word in the pairs, so [next] reads one word's few followers instead
+    // of every pair; built on first use, kept up as pairs are typed, dropped when pairs change wholesale.
+    private var followers: HashMap<String, HashSet<String>>? = null
     private var total = 0L
     /** Bumped when [words] changes, so the keyboard rereads its own words. */
     @Volatile var revision = 0
         private set
 
     /** [word] went in after [previous] (null after a mark or at a sentence's start, where every word
-     * has a capital, so its spelling there teaches nothing). Returns whether [words] changed. */
-    @Synchronized fun learn(word: String, previous: String?, sentenceStart: Boolean): Boolean {
+     * has a capital, so its spelling there teaches nothing), which went in after [beforePrevious]
+     * (null when no word, or a mark, came before it). Returns whether [words] changed. */
+    @Synchronized fun learn(word: String, previous: String?, sentenceStart: Boolean, beforePrevious: String? = null): Boolean {
         val lower = word.lowercase()
         if (!learnable(lower)) return false
         val seen = entry(lower, lower)
         val was = seen.count >= WORD_USES
         seen.typed++; total++
         if (!sentenceStart) seen.spelling = word
-        previous?.lowercase()?.takeIf(::learnable)?.let { typedPairs.merge(pair(it, lower), 1, Int::plus) }
+        val before = previous?.lowercase()?.takeIf(::learnable)
+        before?.let { typedPairs.merge(pair(it, lower), 1, Int::plus); followers?.getOrPut(it) { HashSet(4) }?.add(lower) }
+        if (before != null) beforePrevious?.lowercase()?.takeIf(::learnable)?.let { triples.learn(it, before, lower) }
         trim()
         return (!was && seen.count >= WORD_USES).also { if (it) revision++ }
     }
@@ -52,12 +59,13 @@ internal class LearnedWords {
             seen.seeded = count; total += count
         }
         words.entries.filter { it.value.count == 0 }.forEach { forget(it.key) }
+        followers = null
         seededPairs = HashMap<String, Int>().also { m -> for ((a, b, n) in pairs) if (n > 0) m[pair(a.lowercase(), b.lowercase())] = n }
         revision++
     }
 
     @Synchronized fun clear() {
-        words.clear(); spellings.clear(); typedPairs.clear(); seededPairs.clear(); typedAddresses.clear(); total = 0; revision++
+        words.clear(); spellings.clear(); typedPairs.clear(); seededPairs.clear(); followers = null; triples.clear(); typedAddresses.clear(); total = 0; revision++
     }
 
     /** Your words, spelled your way, used at least twice: the ones the keyboard treats as words. */
@@ -129,20 +137,31 @@ internal class LearnedWords {
 
     /** The words you most often write after [previous], at least twice each. */
     @Synchronized fun next(previous: String, limit: Int = 3): List<String> {
-        val prefix = previous.lowercase() + " "
-        val counts = HashMap<String, Int>()
-        for (m in listOf(typedPairs, seededPairs)) for ((k, n) in m) if (k.startsWith(prefix)) counts.merge(k.substring(prefix.length), n, Int::plus)
-        return counts.entries.filter { it.value >= WORD_USES }.sortedByDescending { it.value }.take(limit)
-            .map { words[it.key]?.spelling ?: it.key }
+        val first = previous.lowercase()
+        val following = (followers ?: buildFollowers().also { followers = it })[first] ?: return emptyList()
+        return following.map { it to pairCount(first, it) }.filter { it.second >= WORD_USES }.sortedByDescending { it.second }.take(limit)
+            .map { words[it.first]?.spelling ?: it.first }
     }
 
-    /** One line per word, pair and address, tab-separated: `w spelling typed seeded`, `p first second
-     * typed`, `s first second seeded`, `e address uses`. */
+    /** The words you most often write after [first] then [second], then those after [second] alone, at
+     * least twice each; with a [prefix], the ones that complete it. */
+    @Synchronized fun next(first: String?, second: String, prefix: String = "", limit: Int = 3): List<String> {
+        val lowerSecond = second.lowercase()
+        val own = first?.let { triples.next(it.lowercase(), lowerSecond, prefix.lowercase(), limit) }.orEmpty()
+        if (own.size >= limit) return own.map(::spelled)
+        val pairs = if (prefix.isEmpty()) next(second, limit) else emptyList()
+        return (own.map(::spelled) + pairs).distinct().take(limit)
+    }
+    private fun spelled(lower: String) = words[lower]?.spelling ?: lower
+
+    /** One line per word, pair, triple and address, tab-separated: `w spelling typed seeded`, `p first second
+     * typed`, `s first second seeded`, `t first second third typed`, `e address uses`. */
     @Synchronized fun write(): String = buildString {
         for (s in words.values) append("w\t").append(s.spelling).append('\t').append(s.typed).append('\t').append(s.seeded).append('\n')
         for (a in typedAddresses.values) append("e\t").append(a.text).append('\t').append(a.uses).append('\n')
         for ((k, n) in typedPairs) append("p\t").append(k.replace(' ', '\t')).append('\t').append(n).append('\n')
         for ((k, n) in seededPairs) append("s\t").append(k.replace(' ', '\t')).append('\t').append(n).append('\n')
+        triples.write(this)
     }
 
     /** What [write] wrote, added to what's here; a line it can't read is skipped. */
@@ -157,8 +176,9 @@ internal class LearnedWords {
                     val seen = entry(lower, f[1])
                     seen.typed += typed; seen.seeded += seeded; total += typed + seeded
                 }
-                f.size == 4 && f[0] == "p" -> f[3].toIntOrNull()?.let { typedPairs.merge(pair(f[1], f[2]), it, Int::plus) }
-                f.size == 4 && f[0] == "s" -> f[3].toIntOrNull()?.let { seededPairs[pair(f[1], f[2])] = it }
+                f.size == 4 && f[0] == "p" -> f[3].toIntOrNull()?.let { typedPairs.merge(pair(f[1], f[2]), it, Int::plus); followers = null }
+                f.size == 5 && f[0] == "t" -> if (f.subList(1, 4).all { learnable(it.lowercase()) }) triples.read(f)
+                f.size == 4 && f[0] == "s" -> f[3].toIntOrNull()?.let { seededPairs[pair(f[1], f[2])] = it; followers = null }
                 f.size == 3 && f[0] == "e" -> {
                     val uses = f[2].toIntOrNull()?.takeIf { it > 0 } ?: continue
                     if (!EmailAddresses.valid(f[1])) continue
@@ -175,10 +195,12 @@ internal class LearnedWords {
             val drop = words.entries.sortedBy { it.value.count }.take(words.size - MAX_WORDS * 9 / 10)
             for ((w, s) in drop) { forget(w); total -= s.count }
             typedPairs.keys.removeAll { k -> k.substringBefore(' ') !in words || k.substringAfter(' ') !in words }
+            followers = null
         }
         if (typedPairs.size > MAX_PAIRS) {
             val drop = typedPairs.entries.sortedBy { it.value }.take(typedPairs.size - MAX_PAIRS * 9 / 10).map { it.key }
             for (k in drop) typedPairs.remove(k)
+            followers = null
         }
     }
 
@@ -190,6 +212,13 @@ internal class LearnedWords {
         words.remove(lower)
         val key = Spellings.key(lower)
         spellings[key]?.let { if (it.remove(lower) && it.isEmpty()) spellings.remove(key) }
+    }
+
+    private fun buildFollowers() = HashMap<String, HashSet<String>>().also { index ->
+        for (m in listOf(typedPairs, seededPairs)) for (k in m.keys) {
+            val space = k.indexOf(' ')
+            index.getOrPut(k.substring(0, space)) { HashSet(4) }.add(k.substring(space + 1))
+        }
     }
 
     private fun pairCount(first: String, second: String): Int {
@@ -217,8 +246,8 @@ internal class LearnedWords {
             lower.all { it.isLetter() || it == '\'' } && lower.any { it.isLetter() }
 
         /** The word that ends [before] (the text before the cursor, right after a space, mark or line
-         * break went in), the word before it when nothing but a space separates them, and whether it
-         * starts a sentence; null when no word ends there. */
+         * break went in), the word before it, and the one before that, when nothing but a space
+         * separates them, and whether it starts a sentence; null when no word ends there. */
         fun finished(before: String): Finished? {
             var end = before.length
             while (end > 0 && !before[end - 1].isLetter()) {
@@ -233,12 +262,21 @@ internal class LearnedWords {
             val rest = text.dropLast(TypingWord.currentToken(text)!!.length)
             // A word joined to more than letters ("v2", "a@b", "x.com") isn't one to learn.
             if (rest.lastOrNull()?.let { !it.isWhitespace() && it !in "([{\"“‘" } == true) return null
-            val gap = rest.takeLastWhile { it == ' ' }
-            val beforeGap = rest.dropLast(gap.length)
-            val previous = if (gap.length == 1) TypingWord.currentToken(beforeGap)?.takeIf { it.isNotEmpty() &&
-                beforeGap.dropLast(it.length).lastOrNull()?.let { c -> c.isWhitespace() || c in "([{\"“‘" } != false } else null
-            return Finished(word, previous?.trimEnd('\''), TypingWord.startsSentence(rest))
+            val first = wordBeforeGap(rest)
+            val second = first?.let { wordBeforeGap(it.second) }
+            return Finished(word, first?.first, TypingWord.startsSentence(rest), second?.first)
+        }
+
+        /** The word right before [text]'s one trailing space, with the text before that word: null
+         * for no space or two, a mark, or a word joined to more than letters. */
+        fun wordBeforeGap(text: String): Pair<String, String>? {
+            if (text.takeLastWhile { it == ' ' }.length != 1) return null
+            val head = text.dropLast(1)
+            val token = TypingWord.currentToken(head)?.takeIf { it.isNotEmpty() } ?: return null
+            val start = head.dropLast(token.length)
+            if (start.lastOrNull()?.let { it.isWhitespace() || it in "([{\"“‘" } == false) return null
+            return token.trimEnd('\'') to start
         }
     }
-    data class Finished(val word: String, val previous: String?, val sentenceStart: Boolean)
+    data class Finished(val word: String, val previous: String?, val sentenceStart: Boolean, val beforePrevious: String? = null)
 }

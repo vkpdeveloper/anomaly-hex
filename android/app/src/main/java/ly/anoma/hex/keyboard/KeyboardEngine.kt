@@ -344,7 +344,7 @@ internal class KeyboardEngine(
     private fun learn(b: String, boundary: Int) {
         if (word == null || !learnHere || b.length <= boundary || !b[b.length - 1 - boundary].isLetter()) return
         val f = LearnedWords.finished(b) ?: return
-        if (learned.learn(f.word, f.previous, f.sentenceStart)) personalWordsChanged()
+        if (learned.learn(f.word, f.previous, f.sentenceStart, f.beforePrevious)) personalWordsChanged()
         learnedChanged()
     }
     // The address that ends [b], the text before the cursor, once a space, comma, semicolon or line break

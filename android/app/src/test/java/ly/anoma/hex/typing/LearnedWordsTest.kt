@@ -7,10 +7,10 @@ import org.junit.Test
 
 class LearnedWordsTest {
     @Test fun theWordThatJustEndedAndTheOneBeforeIt() {
-        assertEquals(LearnedWords.Finished("Vaibhav", "hi", false), LearnedWords.finished("Say hi Vaibhav "))
+        assertEquals(LearnedWords.Finished("Vaibhav", "hi", false, "Say"), LearnedWords.finished("Say hi Vaibhav "))
         assertEquals(LearnedWords.Finished("there", null, false), LearnedWords.finished("Hi, there."))
         assertEquals(LearnedWords.Finished("Hello", null, true), LearnedWords.finished("Done. Hello "))
-        assertEquals(LearnedWords.Finished("don't", "I", false), LearnedWords.finished("so I don’t "))
+        assertEquals(LearnedWords.Finished("don't", "I", false, "so"), LearnedWords.finished("so I don’t "))
         // Not words to learn: a link, a handle, a word run into digits.
         assertNull(LearnedWords.finished("see x.com "))
         assertNull(LearnedWords.finished("ping @vkp "))

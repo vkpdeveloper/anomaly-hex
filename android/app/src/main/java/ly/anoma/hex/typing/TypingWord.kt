@@ -26,6 +26,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // whether the word starts a sentence.
     private var before = ""
     private var previousText: String? = null
+    // The word before that, when only a space separates the two (lowercase), for your own trigrams.
+    private var beforePreviousText: String? = null
     private var sentenceStart = true
     /** The word a space finished, as it reads and as typed, with its taps and its space tap, while the
      * next word may still revise or join it; [anchor] is the text before the cursor right after its space. */
@@ -48,6 +50,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         this.before = before
         previousText = previousWord(before).takeIf { it.isNotEmpty() }
         previous = model.context(previousText.orEmpty())
+        beforePreviousText = LearnedWords.wordBeforeGap(before)?.let { LearnedWords.wordBeforeGap(it.second) }?.first?.lowercase()
         sentenceStart = startsSentence(before)
         finished = null
         if (before.isEmpty()) return
@@ -81,7 +84,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
                 val previous = finished.lowercase()
                 val index = model.context(previous)
                 val next = if (index >= 0) model.nextWords(index, suggestSwearWords, fill = false) else emptyList()
-                (decoder.learned?.next(previous).orEmpty() + next + commonWords[model.language].orEmpty()).filter {
+                val first = LearnedWords.wordBeforeGap(text.dropLast(1).dropLast(finished.length))?.first?.lowercase()
+                (decoder.learned?.next(first, previous).orEmpty() + next + commonWords[model.language].orEmpty()).filter {
                     it.lowercase() != previous && !model.neverSuggest.blocks(it.lowercase(), suggestSwearWords, index)
                 }
             }
@@ -138,6 +142,11 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         // Your own word, completed once two letters match, before the dictionary's: a word you added is
         // likelier what you mean than a reading's runner-up ("zor" offers "Zorbex" beside the fix "or").
         if (token.length >= 2) decoder.personal?.completions(token)?.firstOrNull()?.let { add(yours(it)) }
+        // The word you write after these two, completed from its first letter (your own phrases).
+        val one = previousText
+        if (beforePreviousText != null && one != null) decoder.learned?.next(beforePreviousText, one, lower)?.forEach {
+            add(if (it.any(Char::isUpperCase)) yours(it) else shown(it))
+        }
         val short = if (token.length <= 3) model.completionsAfter(lower, previous, suggestSwearWords).map { shown(model.text(it)) } else emptyList()
         if (fix == null) short.firstOrNull { s -> pool.none { it.equals(s, ignoreCase = true) } }?.let(::add)
         val readings = autocorrect && spatial && token.length >= 2 && !protected()
