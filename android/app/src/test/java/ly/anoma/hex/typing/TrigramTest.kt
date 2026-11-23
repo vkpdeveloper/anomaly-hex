@@ -60,6 +60,16 @@ class TrigramTest {
         assertEquals("", learned.write())
     }
 
+    @Test fun forgettingAWordDropsItsPhrases() {
+        val learned = LearnedWords()
+        learned.say("see you soon", 3); learned.say("on my way", 3)
+        learned.forgetWord("soon")
+        assertTrue(learned.next("see", "you").isEmpty())
+        learned.forgetWord("my")
+        assertTrue(learned.next("on", "my").isEmpty())
+        assertTrue(learned.write().lines().none { it.startsWith("t\t") })
+    }
+
     @Test fun keptTriplesStayBounded() {
         val learned = LearnedWords()
         for (i in 0 until 70_000) learned.say("a b w$i".replace(Regex("\\d"), { ('a' + it.value.toInt()).toString() }))

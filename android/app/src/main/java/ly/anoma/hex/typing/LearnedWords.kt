@@ -69,6 +69,7 @@ internal class LearnedWords {
         val lower = word.lowercase()
         words[lower]?.let { total -= it.count; forget(lower) }
         for (m in listOf(typedPairs, seededPairs)) m.keys.removeAll { it.substringBefore(' ') == lower || it.substringAfter(' ') == lower }
+        followers = null; triples.forget(lower)
         revision++
     }
 

@@ -31,6 +31,17 @@ internal class PersonalTrigrams {
 
     fun clear() { after.clear(); size = 0 }
 
+    /** Drops every triple [word] (lowercase) is part of. */
+    fun forget(word: String) {
+        val it = after.entries.iterator()
+        while (it.hasNext()) {
+            val (k, followers) = it.next()
+            if (k.substringBefore(' ') == word || k.substringAfter(' ') == word) { size -= followers.size; it.remove(); continue }
+            if (followers.remove(word) != null) size--
+            if (followers.isEmpty()) it.remove()
+        }
+    }
+
     /** `t first second word uses` per triple, one per line, to append to [LearnedWords.write]. */
     fun write(out: StringBuilder) {
         for ((k, followers) in after) {
