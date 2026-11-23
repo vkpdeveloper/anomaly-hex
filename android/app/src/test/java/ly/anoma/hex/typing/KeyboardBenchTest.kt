@@ -153,4 +153,152 @@ class KeyboardBenchTest {
         for (s in out) println(s.report())
         println("=== END ===")
     }
+
+    /** 2,000 learned words the model may lack plus 500 contact names, as a phone that's been used a year. */
+    private fun crowd(model: TypingModel, learnedCount: Int = 2000, names: Int = 500): Pair<PersonalWords, LearnedWords> {
+        val random = Random(7)
+        val syllables = listOf("an", "ar", "be", "ka", "ri", "sh", "ta", "vi", "mo", "ne", "la", "de", "jo", "ha", "pr", "ya",
+            "su", "ni", "ra", "ve", "ko", "zi", "el", "om", "ush", "it", "ay", "ee", "ch", "dh")
+        fun made(parts: Int) = buildString { repeat(parts) { append(syllables[random.nextInt(syllables.size)]) } }
+        val contacts = LinkedHashSet<String>()
+        while (contacts.size < names) contacts.add(made(2 + random.nextInt(3)).replaceFirstChar { it.uppercase() })
+        val common = (0 until model.size).filter { model.text(it).all { c -> c in 'a'..'z' } }.sortedBy { model.frequencyCost(it) }
+            .take(learnedCount / 2).map { model.text(it) }
+        val written = LinkedHashSet<String>(common)
+        while (written.size < learnedCount) made(2 + random.nextInt(4)).let { if (model.index(it) < 0) written.add(it) }
+        val learned = LearnedWords()
+        learned.seed(written.map { it to 2 + random.nextInt(50) }, emptyList())
+        val theirs = learned.words().filter { model.index(it.lowercase()) < 0 }
+        return PersonalWords(model, theirs + contacts, emptyMap()) to learned
+    }
+
+    @Test fun glideBench() {
+        assumeTrue(System.getenv("HEX_BENCH") == "1")
+        val model = TypingModel.file(file, "en")
+        val g = Glides.grid()
+        val glide = GlideDecoder(model)
+        val (personal, learned) = crowd(model)
+        val letters = { w: Int -> model.text(w).all { it in 'a'..'z' } }
+        val byCost = (0 until model.size).filter(letters).sortedBy { model.frequencyCost(it) }
+        val common = byCost.filter { model.length(it) in 3..7 }.take(150).map { model.text(it) }
+        val long = byCost.filter { model.length(it) >= 10 }.take(60).map { model.text(it) } +
+            listOf("understanding", "communication", "responsibility", "internationalization")
+        val out = ArrayList<Stats>()
+        fun case(label: String, words: List<String>, withPersonal: Boolean) {
+            val paths = words.flatMap { w -> Glides.variants(w, g).map { it.second } }
+            val stats = Stats(label)
+            val p = if (withPersonal) personal else null
+            val l = if (withPersonal) learned else null
+            repeat(3) { for (path in paths) glide.decode(path, g, -1, false, p, l) }
+            repeat(2) { for (path in paths) measure(stats) { glide.decode(path, g, -1, false, p, l) } }
+            out += stats
+        }
+        case("glide common words, plain", common, false)
+        case("glide long words, plain", long, false)
+        case("glide common, 2000+500 personal", common, true)
+        case("glide long, 2000+500 personal", long, true)
+        println("=== GLIDE BENCH ===")
+        for (s in out) println(s.report())
+        println("=== END ===")
+    }
+
+    /** `learn` over a year's typing, then a full store: 20,000 words, 50,000 pairs, 60,000 triples. */
+    @Test fun learnedBench() {
+        assumeTrue(System.getenv("HEX_BENCH") == "1")
+        val random = Random(5)
+        val syllables = listOf("an", "ar", "be", "ka", "ri", "sh", "ta", "vi", "mo", "ne", "la", "de", "jo", "ha", "pr", "ya", "su", "ni", "ra", "ve", "ko", "zi", "el", "om")
+        fun made(): String {
+            val base = buildString { repeat(2 + random.nextInt(4)) { append(syllables[random.nextInt(syllables.size)]) } }
+            return if (random.nextInt(3) == 0) base + random.nextInt(100).toString().map { 'a' + it.digitToInt() }.joinToString("") else base
+        }
+        val vocab = LinkedHashSet<String>().also { while (it.size < 22_000) it.add(made()) }.toList()
+        // A skewed pick so some words repeat and the pairs and triples have real counts.
+        fun pick() = vocab[(vocab.size * Math.pow(random.nextDouble(), 2.2)).toInt().coerceAtMost(vocab.size - 1)]
+        val out = ArrayList<Stats>()
+        val learned = LearnedWords()
+        val learn = Stats("LearnedWords.learn (growing to cap)"); val learnFull = Stats("LearnedWords.learn (store full)")
+        var a = pick(); var b = pick()
+        repeat(260_000) { i ->
+            val w = pick()
+            if (i < 150_000) learned.learn(w, b, false, a)
+            else measure(if (i < 200_000) learn else learnFull) { learned.learn(w, b, false, a) }
+            a = b; b = w
+        }
+        out += listOf(learn, learnFull)
+        val counts = Stats("LearnedWords.completions"); val next = Stats("LearnedWords.next(prev)"); val next3 = Stats("LearnedWords.next(a,b,prefix)")
+        val addresses = Stats("LearnedWords.addresses"); val learnAddr = Stats("LearnedWords.learnAddress")
+        repeat(1000) { learned.learnAddress("user$it@example${it % 40}.com") }
+        repeat(3) {
+            for (i in 0 until 400) {
+                val w = vocab[i * 7 % 3000]
+                val prefix = w.take(1 + i % 3)
+                measure(counts) { learned.completions(prefix) }
+                measure(next) { learned.next(w) }
+                measure(next3) { learned.next(vocab[i * 3 % 3000], w, if (i % 2 == 0) "" else w.take(1)) }
+                measure(addresses) { learned.addresses("user" + i % 10) }
+                measure(learnAddr) { learned.learnAddress("user${i % 1000}@example.com") }
+            }
+        }
+        out += listOf(counts, next, next3, addresses, learnAddr)
+        var text = ""
+        val write = Stats("LearnedWords.write (full store)"); repeat(5) { measure(write) { text = learned.write() } }
+        val read = Stats("LearnedWords.read (full file)"); repeat(5) { measure(read) { LearnedWords().read(text) } }
+        out += listOf(write, read)
+        val spellStats = Stats("LearnedWords.preferred")
+        repeat(2000) { measure(spellStats) { learned.preferred(vocab[it % 5000]) { x, y -> x.length == y.length } } }
+        out += spellStats
+        println("=== LEARNED BENCH ===")
+        println("file: ${text.length / 1024} KB, ${text.count { it == '\n' }} lines, words=${learned.words().size}")
+        for (s in out) println(s.report())
+        println("=== END ===")
+    }
+
+    @Test fun trigramBench() {
+        assumeTrue(System.getenv("HEX_BENCH") == "1")
+        val random = Random(9)
+        val vocab = List(8000) { "w$it" }
+        fun pick() = vocab[(vocab.size * Math.pow(random.nextDouble(), 2.0)).toInt().coerceAtMost(vocab.size - 1)]
+        val t = PersonalTrigrams()
+        val fill = Stats("PersonalTrigrams.learn (fill to cap)"); val over = Stats("PersonalTrigrams.learn (at cap, trims)")
+        repeat(400_000) { i ->
+            val x = pick(); val y = pick(); val z = pick()
+            if (i < 100_000) t.learn(x, y, z) else measure(if (i < 200_000) fill else over) { t.learn(x, y, z) }
+        }
+        val next = Stats("PersonalTrigrams.next 60k phrases"); val nextPrefix = Stats("PersonalTrigrams.next with prefix")
+        repeat(3) {
+            for (i in 0 until 3000) {
+                val x = vocab[i % 2000]; val y = vocab[(i * 7) % 2000]
+                measure(next) { t.next(x, y) }
+                measure(nextPrefix) { t.next(x, y, "w1") }
+            }
+        }
+        val forget = Stats("PersonalTrigrams.forget"); repeat(5) { measure(forget) { t.forget("w${7000 + it}") } }
+        val sb = StringBuilder(); val write = Stats("PersonalTrigrams.write"); repeat(3) { sb.setLength(0); measure(write) { t.write(sb) } }
+        println("=== TRIGRAM BENCH ===")
+        for (s in listOf(fill, over, next, nextPrefix, forget, write)) println(s.report())
+        println("=== END ===")
+    }
+
+    @Test fun touchBench() {
+        assumeTrue(System.getenv("HEX_BENCH") == "1")
+        val random = Random(13)
+        val t = TouchOffsets()
+        val words = sentences.flatMap { it.split(' ') }.filter { it.length in 2..14 }
+        val learn = Stats("TouchOffsets.learn (one word)"); val aim = Stats("TouchOffsets.personalised(grid)")
+        val offset = Stats("TouchOffsets.offset"); val write = Stats("TouchOffsets.write"); val read = Stats("TouchOffsets.read")
+        var text = ""
+        repeat(8) { round ->
+            for (w in words) {
+                val touches = w.map { c -> val p = grid.centres.getValue(c); KeyPoint(p.x + random.nextGaussian() * 6 + 4, p.y + random.nextGaussian() * 6) }
+                if (round >= 2) measure(learn) { t.learn(w, touches, grid) } else t.learn(w, touches, grid)
+                measure(aim) { t.personalised(grid) }
+                for (c in w) measure(offset) { t.offset(c) }
+            }
+        }
+        repeat(50) { measure(write) { text = t.write() } }
+        repeat(50) { measure(read) { TouchOffsets().read(text) } }
+        println("=== TOUCH BENCH ===")
+        for (s in listOf(learn, aim, offset, write, read)) println(s.report())
+        println("=== END ===")
+    }
 }
