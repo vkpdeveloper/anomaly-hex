@@ -14,12 +14,8 @@ use crate::dictation::vocabulary::VocabularyEntry;
 
 mod generation;
 mod processed;
-mod typed_rewrite;
 
 pub use self::processed::{Processed, ProcessingObservation};
-pub(crate) use self::typed_rewrite::{
-    ChatLine, RewriteFailure, Style as RewriteStyle, draft_replies, rewrite_typed_text,
-};
 
 use self::generation::{
     Request, Response, generate_single_model, post_generation, remaining_generation_deadline,
@@ -1349,25 +1345,12 @@ fn generate_cancellable(
 ) -> Result<Generated> {
     let started = Instant::now();
     let service = generation_service(started, deadline, cancelled)?;
-    generate_on(&service, prompt, model, started, deadline, cancelled)
-}
-
-/// [`generate_cancellable`] through a service already found, within the
-/// budget that began at `started`.
-fn generate_on(
-    service: &Service,
-    prompt: &str,
-    model: Option<&Model>,
-    started: Instant,
-    deadline: Duration,
-    cancelled: &AtomicBool,
-) -> Result<Generated> {
     generate_with_candidates(
         prompt,
         model,
         || {
             ranked_candidates_for(
-                service,
+                &service,
                 deadline.saturating_sub(started.elapsed()),
                 cancelled,
             )
@@ -1376,7 +1359,7 @@ fn generate_on(
         started,
         deadline,
         cancelled,
-        |data, remaining, cancelled| post_generation(service, data, remaining, cancelled),
+        |data, remaining, cancelled| post_generation(&service, data, remaining, cancelled),
     )
 }
 

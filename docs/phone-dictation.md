@@ -132,56 +132,14 @@ them.
 Hex for Android › Keyboard › Say "send it" to send (off by default): a
 keyboard dictation whose last words are "send it" (or "bhej do", "भेज दो")
 drops them and presses the field's send key. The phone decides
-(`SpokenSend`), from the text the computer sent back, so any computer works
-and a rewrite that changes the words sends nothing. The phrase must be the
+(`SpokenSend`), from the text the computer sent back, so any computer works.
+The phrase must be the
 whole dictation or follow a sentence's end or a marked pause ("See you at
 six. Send it.", "On my way, send it"); "I'll send it" and "can you send
 it" stay text, and "send" alone never sends. Only a field whose enter key
 sends or goes (`IME_ACTION_SEND`, `IME_ACTION_GO`), never a password field;
 the rest of the dictation goes in first, nothing is sent if it didn't, and
 there is no undo. The floating button never sends.
-
-## Rewrite
-
-`POST /phone/v1/rewrite` with `Content-Type: application/json` and a body up
-to 64 KiB: `{"text": "…", "style": "fix"}`, sent only when someone taps the
-keyboard's Rewrite or one of its tones. OpenCode rewrites the text for
-grammar, spelling, and clarity, keeping its meaning, tone, and language; an
-optional `style` of `shorter`, `friendlier`, `formal`, or `english`
-(translate) changes that, and a missing or unknown one is `fix` (`phone::rewrite`,
-`dictation::processor::rewrite_typed_text`). It uses Global mode's OpenCode
-model, variant, and deadline (cut to 30 s), with Global's instructions too
-while its rewrite is on, through the running OpenCode service; Hex never
-starts or searches for OpenCode. One rewrite runs at a time. The text is
-never logged or kept, and a failure answers a code, never partial text.
-
-```ts
-200 {"text": "…"}           trimmed rewritten text
-400 invalid-request / empty-text   411 length-required   413 resource-exhausted
-415 unsupported-media-type  429 busy
-403 opencode-managed        503 opencode-not-running / opencode-outdated / service-gone
-504 rewrite-timeout         500 rewrite-failed
-```
-
-The text goes to this computer and from there to whatever model OpenCode
-uses, which may be a cloud model.
-
-## Replies
-
-`POST /phone/v1/replies` with `Content-Type: application/json` and a body up
-to 64 KiB: `{"lines": [{"mine": false, "text": "…"}], "draft": "…"}`, sent
-only when someone taps the keyboard's Reply. `lines` is the chat on the
-phone's screen, oldest first (`mine` for the person's own messages), cut to
-its newest 40; `draft` is what they already typed, which replies build on.
-OpenCode drafts up to three short replies in the chat's language and the
-person's tone (`dictation::processor::draft_replies`), with the same model,
-deadline, and limits as Rewrite. Nothing is logged or kept.
-
-```ts
-200 {"replies": ["…", "…", "…"]}
-400 invalid-request / empty-text (no non-empty line)
-// otherwise as Rewrite
-```
 
 ## Security
 
