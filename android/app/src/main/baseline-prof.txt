@@ -1,0 +1,18 @@
+# Compiled ahead of time once the phone has the profile, so the keyboard's first next words don't run
+# interpreted (first answer 112-164 ms interpreted on the emulator, 45-90 ms compiled).
+Lly/anoma/hex/typing/NextWordModel;
+Lly/anoma/hex/typing/NextWordModel$Companion;
+Lly/anoma/hex/typing/NextWordModel$Hyp;
+Lly/anoma/hex/typing/NextWordModel$Layer;
+Lly/anoma/hex/typing/NextWordModel$Matrix;
+Lly/anoma/hex/typing/NextWords;
+Lly/anoma/hex/typing/NextWords$Companion;
+Lly/anoma/hex/typing/NextWords$Key;
+HSPLly/anoma/hex/typing/NextWordModel;->**(**)**
+HSPLly/anoma/hex/typing/NextWordModel$Companion;->**(**)**
+HSPLly/anoma/hex/typing/NextWordModel$Hyp;->**(**)**
+HSPLly/anoma/hex/typing/NextWordModel$Layer;->**(**)**
+HSPLly/anoma/hex/typing/NextWordModel$Matrix;->**(**)**
+HSPLly/anoma/hex/typing/NextWords;->**(**)**
+HSPLly/anoma/hex/typing/NextWords$Companion;->**(**)**
+HSPLly/anoma/hex/typing/NextWords$Key;->**(**)**
