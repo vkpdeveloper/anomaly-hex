@@ -44,7 +44,7 @@ class AddressesAndShortcutsTest {
         assertEquals(Suggestion("asha@example.com", Suggestion.Kind.Word), k.strip.last())
         assertTrue(k.strip.size <= 3)
         k.engine.pickSuggestion("asha@example.com")
-        assertEquals("asha@example.com ", k.field.text)
+        assertEquals("asha@example.com", k.field.text)
 
         val c = Keyboard()
         c.emails.contacts = listOf("ashwin@friends.org")
@@ -86,7 +86,7 @@ class AddressesAndShortcutsTest {
         assertEquals("addr ", k.field.text)
         k.tap("addr")
         k.engine.pickSuggestion("12 Long Road")
-        assertEquals("addr 12 Long Road ", k.field.text)
+        assertEquals("addr 12 Long Road", k.field.text)
     }
 
     private inner class Keyboard(type: Int = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES,

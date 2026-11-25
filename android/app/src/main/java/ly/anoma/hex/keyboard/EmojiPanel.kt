@@ -318,6 +318,8 @@ internal class EmojiGrid(
         total = (y + 8f * density).roundToInt()
         requestLayout(); invalidate()
     }
+    /** The height that shows [rows] rows of a section without a heading. */
+    fun heightFor(rows: Int) = (8f * density + rows * rowHeight).roundToInt()
     private fun rowsOf(s: Section) = (s.items.size + columns - 1) / columns
     private fun headingOf(s: Section) = if (s.heading != null) headingHeight else 8f * density
     /** The scroll offset of the section a tab names. */

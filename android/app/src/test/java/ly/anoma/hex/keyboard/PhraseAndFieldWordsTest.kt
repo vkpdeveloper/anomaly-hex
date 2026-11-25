@@ -36,23 +36,21 @@ class PhraseAndFieldWordsTest {
         assertTrue(k.strip.none { it.kind == Suggestion.Kind.Phrase })
     }
 
-    @Test fun tappingTheChipTypesThePhraseAndASpaceAndTeachesEachWord() {
+    @Test fun tappingTheChipTypesThePhraseAndTeachesEachWord() {
         val k = Keyboard()
         repeat(5) { k.chars("please let me know. ") }
         k.chars("please ")
         k.engine.pickSuggestion("let me know")
-        assertEquals("please let me know ", k.field.text.takeLast("please let me know ".length))
+        assertTrue(k.field.text.endsWith(". please let me know"))
         assertTrue(k.learned.next("let", "me").contains("know"))
     }
 
-    @Test fun backspaceAfterTheChipTakesTheSpaceThenTheLastWord() {
+    @Test fun backspaceAfterTheChipDeletesItsLastLetter() {
         val k = Keyboard()
         repeat(5) { k.chars("please let me know. ") }
         k.chars("please ")
         val before = k.field.text
         k.engine.pickSuggestion("let me know")
-        k.engine.delete()
-        assertEquals(before + "let me know", k.field.text)
         k.engine.delete()
         assertEquals(before + "let me kno", k.field.text)
     }

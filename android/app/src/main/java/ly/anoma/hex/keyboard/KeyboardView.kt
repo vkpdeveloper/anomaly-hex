@@ -17,6 +17,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     private val keys = KeyPlaneView(context, ime, this, feedback)
     private val emoji = EmojiPanel(context, ime, ::closeEmoji, ::openSearch)
     private val search = EmojiSearchBar(context, back = ::openEmoji, clear = { ime.engine.stopSearch(); ime.engine.startSearch() })
+    private val results = EmojiResults(context, ime)
     private val clipboard = ClipboardPanel(context, ime, ::closeClipboard)
     private val menu = MenuPanel(context, ime, ::closeMenu, ::openClipboard)
     private var phase = DictationPhase.Idle
@@ -36,6 +37,8 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         setBackgroundColor(context.getColor(R.color.kb_background))
         search.visibility = GONE
         addView(search, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
+        results.visibility = GONE
+        addView(results, LayoutParams(LayoutParams.MATCH_PARENT, results.wanted))
         addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
         addView(keys, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         emoji.visibility = GONE
@@ -56,9 +59,15 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
     override fun actions(list: List<StripAction>) = toolbar.actions(list)
     override fun emojiRow(emoji: List<String>) = toolbar.found(emoji)
-    override fun emojiSearch(query: String?) {
-        toolbar.searching(query != null)
-        if (query == null) search.visibility = GONE else { search.visibility = VISIBLE; search.show(query) }
+    /** The emoji search takes the toolbar's place: its bar, then what it found, over the keys. */
+    override fun emojiSearch(query: String?, found: List<String>) {
+        if (query == null) {
+            search.visibility = GONE; results.visibility = GONE
+            if (keys.visibility == VISIBLE) toolbar.visibility = VISIBLE
+            return
+        }
+        search.show(query); results.show(found)
+        search.visibility = VISIBLE; results.visibility = VISIBLE; toolbar.visibility = GONE
     }
 
     fun openEmoji() {
@@ -74,9 +83,9 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         setBackgroundColor(context.getColor(R.color.kb_background))
         ime.engine.configureTyping(keepWord = true)
     }
-    /** The emoji search, from the panel: the toolbar and keys come back under its bar, and the keys type into it. */
+    /** The emoji search, from the panel: its bar and results over the keys, which type into it. */
     private fun openSearch() {
-        emoji.visibility = GONE; toolbar.visibility = VISIBLE; keys.visibility = VISIBLE
+        emoji.visibility = GONE; keys.visibility = VISIBLE
         setBackgroundColor(context.getColor(R.color.kb_background))
         ime.engine.configureTyping(keepWord = true)
         ime.engine.startSearch()

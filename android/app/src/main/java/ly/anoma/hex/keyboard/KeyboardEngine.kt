@@ -37,11 +37,11 @@ internal interface KeyboardSurface {
     /** The strip, in the typing model's order: what was typed first when it shows, then the fix or the
      * likeliest word, then the rest. Next words after a space are [Suggestion.Kind.Next]. */
     fun suggestions(slots: List<Suggestion>)
-    /** The emoji a search found, in a row in the strip's place: for a colon search typed in the text
-     * (":fire") or the emoji panel's search; none puts the strip back. */
+    /** The emoji a colon search typed in the text (":fire") found, in a row in the strip's place; none
+     * puts the strip back. */
     fun emojiRow(emoji: List<String>) {}
-    /** The emoji panel's search is open with [query] typed, or closed (null). */
-    fun emojiSearch(query: String?) {}
+    /** The emoji panel's search is open with [query] typed and the emoji it [found], or closed (null). */
+    fun emojiSearch(query: String?, found: List<String>) {}
     /** Offer an undo, or stop offering it. */
     fun undo(offer: UndoOffer?)
     /** Chips for the selection or what was just typed, in the suggestions' place; none clears them. */
@@ -252,11 +252,10 @@ internal class KeyboardEngine(
     private var selStart = -1
     private var selEnd = -1
     // Spaces, each remembered with the text before the cursor it left, so anything else in between
-    // (another key, a tap in the text) cancels it: a space for double-space, a picked suggestion's
-    // own space, and a space a pick held because the text after the cursor already separates it.
+    // (another key, a tap in the text) cancels it: a space for double-space, and the space a pick
+    // left waiting for the next word.
     private var spaceAnchor: String? = null
     private var spaceAt = 0L
-    private var pickedAnchor: String? = null
     private var heldAnchor: String? = null
     /** The word a glide put in and its other readings, while [anchor], the text before the cursor right
      * after it, is still there: delete takes the word back, a pick replaces it, and the next word,
@@ -560,7 +559,7 @@ internal class KeyboardEngine(
     private fun resetTyping() {
         cancelSuggestions(); addressOffer = null; word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null
     }
-    private fun clearSpaces() { spaceAnchor = null; pickedAnchor = null; heldAnchor = null; glided = null }
+    private fun clearSpaces() { spaceAnchor = null; heldAnchor = null; glided = null }
     private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
     private var pendingStrip: Runnable? = null
     private fun cancelSuggestions() {
@@ -677,14 +676,14 @@ internal class KeyboardEngine(
         if (symbols || selStart != selEnd) return emptyList()
         val lists = emojiLists(w.decoder.model.language) ?: return emptyList()
         val words = if (w.token.isNotEmpty()) listOf(w.token) + slots.filter { it.kind == Suggestion.Kind.Fix || it.kind == Suggestion.Kind.Word }.map { it.text }
-            else before().takeIf { it.endsWith(" ") }?.let(EmojiWords::wordBefore)?.let(::listOf) ?: return emptyList()
+            else before().takeIf { it.endsWith(" ") || it == heldAnchor }?.let(EmojiWords::wordBefore)?.let(::listOf) ?: return emptyList()
         val found = lists.find(words, emojiPicks) ?: return emptyList()
         emojiWord = found.word
         return found.emoji.map { Suggestion(it, Suggestion.Kind.Emoji) }
     }
 
     /** An emoji on the strip was tapped. A word being typed ends first as space would end it, fix and
-     * all, then the emoji goes in with its own space, as a picked word does; it's learned for its word. */
+     * all, then the emoji goes in and its space waits, as a picked word's does; it's learned for its word. */
     fun pickEmoji(emoji: String) {
         if (!target.connected) return
         edited(); typedHere = true
@@ -693,12 +692,10 @@ internal class KeyboardEngine(
         if (w != null && !symbols && w.token.isNotEmpty() && endsWith(prefix + w.token)) typeSpace(null, null)
         takeHeldSpace(before())
         clearSpaces(); resetTyping()
-        val holds = SpaceRules.separates(target.after(1))
-        val toned = emojiTone(emoji)
-        if (!target.commit(if (holds) toned else "$toned ")) return
+        if (!target.commit(emojiTone(emoji))) return
         if (learnFor != null && learnHere) { emojiPicks.pick(learnFor, emoji); emojiPicked() }
         val b = before()
-        if (holds) heldAnchor = b else pickedAnchor = b
+        heldAnchor = b
         showPredictions(b); inputDone()
     }
 
@@ -711,19 +708,19 @@ internal class KeyboardEngine(
     fun startSearch() {
         cancelChip(); resetTyping(); clearSpaces(); clearStrip()
         search = StringBuilder(); colonQuery = null
+        surface?.emojiRow(emptyList())
         showSearch()
     }
     /** The emoji panel's search closes; the strip comes back. */
     fun stopSearch() {
         if (search == null) return
         search = null
-        surface?.emojiSearch(null); surface?.emojiRow(emptyList())
+        surface?.emojiSearch(null, emptyList())
     }
     val searching get() = search != null
     private fun showSearch() {
         val q = search?.toString() ?: return
-        surface?.emojiSearch(q)
-        surface?.emojiRow(if (q.isBlank()) emojiRecent() else emojiLists(layoutLanguage().layoutCode)?.search(q, emojiPicks).orEmpty())
+        surface?.emojiSearch(q, if (q.isBlank()) emojiRecent() else emojiLists(layoutLanguage().layoutCode)?.search(q, emojiPicks).orEmpty())
     }
     /** A key while the emoji panel's search is open edits the search instead of the text: true when it did. */
     private fun searched(edit: StringBuilder.() -> Unit): Boolean {
@@ -733,8 +730,8 @@ internal class KeyboardEngine(
     private fun StringBuilder.addSpace() { if (isNotEmpty() && last() != ' ') append(' ') }
 
     /** An emoji in the search's row was tapped. From the emoji panel's search it goes in as one from the
-     * panel does, and the search stays open; for a colon search it takes the place of ":fire" with its
-     * space, as a picked word does. Either way it's learned for what was searched. */
+     * panel does, and the search stays open; for a colon search it takes the place of ":fire" and its
+     * space waits, as a picked word's does. Either way it's learned for what was searched. */
     fun pickFound(emoji: String) {
         if (!target.connected) return
         val s = search
@@ -747,12 +744,10 @@ internal class KeyboardEngine(
             if (!endsWith(":$query")) { strip(emptyList()); return }
             edited(); typedHere = true
             resetTyping(); clearSpaces()
-            val holds = SpaceRules.separates(target.after(1))
-            val toned = emojiTone(emoji)
-            if (!replace(":$query", if (holds) toned else "$toned ")) return
+            if (!replace(":$query", emojiTone(emoji))) return
             colonQuery = null
             val b = before()
-            if (holds) heldAnchor = b else pickedAnchor = b
+            heldAnchor = b
             showPredictions(b); inputDone()
         }
         val key = EmojiWords.queryWords(query).joinToString(" ")
@@ -836,10 +831,9 @@ internal class KeyboardEngine(
         } finally { target.endBatch() }
     }
 
-    /** A strip slot was tapped. What was typed, a fix or a word goes in with its space, unless the text
-     * after the cursor already starts with a space or closing mark: then the space waits for the next
-     * key that starts a word. A space right after a picked word is swallowed (it still counts towards
-     * double-space), and a closing mark takes its place. */
+    /** A strip slot was tapped. What was typed, a fix or a word goes in with no space after it: the
+     * space waits for the next key that starts a word, and space types just that one (none when the
+     * text after the cursor already starts with a space or closing mark). A mark goes against the word. */
     fun pickSuggestion(text: String) = traced("hex:key:pick") { doPickSuggestion(text) }
     private fun doPickSuggestion(text: String) {
         edited()
@@ -850,23 +844,24 @@ internal class KeyboardEngine(
         if (symbols || !canEndWord()) return
         val old = w.token
         if (old.isNotEmpty() && !endsWith(prefix + old)) { resetTyping(); clearStrip(); return }
+        // A next word after a pick puts the pick's waiting space in first.
+        if (old.isEmpty()) takeHeldSpace(before())
         if (old.isEmpty() && !w.startsWord(before())) return
-        val holds = SpaceRules.separates(target.after(1))
         val taught = if (old.isEmpty() || ' ' in text) null else taught(w, old, text)
         clearSpaces()
-        if (replace(old, if (holds) text else "$text ")) {
+        if (replace(old, text)) {
             if (learnHere) {
                 if (old.isEmpty()) stats.predictions++ else stats.completions++
                 stats.saved += maxOf(0, text.length - old.length)
             }
             resetTyping()
             val b = before()
-            if (holds) heldAnchor = b else pickedAnchor = b
+            heldAnchor = b
             // A phrase counts word by word, as if typed.
             val parts = text.split(' ')
-            val base = b.dropLast(text.length + if (holds) 0 else 1)
+            val base = b.dropLast(text.length)
             for (i in 1 until parts.size) learn(base + parts.take(i).joinToString(" ") + " ", 1)
-            learn(b, if (holds) 0 else 1, picked = parts.size == 1)
+            learn(b, 0, picked = parts.size == 1)
             taught?.let(::teach)
             showPredictions(b)
             inputDone()
@@ -874,15 +869,14 @@ internal class KeyboardEngine(
     }
 
     // An offered address takes the place of what was typed of it; in an address field nothing follows
-    // it, elsewhere a space does, as after a picked word.
+    // it, elsewhere its space waits, as after a picked word.
     private fun pickAddress(typed: String, address: String) {
         resetTyping(); clearSpaces()
-        val holds = addressField || SpaceRules.separates(target.after(1))
-        if (!replace(typed, if (holds) address else "$address ")) { clearStrip(); return }
+        if (!replace(typed, address)) { clearStrip(); return }
         learnAddress(address)
         val b = before()
         if (addressField) clearStrip()
-        else { if (holds) heldAnchor = b else pickedAnchor = b; showPredictions(b) }
+        else { heldAnchor = b; showPredictions(b) }
         inputDone()
     }
 
@@ -932,9 +926,14 @@ internal class KeyboardEngine(
         val now = clock()
         val b = before()
         when {
-            // The text after the cursor already separates the picked word: space has nothing to add.
-            heldAnchor != null && heldAnchor == b -> { clearSpaces(); showPredictions(b); return }
-            pickedAnchor != null && pickedAnchor == b -> { clearSpaces(); spaceAnchor = b; spaceAt = now; showPredictions(b); return }
+            // A pick's waiting space: space types it (the pick was learned already), or adds nothing
+            // when the text after the cursor already separates the picked word.
+            heldAnchor != null && heldAnchor == b -> {
+                clearSpaces()
+                if (!SpaceRules.separates(target.after(1)) && target.commit(" ")) { val s = before(); spaceAnchor = s; spaceAt = now; showPredictions(s); inputDone() }
+                else showPredictions(b)
+                return
+            }
             word != null && spaceAnchor == b && now - spaceAt <= SpaceRules.DOUBLE_SPACE_MS && SpaceRules.periodFits(b) -> {
                 clearSpaces()
                 if (replace(" ", ". ")) { resetTyping(); showPredictions(before()); inputDone(); return }
@@ -980,10 +979,11 @@ internal class KeyboardEngine(
         if (symbols && !numpad) symbolTyped = true
         val b = before()
         val mark = value.length == 1 && TypingWord.endsWord(value[0])
-        // A clause-ending mark takes the space a picked suggestion typed ("Hello,").
-        if (mark && value[0] in SpaceRules.CLAUSE_MARKS && pickedAnchor != null && pickedAnchor == b && b.endsWith(" ")) {
-            clearSpaces()
-            if (replace(" ", value)) { resetTyping(); showPredictions(before()); inputDone(); return }
+        // A mark goes against a picked word, in place of its waiting space ("Hello,"); the pick was learned already.
+        if (heldAnchor != null && heldAnchor == b && value.isNotEmpty() && value.all { it in SpaceRules.JOINERS }) {
+            clearSpaces(); resetTyping()
+            if (target.commit(value)) showPredictions(before())
+            inputDone(); return
         }
         // Anything that starts another word puts a held space in first; marks go against the word.
         if (value.none { it in SpaceRules.JOINERS || it.isWhitespace() }) takeHeldSpace(b)
@@ -1028,8 +1028,9 @@ internal class KeyboardEngine(
             clearSpaces()
             if (replace(g.word, "")) { unglided = Glided(g.word, g.readings, before()); showSuggestions(word); return }
         }
-        // Right after a pick held its space, delete takes that space back and deletes nothing.
-        if (heldAnchor != null && heldAnchor == before()) { clearSpaces(); clearStrip(); return }
+        // Right after a pick, when the text after the cursor already separated it, delete takes back the
+        // space it held and deletes nothing. Otherwise its waiting space just goes and delete deletes.
+        if (heldAnchor != null && heldAnchor == before() && SpaceRules.separates(target.after(1))) { clearSpaces(); clearStrip(); return }
         clearSpaces()
         val last = undo
         undo = null
@@ -1085,7 +1086,9 @@ internal class KeyboardEngine(
     fun enter() = traced("hex:key:enter") { if (!searched {}) doEnter() }
     private fun doEnter() {
         edited()
-        learn(before(), 0); learnAddressBefore(before())
+        // A pick was learned as it went in.
+        if (heldAnchor != before()) learn(before(), 0)
+        learnAddressBefore(before())
         resetTyping(); clearSpaces(); clearStrip()
         val info = editor
         if (info?.actionLabel != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) == 0 &&

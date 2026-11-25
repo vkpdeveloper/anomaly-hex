@@ -105,12 +105,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val undo = LinearLayout(context)
     private val undoText = TextView(context)
     private var undoOffer: UndoOffer? = null
-    // The emoji a search found ([KeyboardEngine.pickFound]), in the strip's place.
+    // The emoji a colon search found ([KeyboardEngine.pickFound]), in the strip's place.
     private val foundScroll = HorizontalScrollView(context)
     private val foundRow = LinearLayout(context)
-    private val foundNone = TextView(context)
     private var found = emptyList<String>()
-    private var searching = false
     private val well = FrameLayout(context)
     private val scope = DotScopeView(context)
     private val wellText = TextView(context)
@@ -253,11 +251,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             addView(foundRow.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }, LayoutParams(-2, -1))
         }
         addView(foundScroll, LayoutParams(-1, -1).apply { marginStart = px(46f); marginEnd = px(48f) })
-        foundNone.apply {
-            text(this, 15f); setTextColor(color(R.color.kb_quiet)); gravity = Gravity.CENTER
-            setText(R.string.keyboard_emoji_none); accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
-        }
-        addView(foundNone, LayoutParams(-1, -1).apply { marginStart = px(48f); marginEnd = px(48f) })
 
         actionScroll.apply {
             isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; isFillViewport = true
@@ -483,8 +476,6 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         foundScroll.scrollTo(0, 0)
         update()
     }
-    /** The emoji panel's search is open: its row shows, found or not. */
-    fun searching(on: Boolean) { searching = on; update() }
 
     /** A short line in the toolbar's middle, such as why dictation couldn't start. */
     fun note(text: String) {
@@ -494,9 +485,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     fun update() {
         val idle = phase == DictationPhase.Idle
         val suggesting = offered.any { it != null }
-        val finding = idle && (found.isNotEmpty() || searching)
-        foundScroll.visibility = if (finding && found.isNotEmpty()) VISIBLE else GONE
-        foundNone.visibility = if (finding && found.isEmpty()) VISIBLE else GONE
+        val finding = idle && found.isNotEmpty()
+        foundScroll.visibility = if (finding) VISIBLE else GONE
         val noting = idle && !finding && note != null
         well.visibility = if (idle) GONE else VISIBLE
         cancel.visibility = if (idle) GONE else VISIBLE

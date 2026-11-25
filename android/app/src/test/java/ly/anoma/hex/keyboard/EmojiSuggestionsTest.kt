@@ -33,12 +33,12 @@ class EmojiSuggestionsTest {
         assertTrue(k.emoji.isEmpty())
     }
 
-    @Test fun aPickEndsTheWordThenTypesTheEmojiWithItsSpace() {
+    @Test fun aPickEndsTheWordThenTypesTheEmojiAndItsSpaceWaits() {
         val k = Keyboard()
         k.tap("pizza")
         k.engine.pickEmoji("🍕")
-        assertEquals("pizza 🍕 ", k.field.text)
-        // A comma takes the emoji's space, as after a picked word.
+        assertEquals("pizza 🍕", k.field.text)
+        // A comma goes against the emoji, as after a picked word.
         k.chars(",")
         assertEquals("pizza 🍕,", k.field.text)
     }
@@ -110,10 +110,13 @@ class EmojiSuggestionsTest {
         // Hinglish "fir" (again) has emoji too, but on English "fire" comes first.
         assertEquals("🔥", k.found.first())
         k.engine.pickFound("🔥")
-        assertEquals("so 🔥 ", k.field.text)
+        assertEquals("so 🔥", k.field.text)
         assertTrue(k.found.isEmpty())
         assertEquals("🔥", k.picks.of("fir").single().first)
         assertEquals(listOf("🔥"), k.used)
+        // Its space waits for the next word.
+        k.tap("x")
+        assertEquals("so 🔥 x", k.field.text)
     }
 
     @Test fun smileysAndTimesNeverStartAColonSearch() {
@@ -135,13 +138,14 @@ class EmojiSuggestionsTest {
         k.tap("a")
         assertEquals("pizza", k.query)
         assertEquals("hi ", k.field.text)
-        assertTrue("🍕" in k.found)
+        assertTrue("🍕" in k.searched)
+        assertTrue(k.found.isEmpty())
         k.engine.pickFound("🍕")
         assertEquals("hi 🍕", k.field.text)
         assertEquals("pizza", k.query)
         k.engine.stopSearch()
         assertEquals(null, k.query)
-        assertTrue(k.found.isEmpty())
+        assertTrue(k.searched.isEmpty())
         k.chars("x")
         assertEquals("hi 🍕x", k.field.text)
     }
@@ -150,7 +154,7 @@ class EmojiSuggestionsTest {
         val k = Keyboard(tones = mapOf("👍" to "👍🏽"))
         k.chars("so :thumbs")
         k.engine.pickFound("👍")
-        assertEquals("so 👍🏽 ", k.field.text)
+        assertEquals("so 👍🏽", k.field.text)
         assertEquals("👍", k.picks.of("thumbs").single().first)
     }
 
@@ -177,6 +181,7 @@ class EmojiSuggestionsTest {
         val picks = EmojiWords.Picks()
         var found = emptyList<String>()
         var query: String? = null
+        var searched = emptyList<String>()
         val used = ArrayList<String>()
         val engine = KeyboardEngine(field, prefs, { language }, { SpatialDecoder(model(it)) },
             emojiLists = { code ->
@@ -191,7 +196,7 @@ class EmojiSuggestionsTest {
                 override fun suggestions(slots: List<Suggestion>) { strip = slots }
                 override fun undo(offer: UndoOffer?) {}
                 override fun emojiRow(emoji: List<String>) { found = emoji }
-                override fun emojiSearch(query: String?) { this@Keyboard.query = query }
+                override fun emojiSearch(query: String?, found: List<String>) { this@Keyboard.query = query; searched = found }
             }
             engine.startInput(EditorInfo().apply { inputType = type; imeOptions = options; initialSelStart = 0; initialSelEnd = 0 })
             engine.opened()
