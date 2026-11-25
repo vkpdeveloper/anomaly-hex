@@ -58,6 +58,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     override fun suggestions(slots: List<Suggestion>) = toolbar.suggestions(slots)
     override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
     override fun actions(list: List<StripAction>) = toolbar.actions(list)
+    override fun fixOffer(shown: Boolean) = toolbar.fixOffer(shown)
     override fun emojiRow(emoji: List<String>) = toolbar.found(emoji)
     /** The emoji search takes the toolbar's place: its bar, then what it found, over the keys. */
     override fun emojiSearch(query: String?, found: List<String>) {

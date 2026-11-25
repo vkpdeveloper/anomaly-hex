@@ -28,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import ly.anoma.hex.R
+import ly.anoma.hex.fix.Fix
 import ly.anoma.hex.fix.TinyfixFiles
 import ly.anoma.hex.relay.HexClient
 import ly.anoma.hex.relay.HexError
@@ -251,7 +252,8 @@ class HexKeyboard : InputMethodService() {
                 else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {
                     FreeTimes.busy(contentResolver, it)
                 }
-            }, corrected = ::correctionFound, background = words, nextWords = nextWords, deferStrip = true)
+            }, corrected = ::correctionFound, background = words, nextWords = nextWords, deferStrip = true,
+            fixFinder = ::findFixes, fixOn = { fixShown })
     }
     internal val dictation by lazy {
         Dictation(this,
@@ -275,6 +277,7 @@ class HexKeyboard : InputMethodService() {
             // Settings deleted the file; this copy goes too.
             TypingPreferences.FIX_BUTTON -> {
                 if (!feedback.fixButton) fixWork.execute { TinyfixFiles.drop() }
+                engine.fixesStale()
                 view?.fixChanged()
             }
             TypingPreferences.FORGET_LEARNED -> {
@@ -309,7 +312,7 @@ class HexKeyboard : InputMethodService() {
     internal var fixing = false
         private set(value) { field = value; view?.fixChanged() }
     // tinyfix knows only English: on another layout it would "fix" every word it doesn't know.
-    internal val fixShown get() = feedback.fixButton && !engine.secure &&
+    internal val fixShown: Boolean get() = feedback.fixButton && !engine.secure &&
         (layoutLanguage == Spoken.English || layoutLanguage == Spoken.Hinglish)
     internal fun fix() {
         if (fixing || !fixShown) return
@@ -320,13 +323,33 @@ class HexKeyboard : InputMethodService() {
         val hinglish = layoutLanguage == Spoken.Hinglish
         fixWork.execute {
             val fixes = try {
-                TinyfixFiles.withFixer(dir) { if (hinglish) it.check(field.text, hindiWords) else it.check(field.text) }
+                fixesFor(field, dir, hinglish)
             } catch (_: Exception) { null } // The files are gone or damaged: Settings downloads them again.
             main.post {
                 fixing = false
                 if (fixes != null && !engine.applyFixes(field, fixes) && fixes.isEmpty())
                     view?.note(getString(R.string.keyboard_nothing_to_fix))
             }
+        }
+    }
+    // The fixes the fix button makes to [field]; [cancelled] stops the check at its next word. Never on the main thread.
+    private fun fixesFor(field: FieldText, dir: java.io.File, hinglish: Boolean, cancelled: () -> Boolean = { false }) =
+        TinyfixFiles.withFixer(dir) { fixer ->
+            fixer.check(field.text) { word ->
+                if (cancelled()) throw java.util.concurrent.CancellationException()
+                hinglish && hindiWords(word)
+            }
+        }
+    // The engine's check for the fix chip: the same fixes a tap would make, on the fix thread.
+    private fun findFixes(field: FieldText, cancelled: () -> Boolean, done: (List<Fix>) -> Unit) {
+        val dir = TinyfixFiles.dir(this)
+        val hinglish = layoutLanguage == Spoken.Hinglish
+        fixWork.execute {
+            if (cancelled() || !TinyfixFiles.ready(dir)) return@execute
+            val fixes = try {
+                fixesFor(field, dir, hinglish, cancelled)
+            } catch (_: Exception) { return@execute } // Cancelled, or the files are gone or damaged.
+            main.post { done(fixes) }
         }
     }
     /** The toolbar's undo chip. Words a fix changed and you put back are left alone from then on. */

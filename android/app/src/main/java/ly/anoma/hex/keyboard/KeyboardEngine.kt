@@ -46,6 +46,14 @@ internal interface KeyboardSurface {
     fun undo(offer: UndoOffer?)
     /** Chips for the selection or what was just typed, in the suggestions' place; none clears them. */
     fun actions(list: List<StripAction>) {}
+    /** The fix button's chip shows on the strip while [shown]: the field has fixes to make. */
+    fun fixOffer(shown: Boolean) {}
+}
+
+/** Works out the fixes for a field's text off the main thread and calls [done] with them on the main
+ * thread. [cancelled] turns true once the text has changed, and a run that sees it stops without calling [done]. */
+internal fun interface FixFinder {
+    fun find(field: FieldText, cancelled: () -> Boolean, done: (List<Fix>) -> Unit)
 }
 
 internal enum class UndoOffer { Dictation, Fixes }
@@ -90,6 +98,9 @@ internal class KeyboardEngine(
     private val emojiUsed: (String) -> Unit = {},
     /** An emoji with the skin tone chosen for it, as it goes in; everything else keeps it without. */
     private val emojiTone: (String) -> String = { it },
+    /** Finds the fixes the fix button would make, where it works ([fixOn]); none, no chip. */
+    private val fixFinder: FixFinder? = null,
+    private val fixOn: () -> Boolean = { false },
     /** Free times from the calendar for the text before the caret ([FreeTimes]), none while that's off. */
     private val freeTimes: (String) -> List<StripAction> = { emptyList() },
     /** What the person fixed in text just dictated, for the paired computer ([DictationWatch]). */
@@ -116,6 +127,8 @@ internal class KeyboardEngine(
         /** How much text on each side of the caret the fix button reads and checks. Each word costs a
          * model run of about 3 ms, so this keeps a long field's check near a second. */
         const val FIX_WINDOW = 1_000
+        /** The fix button's chip waits for this pause in typing and in moving the caret before the text is checked. */
+        const val FIX_PAUSE_MS = 700L
         /** A pause this long in typing starts another undo step even mid-word. */
         const val STEP_GAP_MS = 2_000L
         /** How much of the text before a word tells that two edits are at the same place. */
@@ -158,7 +171,7 @@ internal class KeyboardEngine(
     }
     // Every edit goes through here, so the selection changes that follow can be told from a tap in the text.
     private val target = object : KeyboardTextTarget by field {
-        private fun <T> edit(block: () -> T): T { editedAt = clock(); return block() }
+        private fun <T> edit(block: () -> T): T { editedAt = clock(); fixesStale(); return block() }
         override fun commit(text: String) = edit {
             step(stepFor(text)); committedAt = clock(); committed = text.length
             field.commit(text)
@@ -176,7 +189,7 @@ internal class KeyboardEngine(
     }
     // Undo and redo edit the field directly, never starting a step of their own.
     private val history = EditHistory(object : KeyboardTextTarget by field {
-        private fun <T> edit(block: () -> T): T { editedAt = clock(); return block() }
+        private fun <T> edit(block: () -> T): T { editedAt = clock(); fixesStale(); return block() }
         override fun commit(text: String) = edit { field.commit(text) }
         override fun deleteBefore(length: Int) = edit { field.deleteBefore(length) }
         override fun setSelection(start: Int, end: Int) = edit { field.setSelection(start, end) }
@@ -337,6 +350,7 @@ internal class KeyboardEngine(
         more = false; symbolTyped = false; shift.reset()
         selStart = attribute.initialSelStart; selEnd = attribute.initialSelEnd
         refreshCaps(force = true)
+        fixesStale()
     }
 
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) = traced("hex:select") { doUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd) }
@@ -344,7 +358,7 @@ internal class KeyboardEngine(
         selStart = newSelStart; selEnd = newSelEnd
         if (newSelStart == 0 && newSelEnd == 0 && oldSelStart > 0) fieldWords.clear() // Sent or cleared: a new message.
         if (watch.active) watchChanged()
-        if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) offerActions()
+        if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) { offerActions(); fixesStale() }
         (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
         val expected = expectedCaret >= 0 && newSelStart == expectedCaret && newSelEnd == expectedCaret
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) {
@@ -603,6 +617,7 @@ internal class KeyboardEngine(
             showPlane(); showSuggestions(active); return
         }
         resetTyping()
+        fixesStale()
         word = if (wordsHere) {
             try {
                 TypingWord(models.getOrPut(language) { prepared(loadDecoder(language)) }, feedback.spatial)
@@ -1237,6 +1252,7 @@ internal class KeyboardEngine(
         edited()
         if (typedHere) learnAddressBefore(before())
         resetTyping(); clearSpaces(); word = null; clearStrip()
+        main.removeCallbacks(fixPause); fixRun++; fixOffer = null
     }
 
     /** Dictated text with only the separators missing at the cursor; mid-sentence its first word loses
@@ -1343,6 +1359,42 @@ internal class KeyboardEngine(
         val selected = if (selStart == selEnd) "" else target.selected() ?: return null
         val after = target.after(FIX_WINDOW) ?: return null
         return FieldText(before + selected + after, minOf(selStart, selEnd) - before.length, selStart, selEnd)
+    }
+
+    // The fix chip: the text is checked once typing and the caret have been still for FIX_PAUSE_MS, off the
+    // main thread, and only the text that was checked can show the chip. Any edit or caret move drops the
+    // chip and the run in flight, so it never outlives the issue it was shown for.
+    private class FixOffer(val field: FieldText, val fixes: List<Fix>)
+    private var fixOffer: FixOffer? = null
+    private var fixRun = 0
+    private val fixPause = Runnable { findFixes() }
+
+    /** The text, the caret or the setting changed: the chip goes and the text is checked again after a pause. */
+    internal fun fixesStale() {
+        main.removeCallbacks(fixPause)
+        fixRun++
+        if (fixOffer != null) { fixOffer = null; surface?.fixOffer(false) }
+        if (fixFinder != null && wordsHere && target.connected && fixOn()) main.postDelayed(fixPause, FIX_PAUSE_MS)
+    }
+
+    /** Checks the text now, as the pause after an edit does, and shows the chip if the fix button would change it. */
+    internal fun findFixes() {
+        val finder = fixFinder ?: return
+        if (!wordsHere || selStart != selEnd || !fixOn()) return
+        val field = fieldText()?.takeIf { it.text.isNotBlank() } ?: return
+        val run = fixRun
+        finder.find(field, { run != fixRun }) { fixes ->
+            if (run == fixRun && fixes.isNotEmpty() && fieldText() == field) {
+                fixOffer = FixOffer(field, fixes)
+                surface?.fixOffer(true)
+            }
+        }
+    }
+
+    /** The fix chip was tapped: the fixes it was shown for go in, with Undo fixes after. */
+    fun applyFixOffer() {
+        val offered = fixOffer ?: return
+        if (!applyFixes(offered.field, offered.fixes)) fixesStale()
     }
 
     /** Makes the fix button's [fixes] to [field] as it was checked, or nothing if it has changed since. */

@@ -156,8 +156,15 @@ after they change. Typed addresses stay on the phone with the learned words.
 
 **Keyboard › Fix button** is off by default. Turning it on downloads tinyfix's model and word
 lists (3.5 MB, MIT, pinned to one Hugging Face revision and checked by size and SHA-256) into
-the app's files; the APK ships none of it, and turning it off deletes them. The grid menu then
-shows **Fix mistakes** on the English and Hinglish layouts (tinyfix knows no other language). On Hinglish it leaves Hindi words alone: those Hinglish's typing model has and
+the app's files; the APK ships none of it, and turning it off deletes them. On the English and
+Hinglish layouts (tinyfix knows no other language) the button is found in two places: the grid menu's
+**Fix mistakes**, and a **Fix** chip that comes up by itself at the strip's end when the text has
+something to fix. The chip comes from the same check: once typing and the caret have been still for
+0.7 s, the text around the caret is checked off the main thread (a check for older text is stopped
+at its next word), and the chip shows only if the fix would change it, so it never shows on clean
+text. Any edit or caret move takes it away until the next check, and it stays off while a word is
+being typed, over a selection, an undo offer or a clipboard chip, and in password, email and number
+fields. A tap on it makes the fixes it was shown for. On Hinglish it leaves Hindi words alone: those Hinglish's typing model has and
 English's lacks, so "nahi" never becomes "nazi"; a Hindi word that is also English ("main") is
 still checked as English. Tapping it checks up to 1,000 characters on each
 side of the caret with a [Kotlin port](app/src/main/java/ly/anoma/hex/fix/) of tinyfix 0.1.1

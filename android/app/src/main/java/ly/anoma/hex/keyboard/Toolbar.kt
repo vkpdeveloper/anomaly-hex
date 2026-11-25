@@ -45,6 +45,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         /** A found emoji's size and cell, in dp. */
         const val FOUND = 26f
         const val FOUND_CELL = 48f
+        /** The fix chip's width, which the suggestions leave room for at the strip's end. */
+        const val FIX_CHIP = 68f
         const val NOTE_MS = 3_000L
         const val HOLD_MS = 350L
     }
@@ -105,6 +107,9 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val undo = LinearLayout(context)
     private val undoText = TextView(context)
     private var undoOffer: UndoOffer? = null
+    /** The field has fixes to make ([KeyboardEngine.fixOffer]): the chip shows at the strip's end. */
+    private val fixChip = LinearLayout(context)
+    private var fixOffered = false
     // The emoji a colon search found ([KeyboardEngine.pickFound]), in the strip's place.
     private val foundScroll = HorizontalScrollView(context)
     private val foundRow = LinearLayout(context)
@@ -238,6 +243,24 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
             setOnClickListener { ime.undo() }
         }
         addView(undo, LayoutParams(-2, pill, Gravity.CENTER))
+
+        // Fix mistakes, offered while the text has something to fix: at the strip's end, so the suggestions
+        // keep their places and it is always in the same one.
+        fixChip.apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; isFocusable = true
+            background = pressable(color(R.color.kb_key), false, pill / 2f)
+            contentDescription = context.getString(R.string.keyboard_fix)
+            addView(ImageView(context).apply {
+                setImageResource(R.drawable.ic_spellcheck); imageTintList = ColorStateList.valueOf(color(R.color.kb_ink))
+                importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(px(18f), px(18f)).apply { marginEnd = px(4f) })
+            addView(TextView(context).apply {
+                text(this, 15f); useSans(500); setTextColor(color(R.color.kb_ink)); maxLines = 1
+                setText(R.string.keyboard_fix_chip); importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(-2, -2))
+            setOnClickListener { ime.engine.applyFixOffer() }
+        }
+        addView(fixChip, LayoutParams(px(FIX_CHIP), pill, Gravity.CENTER_VERTICAL or Gravity.END).apply { marginEnd = px(48f) })
 
         noteText.apply {
             text(this, 15f); setTextColor(color(R.color.kb_quiet)); gravity = Gravity.CENTER
@@ -436,6 +459,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         update()
     }
 
+    fun fixOffer(shown: Boolean) { fixOffered = shown; update() }
+
     fun actions(list: List<StripAction>) {
         if (list == actions) { update(); return }
         actions = list
@@ -510,6 +535,13 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
         slots.visibility = if (idle && !finding && !noting && !undoing && !acting && !filling && suggesting && offer == null) VISIBLE else GONE
+        // A word being typed keeps the whole strip for its suggestions; the chip is for the text as it stands.
+        val fixing = fixOffered && idle && !finding && !noting && !undoing && !acting && !filling && !typingWord && offer == null
+        fixChip.visibility = if (fixing) VISIBLE else GONE
+        (slots.layoutParams as LayoutParams).let { p ->
+            val end = px(34.4f) + if (fixing) px(FIX_CHIP + 6f) else 0
+            if (p.marginEnd != end) { p.marginEnd = end; slots.layoutParams = p }
+        }
         clipScroll.visibility = if (offer is ChipOffer.Text || offer is ChipOffer.Code) VISIBLE else GONE
         shot.visibility = if (offer is ChipOffer.Image || offer is ChipOffer.Photo) VISIBLE else GONE
         val fresh = offer != chipOffer
