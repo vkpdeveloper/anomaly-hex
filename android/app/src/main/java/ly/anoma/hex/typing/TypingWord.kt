@@ -57,6 +57,14 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     var addsCapitals = true
     /** The phrases you write ([LearnedPhrases]), offered by [phrase]; none until the keyboard sets them. */
     var phrases: LearnedPhrases? = null
+    /** The next-word model ([NextWords]), for English and Hinglish; none, the word pairs and lists alone. */
+    var next: NextWords? = null
+    // The model's words after `before` that start with `prefix` and this layout knows and may suggest after
+    // `previous`; none while they are worked out.
+    private fun modelWords(before: String, prefix: String, previous: Int): List<String> =
+        next?.words(NextWords.context(before), prefix)?.filter {
+            model.index(it) >= 0 && !model.neverSuggest.blocks(it, suggestSwearWords, previous)
+        }.orEmpty()
     /** Starts a word after `before`. The word a space just finished stays revisable only when
      * `before` is still the text it left; an empty `before` keeps it for the next call. */
     fun reset(before: String = "") {
@@ -87,22 +95,24 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     /** Up to three words for the strip between words (iOS #2125): at a sentence's start three common
      * first words, after a comma or other mid-sentence mark words that start a clause, after a word
      * the likeliest next words from the word pairs with the language's commonest words filling the
-     * rest; nothing after a handle, path, number or a second space, or before a space is typed.
+     * rest; nothing after a handle, path, number or a second space, or before a space is typed. With the
+     * next-word model ([next]), its words for the text before come first in each case (after the words
+     * you write after that word, after a word).
      * `before` is the text before the cursor; a bare word counts as one just finished. Capitalised
      * as shift would be, by default at a sentence's start. */
     fun predictions(before: String, capitalize: Boolean? = null): List<String> {
         val text = if (before.lastOrNull()?.let { it.isLetter() || it == '\'' } == true) "$before " else before
         val words = when {
-            startsSentence(text) -> sentenceStarters[model.language]
+            startsSentence(text) -> modelWords(text, "", -1) + sentenceStarters[model.language].orEmpty()
             !text.last().isWhitespace() -> return emptyList()
-            text.dropLast(1).lastOrNull()?.let { it in midSentenceMarks } == true -> clauseStarters[model.language]
+            text.dropLast(1).lastOrNull()?.let { it in midSentenceMarks } == true -> modelWords(text, "", -1) + clauseStarters[model.language].orEmpty()
             else -> {
                 val finished = currentToken(text.dropLast(1)) ?: return emptyList()
                 val previous = finished.lowercase()
                 val index = model.context(previous)
                 val next = if (index >= 0) model.nextWords(index, suggestSwearWords, fill = false) else emptyList()
                 val first = LearnedWords.wordBeforeGap(text.dropLast(1).dropLast(finished.length))?.first?.lowercase()
-                (decoder.learned?.next(first, previous).orEmpty() + next + commonWords[model.language].orEmpty()).filter {
+                (decoder.learned?.next(first, previous).orEmpty() + modelWords(text, "", index) + next + commonWords[model.language].orEmpty()).filter {
                     it.lowercase() != previous && !model.neverSuggest.blocks(it.lowercase(), suggestSwearWords, index)
                 }
             }
@@ -160,8 +170,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * gets three candidates instead. Candidates: your shortcut's phrase ("addr"), which only a tap puts
      * in, as on Gboard; your spelling of a word you typed another way ("nhi" for "nahi",
      * [SpatialDecoder.preferred]); a suggest-only English contraction ("ill" -> "I'll"), the likeliest
-     * completions of a 1–3 letter word after the word before, then, for a word of three letters or
-     * more, the decoder's other readings of the taps before completions by frequency (after two
+     * completions of a 1–3 letter word after the words before (the next-word model's, then the word
+     * pairs'), then, for a word of three letters or more, the decoder's other readings of the taps before completions by frequency (after two
      * letters the word is usually unfinished: completions first). Each in the spelling you write.
      * Never what was typed again. [autocorrect] off: no fix and no readings, completions only. */
     fun strip(autocorrect: Boolean = true): List<Suggestion> {
@@ -194,7 +204,11 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (beforePreviousText != null && one != null) decoder.learned?.next(beforePreviousText, one, lower)?.forEach {
             add(if (it.any(Char::isUpperCase)) yours(it) else shown(it))
         }
-        val short = if (token.length <= 3) model.completionsAfter(lower, previous, suggestSwearWords).map { shown(model.text(it)) } else emptyList()
+        // A 1–3 letter word's likeliest completions: the next-word model's for the text before, then the word pairs'.
+        val short = if (token.length <= 3) {
+            val modelled = if (lower.all { it in 'a'..'z' }) modelWords(before, lower, previous).filter { it.length in lower.length + 1..lower.length + 8 } else emptyList()
+            (modelled + model.completionsAfter(lower, previous, suggestSwearWords).map { model.text(it) }).distinct().map(::shown)
+        } else emptyList()
         if (fix == null) short.firstOrNull { s -> pool.none { it.equals(s, ignoreCase = true) } }?.let(::add)
         val readings = autocorrect && spatial && token.length >= 2 && !protected()
         fun reading(text: String) = if (decoder.personal?.owns(text) == true) yours(text) else shown(text)

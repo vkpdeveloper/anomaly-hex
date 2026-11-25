@@ -1,0 +1,59 @@
+# pieces: text, ids
+hello world	892 241
+kya kar rha hai bhai	382 398 1036 119 397
+don't , won't ?	47 4 18 6 321 4 18 14
+it's 2026 ! ok	10 4 9 26 92 59 92 243 21 566
+zzqx	26 3726 1050 638
+# predictions: context, prefix, words
+hi how are you		today doing feeling finding todays todayre
+hi how are you	s	so studying sleep supposed sore soya
+hi how are you	k	know kneel knee ke kneed ked
+hi how are you	th	this the thinking thisist thisest thise
+kya kar rha hai		tu ab ye koi yea abt
+kya kar rha hai	s	sab saala sach sabse sabka sachin
+kya kar rha hai	k	koi kuch ki kucha koina koine
+kya kar rha hai	th	thoda tha they theyt theyre theyse
+i will call you		later back in tomorrow latera inte
+i will call you	s	soon saturday shortly saturdays saturdayt saturdaypm
+i will call you	k	kal kindly k kala kre kalman
+i will call you	th	the thursday there theres thelot theti
+bhai kal		ka se ki kidhar kabir kiraya
+bhai kal	s	se subah shaadi sham sha shauk
+bhai kal	k	ka ki ke kidhar kabir kiraya
+bhai kal	th	thoda theek thak theeki thakna thake
+thanks for the		advice recommendation tip offer advicehan tipe
+thanks for the	s	suggestion support suggestions service supporting supports
+thanks for the	k	kind key knife knowledge kinda keychain
+thanks for the	th	thoughtful thirst thumb thoughtfulness therapist thirsty
+see you		later soon then tomorrow latera laternd
+see you	s	soon saturday sunday sun sunna sunda
+see you	k	kha karna khana khat khaali khas
+see you	th	then there this theres therera
+ok , let me		see know take show takeout seedha
+ok , let me	s	see show start send seedha startle
+ok , let me	k	know keep knock knows knoww keeps
+ok , let me	th	think then thank thanks thinkla thinks
+mujhe nahi pata		mujhe hai tha bas haipic bass
+mujhe nahi pata	s	se sakta sir s sem sehra
+mujhe nahi pata	k	kya kuch kabhi kyaa kyapic kyahe
+mujhe nahi pata	th	tha thi then thaon thapic theni
+what are you doing		here today in now hereing incar
+what are you doing	s	specifically so since seriously sore soing
+what are you doing	k	knowing know kutting kutta kutte kutton
+what are you doing	th	this there that then thats thatba
+		i yeah hey that im thats
+	s	so sure sounds soya sochta sooo
+	k	kal kya kuch kali kala kaliya
+	th	that thank thanks thats thanku thatll
+can you send me the		code link list details codes lists
+can you send me the	s	script same source scripts s scripting
+can you send me the	k	key keys kyc keye keyer keyframe
+can you send me the	th	three the thing things thinged threes
+aaj office		me jaana mein hai mei mere
+aaj office	s	se shift subah shifts shiftage seadi
+aaj office	k	ka ke ki kaisi kaali kaation
+aaj office	th	tha thi thing thingi thingha thingila
+lol that's so		sad sweet cool annoying sada annoyingly
+lol that's so	s	sad sweet stupid strange sada sadly
+lol that's so	k	kind kinda kinder kindy kindly
+lol that's so	th	thoughtful the tho thoh theus thetp

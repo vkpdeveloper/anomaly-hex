@@ -35,6 +35,8 @@ import ly.anoma.hex.speech.Spoken
 import ly.anoma.hex.typing.ContactNames
 import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
+import ly.anoma.hex.typing.NextWordModel
+import ly.anoma.hex.typing.NextWords
 import ly.anoma.hex.typing.Forgotten
 import ly.anoma.hex.typing.LearnedPhrases
 import ly.anoma.hex.typing.LearnedWords
@@ -57,6 +59,10 @@ class HexKeyboard : InputMethodService() {
     // that arrives once the keyboard is destroyed (a save posted late) is dropped, never a crash.
     private val words = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue(),
         { Thread(it, "Hex personal words") }, ThreadPoolExecutor.DiscardPolicy())
+    // The next-word model works on its own thread, so reading the dictionary never delays the strip.
+    private val nextWork = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue(),
+        { Thread(it, "Hex next words") }, ThreadPoolExecutor.DiscardPolicy())
+    private val nextWords by lazy { NextWords({ NextWordModel.asset(assets) }, nextWork) }
     private val dictionaryChanged = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = engine.personalWordsChanged()
     }
@@ -236,7 +242,7 @@ class HexKeyboard : InputMethodService() {
                 else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {
                     FreeTimes.busy(contentResolver, it)
                 }
-            }, corrected = ::correctionFound, background = words, deferStrip = true)
+            }, corrected = ::correctionFound, background = words, nextWords = nextWords, deferStrip = true)
     }
     internal val dictation by lazy {
         Dictation(this,
@@ -414,7 +420,7 @@ class HexKeyboard : InputMethodService() {
         // The last changes are written before the worker stops.
         main.removeCallbacks(saveLearned)
         if (learnedLoaded) saveWords()
-        words.shutdown(); fixWork.shutdown()
+        words.shutdown(); nextWork.shutdown(); fixWork.shutdown()
         view?.cancelGestures(); view = null; engine.surface = null; dictation.close(); super.onDestroy()
     }
     private companion object {

@@ -10,6 +10,8 @@ import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
 import ly.anoma.hex.typing.KeyRect
 import ly.anoma.hex.typing.LearnedWords
+import ly.anoma.hex.typing.NextWordModel
+import ly.anoma.hex.typing.NextWords
 import ly.anoma.hex.typing.PersonalWords
 import ly.anoma.hex.typing.SpatialDecoder
 import ly.anoma.hex.typing.Suggestion
@@ -46,6 +48,9 @@ class LearningBenchTest {
     /** HEX_LEARN_BENCH_SLIPS=1: each author has [HABITS] words they habitually misspell (two letters swapped or one
      * dropped, half of them twice, the same way every time) and do so [SLIP_RATE] of the time they type them. */
     private val slips = env("HEX_LEARN_BENCH_SLIPS") == "1"
+    /** HEX_LEARN_BENCH_NEXT=1: the next-word model ([NextWords]) answers in the strip too, at once. */
+    private val neural = env("HEX_LEARN_BENCH_NEXT") == "1"
+    private val nextModel by lazy { NextWordModel.file(File("src/main/assets/typing/next.hexnn")) }
     /** HEX_LEARN_BENCH_DEBUG=1 lists every word that did not come out as intended. */
     private val debug = env("HEX_LEARN_BENCH_DEBUG") == "1"
 
@@ -183,7 +188,7 @@ class LearningBenchTest {
         private val background = ArrayDeque<Runnable>()
         private val engine = KeyboardEngine(field, prefs, { Spoken.English }, { SpatialDecoder(model) },
             readPersonal = { m, mine -> PersonalWords(m, mine, emptyMap()) }, learned = LearnedWords(), background = { background.add(it) },
-            clock = { now })
+            clock = { now }, nextWords = if (neural) NextWords({ nextModel }, { it.run() }) else null)
         private val info = EditorInfo().apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             imeOptions = if (learns) 0 else EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING

@@ -15,6 +15,7 @@ import ly.anoma.hex.speech.SpokenText
 import ly.anoma.hex.typing.EmailAddresses
 import ly.anoma.hex.typing.EmojiWords
 import ly.anoma.hex.typing.Forgotten
+import ly.anoma.hex.typing.NextWords
 import ly.anoma.hex.typing.KeyGrid
 import ly.anoma.hex.typing.KeyPoint
 import ly.anoma.hex.typing.FieldWords
@@ -85,6 +86,8 @@ internal class KeyboardEngine(
     /** The runs of words you write, offered as one chip and learned in the same fields as [learned]. */
     private val phrases: LearnedPhrases = LearnedPhrases(),
     private val background: Executor = Executor { it.run() },
+    /** The next-word model's words for English and Hinglish layouts ([NextWords]); none, the word pairs alone. */
+    private val nextWords: NextWords? = null,
     private val clock: () -> Long = { SystemClock.uptimeMillis() },
     private val main: Handler = Handler(Looper.getMainLooper()),
     /** Work the strip after the key's own work has returned, so a letter is committed first and the
@@ -209,6 +212,11 @@ internal class KeyboardEngine(
     private var offer: Offer? = null
     private val dropDictation = Runnable { offerUndo(null) }
     private var pendingChip: Runnable? = null
+    /** Shows the strip last shown again, if what it was for is still there: the next-word model's
+     * words arrive after the strip ([NextWords]), and take their place in it then. */
+    private var redo: (() -> Unit)? = null
+    private val nextReady = Runnable { redo?.invoke() }
+    init { nextWords?.ready = { main.removeCallbacks(nextReady); main.post(nextReady) } }
     var surface: KeyboardSurface? = null
     private val models = HashMap<String, SpatialDecoder>()
     private var word: TypingWord? = null
@@ -548,7 +556,7 @@ internal class KeyboardEngine(
         pendingStrip?.let(main::removeCallbacks); pendingStrip = null
     }
     /** Empties the strip now, and drops any strip still waiting to be worked out. */
-    private fun clearStrip() { cancelSuggestions(); surface?.suggestions(emptyList()) }
+    private fun clearStrip() { cancelSuggestions(); redo = null; surface?.suggestions(emptyList()) }
     /** Runs [work], the strip's suggestions, after the key that asked for them (see [deferStrip]).
      * The latest request replaces an earlier one that has not run, so fast typing works out one strip. */
     private fun defer(work: () -> Unit) {
@@ -579,7 +587,7 @@ internal class KeyboardEngine(
             try {
                 TypingWord(models.getOrPut(language) { prepared(loadDecoder(language)) }, feedback.spatial)
                     .also { it.suggestSwearWords = feedback.suggestSwearWords; it.addsCapitals = feedback.autoCapitalize
-                        it.phrases = phrases }
+                        it.phrases = phrases; it.next = nextWords?.takeIf { _ -> language in NextWords.LANGUAGES } }
             } catch (_: java.io.IOException) { null } // The editor can still type if its assets cannot be read.
         } else null
         showPlane()
@@ -592,17 +600,18 @@ internal class KeyboardEngine(
     private fun suggest(w: TypingWord?) {
         cancelChip()
         if (w != null && w.token.isNotEmpty()) {
-            showStrip(w.strip(autocorrect = false))
-            if (!feedback.autocorrect || !canEndWord()) return
             val token = w.token
-            pendingChip = Runnable {
-                pendingChip = null
+            val quick = { if (word === w && w.token == token) showStrip(w.strip(autocorrect = false)) }
+            quick(); redo = quick
+            if (!feedback.autocorrect || !canEndWord()) return
+            val full = {
                 if (word === w && w.token == token) showStrip(w.strip(autocorrect = true).map {
                     if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || QuickMath.endsInUnit(before()) ||
                             feedback.blocked(w.decoder.model.language, token, it.text)))
                         Suggestion(it.text, Suggestion.Kind.Word) else it
                 })
-            }.also { main.postDelayed(it, CHIP_PAUSE_MS) }
+            }
+            pendingChip = Runnable { pendingChip = null; full(); redo = full }.also { main.postDelayed(it, CHIP_PAUSE_MS) }
             return
         }
         val b = if (w != null && !symbols && selStart == selEnd) before() else null
@@ -612,7 +621,9 @@ internal class KeyboardEngine(
     private fun showPredictions(before: String?) = defer { predict(before) }
     private fun predict(before: String?) {
         val w = word
+        redo = null
         if (w == null || before == null || symbols || !canEndWord()) { showStrip(emptyList()); return }
+        redo = { if (word === w && w.token.isEmpty() && before() == before) predict(before) }
         val caps = capsWanted()
         val words = w.predictions(before, capitalize = caps).map { Suggestion(it, Suggestion.Kind.Next) }
         val phrase = w.phrase(before, capitalize = caps)

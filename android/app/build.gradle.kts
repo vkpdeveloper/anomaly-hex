@@ -54,8 +54,8 @@ android {
     buildFeatures { compose = true }
     // The keyboard engine's tests build EditorInfo and a Handler; Android's stubs return defaults.
     testOptions { unitTests.isReturnDefaultValues = true }
-    // Stored as they are, so reading them costs no unzip: the typing models and the keys' font.
-    androidResources { noCompress += listOf("hextm", "valid", "capitals", "ttf") }
+    // Stored as they are, so reading them costs no unzip: the typing models, the next-word model and the keys' font.
+    androidResources { noCompress += listOf("hextm", "hexnn", "valid", "capitals", "ttf") }
     // The same plain-text Android policy ships in Settings and in the Play listing drafts.
     sourceSets["main"].assets.srcDir(rootProject.file("play/policy"))
     compileOptions {
@@ -81,7 +81,7 @@ val verifyTypingModels by tasks.registering {
     val dir = file("src/main/assets/typing")
     val names = listOf("en.hextm", "es.hextm", "de.hextm", "nb.hextm", "fr.hextm", "it.hextm", "hien.hextm", "en.valid",
         "es.valid", "de.valid", "nb.valid", "fr.valid", "it.valid",
-        "en.capitals", "es.capitals", "de.capitals", "fr.capitals", "it.capitals", "hien.capitals")
+        "en.capitals", "es.capitals", "de.capitals", "fr.capitals", "it.capitals", "hien.capitals", "next.hexnn")
     val manifest = dir.resolve("SHA256SUMS")
     inputs.files(names.map(dir::resolve) + manifest)
     doLast {

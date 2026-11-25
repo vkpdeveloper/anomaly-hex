@@ -160,6 +160,43 @@ adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOB
   Spanish *negro* (black), German *dick* (thick), and Bokmål *fag* (subject) remain
   available. An unscored listed spelling is protected when typed just like a model word.
 
+## Next-word model
+
+English and Hinglish next words come from a small neural model, `next.hexnn` (7.6 MB, uncompressed in the APK and pinned in SHA256SUMS). The word-pair models still do autocorrect, glides and every other layout. It is a GPT trained from scratch: 4 layers, width 256, 4 heads, 48 word pieces of context, a 16,000-piece SentencePiece unigram vocabulary shared by both languages, 7.26 M parameters. [NextWordModel](../../app/src/main/java/ly/anoma/hex/typing/NextWordModel.kt) runs it in plain Kotlin on one thread, with int8 weights (one scale per row) and a cache of the words already read. It searches 4 beams 2 pieces deep for whole words and takes the three likeliest ones that fit what is typed. [NextWords](../../app/src/main/java/ly/anoma/hex/typing/NextWords.kt) works the answer out off the main thread, so the strip shows the word pairs' guess first and changes when the answer arrives. Between words, and for a word of one to three letters, the model's words come before the word pairs'. Learned words and phrases still come first. On the emulator a warm prediction takes about 25 ms, and the first after the keyboard loads takes 100 to 700 ms.
+
+Training text: [SODA](https://huggingface.co/datasets/allenai/soda) (CC BY 4.0, a quarter of its dialogues), the user turns of [WildChat-1M](https://huggingface.co/datasets/allenai/WildChat-1M) (ODC-BY 1.0, only those not marked toxic, under 400 characters and with no code), PHINC (CC BY 4.0), and 2,501 synthetic chat threads in English and Hinglish, chat and formal, written by [generate.py](neural/generate.py) with DeepSeek V4.1 Flash through OpenCode Go. All of it is normalized as the keyboard reads text ([text.py](neural/text.py)): lowercase words and `. , ? !`, with links, handles and tags removed. The small Hinglish and chat sources are repeated (PHINC 10 times, synthetic Hinglish 6, synthetic English 3, Hinglish WildChat 8), for 57.7 M words or 73.7 M pieces. Training ran 12,000 steps of 256 × 48 pieces (two passes) in about 13 minutes on an RTX 4060.
+
+Held out from training: SODA's last 5,000 dialogues, a tenth of PHINC and of the synthetic files, chat threads from an earlier generator run, and the learning bench's Enron authors. [evaluate.py](neural/evaluate.py) scores 300 words per set. At each word, both predictors see the words before it and offer 3 words, with nothing of the word typed and with its first letter typed. A hit means the word is among the 3. The word-pair model is scored as the keyboard scores it. These are the int8 model's results with the phone's search:
+
+| Held-out set | Model, nothing typed | Word pairs, nothing typed | Model, first letter | Word pairs, first letter |
+|---|---:|---:|---:|---:|
+| English chat | 24.0% | 11.3% | 58.0% | 36.0% |
+| English email (Enron) | 34.3% | 22.7% | 66.0% | 56.0% |
+| English formal | 33.0% | 21.7% | 61.7% | 45.7% |
+| Synthetic English chat | 27.0% | 11.3% | 62.0% | 36.0% |
+| Synthetic English formal | 29.3% | 21.3% | 64.7% | 49.0% |
+| Hinglish chat | 27.7% | 9.7% | 54.3% | 26.3% |
+| Hinglish formal | 29.3% | 12.0% | 52.7% | 32.3% |
+| Synthetic Hinglish chat | 22.3% | 9.7% | 50.3% | 27.7% |
+| Synthetic Hinglish formal | 34.3% | 13.0% | 60.3% | 36.0% |
+| PHINC | 22.7% | 19.7% | 41.3% | 37.0% |
+
+SODA's own held-out dialogues (65.3% against 17.0%) are left out of the table because they are too close to the training text. The float model with a 12-beam, 5-piece search scores within 1.5 points of these numbers on every set, at ten times the work. 6 beams 4 pieces deep scored about the same as 4 beams 2 pieces deep, and 3 beams 3 pieces deep did clearly worse. `HEX_LEARN_BENCH_NEXT=1` runs the learning bench with the model.
+
+To rebuild it, put the data under one root: `data/soda/train.parquet` and `data/wildchat/*.parquet` (the datasets' Hugging Face parquet files), `data/phinc.csv`, `data/threads.tsv` (held-out threads: `thread, turn, who, lang, register, text`), `data/authors/*.txt` ([learn-corpus.py](../../scripts/learn-corpus.py)) and `gen/` (generate.py's output). Then, in a Python venv with `torch`, `sentencepiece`, `pyarrow` and `numpy`:
+
+```sh
+N=benchmark/typing/neural
+python3 $N/generate.py ROOT/gen 2500 8         # needs the opencode CLI signed in to OpenCode Go
+python3 $N/prepare.py ROOT                     # writes ROOT/corpus/
+python3 $N/train.py ROOT v2 12000 256 4 4 16000
+HEX_BEAM=4 HEX_DEPTH=2 HEX_APOSTROPHES=1 python3 $N/evaluate.py ROOT v2 300   # writes ROOT/runs/v2/eval.json
+HEX_BEAM=4 HEX_DEPTH=2 HEX_APOSTROPHES=1 python3 $N/export.py ROOT v2 \
+  app/src/main/assets/typing/next.hexnn app/src/test/resources/next-fixture.tsv
+```
+
+Then update `next.hexnn`'s line in SHA256SUMS. `NextWordModelTest` checks the Kotlin model against the fixture's tokenizer cases and predictions.
+
 ## Reproduce on the Studio
 
 1. Export only the allowlisted synthetic IDs **where the iOS inputs already reside**. The exporter accepts `test-0…1999` (English) or `es-test-0…1999` (Spanish), empty context, no logged flag, and key-aligned finite x/y pairs. It exports only ID, intended text, synthetic hit keys/taps and the matching uncalibrated iOS output. Never transfer the mixed source, labels or personal offsets.

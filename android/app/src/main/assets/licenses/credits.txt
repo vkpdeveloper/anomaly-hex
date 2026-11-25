@@ -47,6 +47,18 @@ list (hien.capitals) is the English list without Hindi words English writes as n
 names PHINC's posts nearly always write with a capital.
 The English and Hinglish chat words (abbreviations such as "tbh" and "nhi") are Hex's own list.
 
+English and Hinglish next-word model (next.hexnn): a small language model Hex trained from scratch on
+- SODA: Million-scale Dialogue Distillation with Social Commonsense Contextualization, Hyunwoo Kim
+  et al., 2022, https://arxiv.org/abs/2212.10465, https://huggingface.co/datasets/allenai/soda
+  Creative Commons Attribution 4.0 International (cc-by-4.0.txt).
+- WildChat-1M: WildChat: 1M ChatGPT Interaction Logs in the Wild, Wenting Zhao, Xiang Ren, Jack Hessel,
+  Claire Cardie, Yejin Choi and Yuntian Deng, ICLR 2024, https://huggingface.co/datasets/allenai/WildChat-1M
+  Open Data Commons Attribution License 1.0 (odc-by-1.0.txt).
+- PHINC, as above, CC BY 4.0.
+- English and Hinglish chats Hex wrote with a language model.
+Changes: lowercased the text, removed links, handles and tags, split it into word pieces, trained the
+model on it and stored its weights as 8-bit numbers. No sentence from the data is in the app.
+
 Norwegian Bokmål keyboard language model: N-grammer fra Nasjonalbiblioteket 2026,
 National Library of Norway (Nasjonalbiblioteket). Book unigrams and bigrams ("digibok"),
 language nob, 1980–2019. CC0 1.0 Universal: https://creativecommons.org/publicdomain/zero/1.0/
