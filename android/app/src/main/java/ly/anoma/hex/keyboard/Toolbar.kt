@@ -42,6 +42,9 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         const val PIECE_TEXT_WIDTH = 150f
         const val EMOJI = 21f
         const val EMOJI_SLOT = 46f
+        /** A found emoji's size and cell, in dp. */
+        const val FOUND = 26f
+        const val FOUND_CELL = 48f
         const val NOTE_MS = 3_000L
         const val HOLD_MS = 350L
     }
@@ -102,6 +105,12 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     private val undo = LinearLayout(context)
     private val undoText = TextView(context)
     private var undoOffer: UndoOffer? = null
+    // The emoji a search found ([KeyboardEngine.pickFound]), in the strip's place.
+    private val foundScroll = HorizontalScrollView(context)
+    private val foundRow = LinearLayout(context)
+    private val foundNone = TextView(context)
+    private var found = emptyList<String>()
+    private var searching = false
     private val well = FrameLayout(context)
     private val scope = DotScopeView(context)
     private val wellText = TextView(context)
@@ -239,6 +248,17 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         }
         addView(noteText, LayoutParams(-1, -1).apply { marginStart = px(48f); marginEnd = px(48f) })
 
+        foundScroll.apply {
+            isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER
+            addView(foundRow.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }, LayoutParams(-2, -1))
+        }
+        addView(foundScroll, LayoutParams(-1, -1).apply { marginStart = px(46f); marginEnd = px(48f) })
+        foundNone.apply {
+            text(this, 15f); setTextColor(color(R.color.kb_quiet)); gravity = Gravity.CENTER
+            setText(R.string.keyboard_emoji_none); accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        addView(foundNone, LayoutParams(-1, -1).apply { marginStart = px(48f); marginEnd = px(48f) })
+
         actionScroll.apply {
             isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; isFillViewport = true
             addView(actionRow.apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }, LayoutParams(-2, -1))
@@ -321,7 +341,7 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         slotViews[4].visibility = dividers[3].visibility
         for (i in 0..4) {
             val slot = shown[i]
-            val s = slot?.text.orEmpty()
+            val s = slot?.text?.let { if (slot.kind == Suggestion.Kind.Emoji) ime.emojiTones.tone(it) else it }.orEmpty()
             // A new layout is made for every setText, even of the same words, and most keys leave most
             // slots as they were (empty emoji slots above all).
             val view = this.words[i]
@@ -450,6 +470,22 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         update()
     }
 
+    /** The emoji a search found, or none to give the strip back. */
+    fun found(emoji: List<String>) {
+        if (emoji == found) { update(); return }
+        found = emoji
+        foundRow.removeAllViews()
+        for (e in emoji) foundRow.addView(TextView(context).apply {
+            text(this, FOUND); gravity = Gravity.CENTER; text = ime.emojiTones.tone(e); contentDescription = text; isFocusable = true
+            background = pressable(android.graphics.Color.TRANSPARENT, false, px(8f).toFloat())
+            setOnClickListener { ime.engine.pickFound(e) }
+        }, LinearLayout.LayoutParams(px(FOUND_CELL), -1))
+        foundScroll.scrollTo(0, 0)
+        update()
+    }
+    /** The emoji panel's search is open: its row shows, found or not. */
+    fun searching(on: Boolean) { searching = on; update() }
+
     /** A short line in the toolbar's middle, such as why dictation couldn't start. */
     fun note(text: String) {
         note = text; removeCallbacks(clearNote); postDelayed(clearNote, NOTE_MS); update()
@@ -458,29 +494,32 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
     fun update() {
         val idle = phase == DictationPhase.Idle
         val suggesting = offered.any { it != null }
-        val noting = idle && note != null
+        val finding = idle && (found.isNotEmpty() || searching)
+        foundScroll.visibility = if (finding && found.isNotEmpty()) VISIBLE else GONE
+        foundNone.visibility = if (finding && found.isEmpty()) VISIBLE else GONE
+        val noting = idle && !finding && note != null
         well.visibility = if (idle) GONE else VISIBLE
         cancel.visibility = if (idle) GONE else VISIBLE
         grid.visibility = if (idle) VISIBLE else GONE
         noteText.visibility = if (noting) VISIBLE else GONE
         if (!noteText.text.contentEquals(note.orEmpty())) noteText.text = note
-        val undoing = idle && !noting && undoOffer != null
+        val undoing = idle && !finding && !noting && undoOffer != null
         undo.visibility = if (undoing) VISIBLE else GONE
-        val acting = idle && !noting && !undoing && actions.isNotEmpty()
+        val acting = idle && !finding && !noting && !undoing && actions.isNotEmpty()
         actionScroll.visibility = if (acting) VISIBLE else GONE
         // The field's own saved passwords and codes come before a copy or next-word guesses.
-        val filling = idle && !noting && !undoing && !acting && !typingWord &&
+        val filling = idle && !finding && !noting && !undoing && !acting && !typingWord &&
             (autofillRest.childCount > 0 || autofillPinned.childCount > 0)
         autofill.visibility = if (filling) VISIBLE else GONE
         // A fresh copy or photo takes the place of next-word guesses, as Gboard's does; a word being
         // typed keeps its suggestions.
         // Typing a word passes over the chip: it isn't offered again, and the clipboard keeps it.
         if (idle && !guessing) chipOffer?.let { passed -> chipOffer = null; ime.clips.used(passed) }
-        val offer = if (idle && !noting && !undoing && !acting && !filling && guessing) ime.clips.offer else null
+        val offer = if (idle && !finding && !noting && !undoing && !acting && !filling && guessing) ime.clips.offer else null
         // Unused, it goes once it is too old, while the keyboard stays up.
         removeCallbacks(expire)
         if (offer != null) postDelayed(expire, offer.staleIn(System.currentTimeMillis()).coerceAtLeast(0) + 100)
-        slots.visibility = if (idle && !noting && !undoing && !acting && !filling && suggesting && offer == null) VISIBLE else GONE
+        slots.visibility = if (idle && !finding && !noting && !undoing && !acting && !filling && suggesting && offer == null) VISIBLE else GONE
         clipScroll.visibility = if (offer is ChipOffer.Text || offer is ChipOffer.Code) VISIBLE else GONE
         shot.visibility = if (offer is ChipOffer.Image || offer is ChipOffer.Photo) VISIBLE else GONE
         val fresh = offer != chipOffer

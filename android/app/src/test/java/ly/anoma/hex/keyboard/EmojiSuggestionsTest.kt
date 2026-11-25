@@ -104,6 +104,62 @@ class EmojiSuggestionsTest {
         assertEquals("teh ", k.field.text)
     }
 
+    @Test fun aColonSearchShowsEmojiAndAPickTakesItsPlace() {
+        val k = Keyboard()
+        k.chars("so :fir")
+        // Hinglish "fir" (again) has emoji too, but on English "fire" comes first.
+        assertEquals("🔥", k.found.first())
+        k.engine.pickFound("🔥")
+        assertEquals("so 🔥 ", k.field.text)
+        assertTrue(k.found.isEmpty())
+        assertEquals("🔥", k.picks.of("fir").single().first)
+        assertEquals(listOf("🔥"), k.used)
+    }
+
+    @Test fun smileysAndTimesNeverStartAColonSearch() {
+        for (text in listOf(":)", ":p ", "at 10:30", "https:", "word:fire")) {
+            val k = Keyboard()
+            k.chars(text)
+            assertTrue(text, k.found.isEmpty())
+            assertEquals(text, k.field.text)
+        }
+    }
+
+    @Test fun thePanelSearchTakesTheKeysAndLeavesTheTextAlone() {
+        val k = Keyboard()
+        k.chars("hi ")
+        k.engine.startSearch()
+        assertEquals("", k.query)
+        k.tap("pizzq")
+        k.engine.delete()
+        k.tap("a")
+        assertEquals("pizza", k.query)
+        assertEquals("hi ", k.field.text)
+        assertTrue("🍕" in k.found)
+        k.engine.pickFound("🍕")
+        assertEquals("hi 🍕", k.field.text)
+        assertEquals("pizza", k.query)
+        k.engine.stopSearch()
+        assertEquals(null, k.query)
+        assertTrue(k.found.isEmpty())
+        k.chars("x")
+        assertEquals("hi 🍕x", k.field.text)
+    }
+
+    @Test fun aChosenSkinToneGoesInButTheEmojiIsLearnedWithoutIt() {
+        val k = Keyboard(tones = mapOf("👍" to "👍🏽"))
+        k.chars("so :thumbs")
+        k.engine.pickFound("👍")
+        assertEquals("so 👍🏽 ", k.field.text)
+        assertEquals("👍", k.picks.of("thumbs").single().first)
+    }
+
+    @Test fun skinTonesGoAfterTheFirstPersonWithoutItsEmojiStyle() {
+        assertEquals(listOf("✌️", "✌🏻", "✌🏼", "✌🏽", "✌🏾", "✌🏿"), EmojiTones.variants("✌️") { true })
+        assertEquals("🏃🏽‍♂️", EmojiTones.variants("🏃‍♂️") { true }[3])
+        assertTrue(EmojiTones.variants("😀") { it == "😀" }.isEmpty())
+    }
+
     @Test fun picksSurviveBeingWrittenAndRead() {
         val picks = EmojiWords.Picks()
         picks.pick("party", "🥳"); picks.pick("party", "🥳"); picks.pick("party", "🎉"); picks.pick("chai", "☕")
@@ -112,21 +168,30 @@ class EmojiSuggestionsTest {
         assertEquals(listOf("☕" to 1), read.of("chai"))
     }
 
-    private inner class Keyboard(type: Int = InputType.TYPE_CLASS_TEXT, options: Int = 0, language: Spoken = Spoken.English) {
+    private inner class Keyboard(type: Int = InputType.TYPE_CLASS_TEXT, options: Int = 0, language: Spoken = Spoken.English,
+                                 tones: Map<String, String> = emptyMap()) {
         val field = Field("")
         val prefs = TypingPreferences(Prefs.context()).also { it.autoCapitalize = false }
         var strip = emptyList<Suggestion>()
         val emoji get() = strip.filter { it.kind == Suggestion.Kind.Emoji }.map { it.text }
         val picks = EmojiWords.Picks()
+        var found = emptyList<String>()
+        var query: String? = null
+        val used = ArrayList<String>()
         val engine = KeyboardEngine(field, prefs, { language }, { SpatialDecoder(model(it)) },
-            emojiLists = { code -> EmojiWords((if (code == "hien") listOf("hien", "en") else listOf("en")).map(::lists)) },
-            emojiPicks = picks, clock = { 0L })
+            emojiLists = { code ->
+                val strip = if (code == "hien") listOf("hien", "en") else listOf("en")
+                EmojiWords(strip.map(::lists), names, (strip + listOf("en", "hien").filter { it !in strip }).map(::lists))
+            },
+            emojiPicks = picks, emojiUsed = { used += it }, emojiTone = { tones[it] ?: it }, clock = { 0L })
 
         init {
             engine.surface = object : KeyboardSurface {
                 override fun showPage(page: KeyboardPage) {}
                 override fun suggestions(slots: List<Suggestion>) { strip = slots }
                 override fun undo(offer: UndoOffer?) {}
+                override fun emojiRow(emoji: List<String>) { found = emoji }
+                override fun emojiSearch(query: String?) { this@Keyboard.query = query }
             }
             engine.startInput(EditorInfo().apply { inputType = type; imeOptions = options; initialSelStart = 0; initialSelEnd = 0 })
             engine.opened()
@@ -142,6 +207,7 @@ class EmojiSuggestionsTest {
     private companion object {
         val models = HashMap<String, TypingModel>()
         fun model(code: String) = models.getOrPut(code) { TypingModel.file(File("src/main/assets/typing/$code.hextm"), code) }
+        val names by lazy { EmojiWords.Named.parse(File("src/main/assets/typing/emoji.names").readText()) }
         val parsed = HashMap<String, Map<String, List<String>>>()
         fun lists(code: String) = parsed.getOrPut(code) { EmojiWords.parse(File("src/main/assets/typing/$code.emoji").readText()) }
     }

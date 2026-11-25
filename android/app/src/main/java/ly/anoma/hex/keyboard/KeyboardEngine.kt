@@ -37,6 +37,11 @@ internal interface KeyboardSurface {
     /** The strip, in the typing model's order: what was typed first when it shows, then the fix or the
      * likeliest word, then the rest. Next words after a space are [Suggestion.Kind.Next]. */
     fun suggestions(slots: List<Suggestion>)
+    /** The emoji a search found, in a row in the strip's place: for a colon search typed in the text
+     * (":fire") or the emoji panel's search; none puts the strip back. */
+    fun emojiRow(emoji: List<String>) {}
+    /** The emoji panel's search is open with [query] typed, or closed (null). */
+    fun emojiSearch(query: String?) {}
     /** Offer an undo, or stop offering it. */
     fun undo(offer: UndoOffer?)
     /** Chips for the selection or what was just typed, in the suggestions' place; none clears them. */
@@ -79,6 +84,12 @@ internal class KeyboardEngine(
     private val emojiPicks: EmojiWords.Picks = EmojiWords.Picks(),
     /** [emojiPicks] changed and should be saved. */
     private val emojiPicked: () -> Unit = {},
+    /** The emoji panel's recent emoji, which an empty search shows. */
+    private val emojiRecent: () -> List<String> = { emptyList() },
+    /** An emoji a search found went in: it's recent now. */
+    private val emojiUsed: (String) -> Unit = {},
+    /** An emoji with the skin tone chosen for it, as it goes in; everything else keeps it without. */
+    private val emojiTone: (String) -> String = { it },
     /** Free times from the calendar for the text before the caret ([FreeTimes]), none while that's off. */
     private val freeTimes: (String) -> List<StripAction> = { emptyList() },
     /** What the person fixed in text just dictated, for the paired computer ([DictationWatch]). */
@@ -284,6 +295,7 @@ internal class KeyboardEngine(
     private var typedHere = false
 
     fun startInput(attribute: EditorInfo) {
+        stopSearch()
         edited()
         forgetSteps(); batches = 0
         editor = attribute
@@ -379,7 +391,7 @@ internal class KeyboardEngine(
         // At the word's end it is the word in progress again: letters add to it and a pick ends it.
         if (right.isEmpty()) { prefix = start.takeLast(40); w.restored(left, prefix) }
         else { w.reset(); tapped = Tapped(left, right) }
-        cancelSuggestions(); surface?.suggestions(strip)
+        cancelSuggestions(); strip(strip)
     }
 
     /** Suggest swear words changed: the current word's suggestions follow at once. */
@@ -556,7 +568,16 @@ internal class KeyboardEngine(
         pendingStrip?.let(main::removeCallbacks); pendingStrip = null
     }
     /** Empties the strip now, and drops any strip still waiting to be worked out. */
-    private fun clearStrip() { cancelSuggestions(); redo = null; surface?.suggestions(emptyList()) }
+    private fun clearStrip() { cancelSuggestions(); redo = null; strip(emptyList()) }
+    /** The strip's [slots], and in their place the emoji for a colon search right before the cursor. */
+    private fun strip(slots: List<Suggestion>) {
+        surface?.suggestions(slots)
+        if (search != null) return
+        val query = if (secure || selStart != selEnd || !target.connected) null else EmojiWords.colonQuery(before())
+        val found = query?.let { q -> emojiLists(layoutLanguage().layoutCode)?.search(q, emojiPicks) }.orEmpty()
+        colonQuery = query.takeIf { found.isNotEmpty() }
+        surface?.emojiRow(found)
+    }
     /** Runs [work], the strip's suggestions, after the key that asked for them (see [deferStrip]).
      * The latest request replaces an earlier one that has not run, so fast typing works out one strip. */
     private fun defer(work: () -> Unit) {
@@ -644,10 +665,10 @@ internal class KeyboardEngine(
         val found = if (typed == null || typed.length < (if (addressField) 1 else 3)) emptyList()
             else emails.matching(typed, learned, withContacts = addressField || '@' in typed, limit = if (addressField) 3 else 1)
         offerActions()
-        if (found.isEmpty()) { surface?.suggestions(slots + emojiFor(slots)); return }
+        if (found.isEmpty()) { strip(slots + emojiFor(slots)); return }
         addressOffer = AddressOffer(typed!!, found)
         val offered = found.map { Suggestion(it, Suggestion.Kind.Word) }
-        surface?.suggestions(if (addressField) (offered + slots).take(3) else slots.take(2) + offered)
+        strip(if (addressField) (offered + slots).take(3) else slots.take(2) + offered)
     }
     /** Emoji for the word being typed or one of the strip's words for it ("medicin" finds 💊 through
      * "medicine"), or after a space for the word before it, as Gboard offers them. */
@@ -673,18 +694,78 @@ internal class KeyboardEngine(
         takeHeldSpace(before())
         clearSpaces(); resetTyping()
         val holds = SpaceRules.separates(target.after(1))
-        if (!target.commit(if (holds) emoji else "$emoji ")) return
+        val toned = emojiTone(emoji)
+        if (!target.commit(if (holds) toned else "$toned ")) return
         if (learnFor != null && learnHere) { emojiPicks.pick(learnFor, emoji); emojiPicked() }
         val b = before()
         if (holds) heldAnchor = b else pickedAnchor = b
         showPredictions(b); inputDone()
     }
 
+    // The colon search the row's emoji are for (":fire" is "fire"), and the emoji panel's search, which
+    // takes the keys' letters, space and delete while it is open.
+    private var colonQuery: String? = null
+    private var search: StringBuilder? = null
+
+    /** The emoji panel's search opens: the keys type into it until [stopSearch]. */
+    fun startSearch() {
+        cancelChip(); resetTyping(); clearSpaces(); clearStrip()
+        search = StringBuilder(); colonQuery = null
+        showSearch()
+    }
+    /** The emoji panel's search closes; the strip comes back. */
+    fun stopSearch() {
+        if (search == null) return
+        search = null
+        surface?.emojiSearch(null); surface?.emojiRow(emptyList())
+    }
+    val searching get() = search != null
+    private fun showSearch() {
+        val q = search?.toString() ?: return
+        surface?.emojiSearch(q)
+        surface?.emojiRow(if (q.isBlank()) emojiRecent() else emojiLists(layoutLanguage().layoutCode)?.search(q, emojiPicks).orEmpty())
+    }
+    /** A key while the emoji panel's search is open edits the search instead of the text: true when it did. */
+    private fun searched(edit: StringBuilder.() -> Unit): Boolean {
+        val s = search ?: return false
+        s.edit(); showSearch(); return true
+    }
+    private fun StringBuilder.addSpace() { if (isNotEmpty() && last() != ' ') append(' ') }
+
+    /** An emoji in the search's row was tapped. From the emoji panel's search it goes in as one from the
+     * panel does, and the search stays open; for a colon search it takes the place of ":fire" with its
+     * space, as a picked word does. Either way it's learned for what was searched. */
+    fun pickFound(emoji: String) {
+        if (!target.connected) return
+        val s = search
+        val query = s?.toString() ?: colonQuery ?: return
+        if (s != null) {
+            search = null
+            emoji(emoji)
+            search = s
+        } else {
+            if (!endsWith(":$query")) { strip(emptyList()); return }
+            edited(); typedHere = true
+            resetTyping(); clearSpaces()
+            val holds = SpaceRules.separates(target.after(1))
+            val toned = emojiTone(emoji)
+            if (!replace(":$query", if (holds) toned else "$toned ")) return
+            colonQuery = null
+            val b = before()
+            if (holds) heldAnchor = b else pickedAnchor = b
+            showPredictions(b); inputDone()
+        }
+        val key = EmojiWords.queryWords(query).joinToString(" ")
+        if (key.isNotEmpty() && learnHere) { emojiPicks.pick(key, emoji); emojiPicked() }
+        emojiUsed(emoji)
+        if (s != null) showSearch()
+    }
+
     /** An emoji from the emoji panel: typed as it is, and learned for the word right before it, if any. */
     fun emoji(text: String) {
         // The word before the cursor, typed then or before; the field's kind says whether to learn.
         val after = if (learnHere && selStart == selEnd) EmojiWords.wordBefore(before()) else null
-        type(text)
+        type(emojiTone(text))
         if (after != null) { emojiPicks.pick(after, text); emojiPicked() }
     }
 
@@ -710,7 +791,9 @@ internal class KeyboardEngine(
     /** Shift as the keys show it: letters type capitals while it is on or held. */
     val uppercase get() = shift.uppercase
 
-    fun letter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) = traced("hex:key:letter") { doLetter(text, x, y, grid, explicit) }
+    fun letter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) = traced("hex:key:letter") {
+        if (!searched { append(text.lowercase()) }) doLetter(text, x, y, grid, explicit)
+    }
     private fun doLetter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) {
         if (!target.connected) return
         edited(); typedHere = true
@@ -834,7 +917,7 @@ internal class KeyboardEngine(
     }
 
     /** The space bar, tapped at [point] in [grid]'s coordinates (null off the letters page). */
-    fun space(point: KeyPoint? = null, grid: KeyGrid? = null) = traced("hex:key:space") { doSpace(point, grid) }
+    fun space(point: KeyPoint? = null, grid: KeyGrid? = null) = traced("hex:key:space") { if (!searched { addSpace() }) doSpace(point, grid) }
     private fun doSpace(point: KeyPoint? = null, grid: KeyGrid? = null) {
         if (!target.connected) return
         typeSpace(point, grid)
@@ -883,7 +966,12 @@ internal class KeyboardEngine(
         showPredictions(b); inputDone()
     }
 
-    fun type(value: String) = traced("hex:key:type") { doType(value) }
+    fun type(value: String) = traced("hex:key:type") {
+        val typed = searched {
+            if (value.isBlank()) addSpace() else if (value.all { it.isLetterOrDigit() || it == '\'' || it == '’' }) append(value.lowercase())
+        }
+        if (!typed) doType(value)
+    }
     private fun doType(value: String) {
         if (!target.connected) return
         edited(); typedHere = true
@@ -930,7 +1018,7 @@ internal class KeyboardEngine(
         if (mark == "," || mark == ";") learnAddressBefore(b)
         showPredictions(b); inputDone()
     }
-    fun delete() = traced("hex:key:delete") { doDelete() }
+    fun delete() = traced("hex:key:delete") { if (!searched { if (isNotEmpty()) setLength(length - 1) }) doDelete() }
     private fun doDelete() {
         if (!target.connected) return
         edited()
@@ -967,7 +1055,7 @@ internal class KeyboardEngine(
             val typed = last.original.substringAfterLast(' ')
             prefix = before().dropLast(typed.length).takeLast(40); word?.restored(typed, prefix)
             if (expectedCaret >= 0) expectedCaret += last.original.length - last.replacement.length - 1
-            cancelSuggestions(); surface?.suggestions(listOf(Suggestion(typed, Suggestion.Kind.Typed))); return
+            cancelSuggestions(); strip(listOf(Suggestion(typed, Suggestion.Kind.Typed))); return
         }
         val w = word
         val track = w != null && w.token.isNotEmpty() && endsWith(prefix + w.token)
@@ -986,6 +1074,7 @@ internal class KeyboardEngine(
     /** Held delete once it speeds up ([DeleteRepeat]): the word before the cursor with the spaces
      * after it, as a delete slide counts words, taken one character at a time through [delete]. */
     fun deleteWord() {
+        if (searched { setLength(trimEnd().dropLastWhile { it != ' ' }.length) }) return
         val before = if (secure) "" else target.before(64).orEmpty()
         val word = before.takeLast(DeleteSlide.wordLengths(before).firstOrNull() ?: 0)
         val characters = java.text.BreakIterator.getCharacterInstance().apply { setText(word) }
@@ -993,7 +1082,7 @@ internal class KeyboardEngine(
         while (characters.next() != java.text.BreakIterator.DONE) count++
         repeat(maxOf(count, 1)) { delete() }
     }
-    fun enter() = traced("hex:key:enter") { doEnter() }
+    fun enter() = traced("hex:key:enter") { if (!searched {}) doEnter() }
     private fun doEnter() {
         edited()
         learn(before(), 0); learnAddressBefore(before())
@@ -1014,7 +1103,7 @@ internal class KeyboardEngine(
     /** A glide lifted, its [path] in [grid]'s coordinates. Its likeliest word goes in, after a space
      * when it follows a word, capitalised while shift is on and in capitals with caps lock; the strip
      * offers the other readings beside it. A word in progress stays as typed. */
-    fun glide(path: List<KeyPoint>, grid: KeyGrid) = traced("hex:key:glide") { doGlide(path, grid) }
+    fun glide(path: List<KeyPoint>, grid: KeyGrid) = traced("hex:key:glide") { if (!searched {}) doGlide(path, grid) }
     private fun doGlide(path: List<KeyPoint>, grid: KeyGrid) {
         val w = word
         if (w == null || !glides) return
@@ -1042,7 +1131,7 @@ internal class KeyboardEngine(
     private fun showGlided(g: Glided) {
         glided = g
         cancelSuggestions()
-        surface?.suggestions(listOf(Suggestion(g.word, Suggestion.Kind.Fix)) +
+        strip(listOf(Suggestion(g.word, Suggestion.Kind.Fix)) +
             g.readings.keys.filter { it != g.word }.map { Suggestion(it, Suggestion.Kind.Word) })
     }
 

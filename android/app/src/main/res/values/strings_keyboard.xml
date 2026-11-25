@@ -55,6 +55,8 @@
     <string name="keyboard_back">Back</string>
     <string name="keyboard_emoticons">Emoticons</string>
     <string name="keyboard_emoji_recent">Recent emoji</string>
+    <string name="keyboard_emoji_search">Search emoji</string>
+    <string name="keyboard_emoji_none">No emoji found</string>
     <string name="keyboard_clipboard">Clipboard</string>
     <string name="keyboard_clear">Clear</string>
     <string name="keyboard_clipboard_empty">Copied text and images stay here for an hour. Touch and hold one to pin it.</string>

@@ -24,11 +24,10 @@ import kotlin.math.roundToInt
 /** Gboard's emoji panel: back and the category tabs on top, the emoji in eight columns under section
  * headings (recent first), and ABC, emoji, emoticons and delete along the bottom. It takes the place
  * of the toolbar and the keys, and is taller than they are, as Gboard's is. */
-internal class EmojiPanel(context: Context, private val ime: HexKeyboard, private val close: () -> Unit) : LinearLayout(context) {
+internal class EmojiPanel(context: Context, private val ime: HexKeyboard, private val close: () -> Unit, search: () -> Unit) : LinearLayout(context) {
     companion object {
         /** The panel's height above the system's bar, in dp. */
         const val HEIGHT = 378f
-        private const val RECENT_MAX = 32
         private val EMOTICONS = listOf(":-)", ";-)", ":-(", ":-D", ":-P", ":-O", ":'(", ":-*", "<3", "B-)",
             "^_^", "-_-", "o_O", "xD", ">_<", "T_T", "¯\\_(ツ)_/¯", "(╯°□°)╯︵ ┻━┻", "ʕ•ᴥ•ʔ", "(¬‿¬)", "ಠ_ಠ", "(づ｡◕‿‿◕｡)づ")
         /** The asset's groups in order, with their tab icon and heading. */
@@ -65,9 +64,12 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
     private val density = resources.displayMetrics.density
     private fun px(value: Float) = (value * density).roundToInt()
     private fun color(id: Int) = context.getColor(id)
-    private val prefs = context.getSharedPreferences("emoji", Context.MODE_PRIVATE)
     private val scroll = ScrollView(context)
-    private val grid = EmojiGrid(context) { pick(it) }
+    private val grid = EmojiGrid(context, ::pick, ::hold, ime.emojiTones::tone)
+    // The skin tones of the emoji being held, over the grid, and behind it a shield a touch outside closes.
+    private val body = FrameLayout(context)
+    private val shield = View(context)
+    private val tones = LinearLayout(context)
     private val tabs = LinearLayout(context)
     private val tabViews = ArrayList<Pair<FrameLayout, ImageView>>()
     private var emoticons = false
@@ -87,6 +89,7 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
         top.addView(HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false; overScrollMode = OVER_SCROLL_NEVER; addView(tabs)
         }, LayoutParams(0, -1, 1f))
+        top.addView(round(R.drawable.ic_search, R.string.keyboard_emoji_search, search), LayoutParams(px(34f), px(34f)).apply { marginEnd = px(7.5f) })
         addView(top, LayoutParams(-1, px(42f)))
 
         scroll.isVerticalScrollBarEnabled = false
@@ -95,7 +98,17 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
         scroll.setPadding(px(5f), 0, px(5f), 0)
         scroll.addView(grid)
         scroll.setOnScrollChangeListener { _, _, y, _, _ -> grid.scrolled(y); if (!emoticons) select(grid.sectionAt(y)) }
-        addView(scroll, LayoutParams(-1, 0, 1f))
+        body.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        shield.visibility = GONE
+        shield.setOnClickListener { closeTones() }
+        body.addView(shield, FrameLayout.LayoutParams(-1, -1))
+        tones.apply {
+            visibility = GONE; orientation = HORIZONTAL; elevation = px(4f).toFloat()
+            background = GradientDrawable().apply { setColor(color(R.color.kb_key)); cornerRadius = px(12f).toFloat() }
+            setPadding(px(4f), px(4f), px(4f), px(4f))
+        }
+        body.addView(tones, FrameLayout.LayoutParams(-2, -2))
+        addView(body, LayoutParams(-1, 0, 1f))
 
         val bottom = FrameLayout(context)
         bottom.addView(TextView(context).apply {
@@ -121,12 +134,12 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
     }
 
     /** Opens on recent emoji, or on smileys when there are none yet. */
-    fun open() { showEmoji(); scroll.scrollTo(0, 0); select(grid.sectionAt(0)) }
+    fun open() { closeTones(); showEmoji(); scroll.scrollTo(0, 0); select(grid.sectionAt(0)) }
 
     private fun showEmoji() {
         emoticons = false
         val all = load(context)
-        val recent = prefs.getString("recent", "").orEmpty().split(' ').filter { it.isNotEmpty() }
+        val recent = ime.emojiRecent.list()
         val sections = ArrayList<EmojiGrid.Section>()
         sections += EmojiGrid.Section(context.getString(R.string.keyboard_emoji_recent), recent, 0)
         GROUPS.forEachIndexed { i, (name, _, heading) -> sections += EmojiGrid.Section(heading, all[name].orEmpty(), i + 1) }
@@ -152,9 +165,37 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
     private fun pick(text: String) {
         if (emoticons) { ime.engine.type(text); return }
         ime.engine.emoji(text)
-        val recent = listOf(text) + prefs.getString("recent", "").orEmpty().split(' ').filter { it.isNotEmpty() && it != text }
-        prefs.edit().putString("recent", recent.take(RECENT_MAX).joinToString(" ")).apply()
+        ime.emojiRecent.add(text)
     }
+
+    /** An emoji held in the grid: its skin tones, when it has them, over it. Picking one types it and
+     * keeps it as that emoji's tone, in the panel, the search and the strip. */
+    private fun hold(emoji: String, cell: android.graphics.RectF): Boolean {
+        if (emoticons) return false
+        val variants = EmojiTones.variants(emoji, toneGlyphs::hasGlyph)
+        if (variants.isEmpty()) return false
+        tones.removeAllViews()
+        val chosen = ime.emojiTones.tone(emoji)
+        for (v in variants) tones.addView(TextView(context).apply {
+            text = v; setTextSize(TypedValue.COMPLEX_UNIT_DIP, 28f); gravity = Gravity.CENTER; includeFontPadding = false
+            contentDescription = v; isFocusable = true
+            background = if (v == chosen) GradientDrawable().apply { setColor(color(R.color.kb_key_pressed)); cornerRadius = px(8f).toFloat() } else null
+            setOnClickListener { ime.emojiTones.choose(emoji, v); closeTones(); pick(emoji) }
+        }, LayoutParams(px(44f), px(48f)))
+        val width = px(44f) * variants.size + px(8f)
+        val height = px(56f)
+        val x = cell.centerX() + scroll.paddingLeft - width / 2f
+        val y = cell.top - scroll.scrollY - height
+        tones.translationX = x.coerceIn(px(4f).toFloat(), (body.width - width - px(4f)).toFloat().coerceAtLeast(0f))
+        tones.translationY = if (y >= 0) y else cell.bottom - scroll.scrollY
+        tones.visibility = VISIBLE; shield.visibility = VISIBLE
+        return true
+    }
+    private fun closeTones() {
+        if (tones.visibility != VISIBLE) return
+        tones.visibility = GONE; shield.visibility = GONE; grid.invalidate()
+    }
+    private val toneGlyphs by lazy { Paint() }
 
     private fun addTab(icon: Int, description: String) {
         val index = tabViews.size
@@ -228,7 +269,14 @@ internal class EmojiPanel(context: Context, private val ime: HexKeyboard, privat
 
 /** The emoji, drawn straight onto one tall view inside the scroll: only the rows on screen are drawn,
  * so a couple of thousand emoji open at once. Headings span the row; a tap types its cell. */
-internal class EmojiGrid(context: Context, private val pick: (String) -> Unit) : View(context) {
+internal class EmojiGrid(
+    context: Context,
+    private val pick: (String) -> Unit,
+    /** A cell held: true when it opened something, so the release types nothing. */
+    private val hold: (String, android.graphics.RectF) -> Boolean = { _, _ -> false },
+    /** What a cell shows for its emoji (its chosen skin tone). */
+    private val label: (String) -> String = { it },
+) : View(context) {
     class Section(val heading: String?, val items: List<String>, val tab: Int)
     private val density = resources.displayMetrics.density
     private val rowHeight = 50.6f * density
@@ -312,7 +360,7 @@ internal class EmojiGrid(context: Context, private val pick: (String) -> Unit) :
                 val top = start + row * rowHeight
                 if (pressedSection == i && pressedIndex == index) canvas.drawRoundRect(cell * col + 2 * density, top + 2 * density,
                     cell * (col + 1) - 2 * density, top + rowHeight - 2 * density, 8 * density, 8 * density, pressPaint)
-                canvas.drawText(s.items[index], x, top + baseline, paint)
+                canvas.drawText(label(s.items[index]), x, top + baseline, paint)
             }
         }
     }
@@ -330,16 +378,32 @@ internal class EmojiGrid(context: Context, private val pick: (String) -> Unit) :
             }
         }
     }
-    private fun release() { pressedSection = -1; pressedIndex = -1 }
+    private fun release() { pressedSection = -1; pressedIndex = -1; removeCallbacks(holding) }
+    private var held = false
+    private val holding = Runnable {
+        if (pressedSection < 0) return@Runnable
+        val s = sections[pressedSection]
+        val cell = width / columns.toFloat()
+        val col = pressedIndex % columns
+        val top = tops[pressedSection] + headingOf(s) + (pressedIndex / columns) * rowHeight
+        if (hold(s.items[pressedIndex], android.graphics.RectF(cell * col, top, cell * (col + 1), top + rowHeight))) {
+            held = true
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            release(); invalidate()
+        }
+    }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { downX = e.x; downY = e.y; press(e.x, e.y); invalidate() }
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.x; downY = e.y; held = false; press(e.x, e.y); invalidate()
+                if (pressedSection >= 0) postDelayed(holding, ViewConfiguration.getLongPressTimeout().toLong())
+            }
             MotionEvent.ACTION_MOVE -> if (pressedSection >= 0 && (Math.abs(e.x - downX) > slop || Math.abs(e.y - downY) > slop)) {
                 release(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (pressedSection >= 0) {
+                if (pressedSection >= 0 && !held) {
                     pick(sections[pressedSection].items[pressedIndex])
                     performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
                 }

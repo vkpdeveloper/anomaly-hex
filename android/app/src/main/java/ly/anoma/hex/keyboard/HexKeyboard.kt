@@ -106,19 +106,27 @@ class HexKeyboard : InputMethodService() {
         }
     }
     // The emoji you pick for words, kept beside the emoji panel's recent ones, and each layout's emoji
-    // lists, read on first use (English's, and Hinglish's own with English's).
+    // words, read on first use. The strip offers its layout's lists (English's with slang, Hinglish's
+    // with slang and English's); search looks through every list and Unicode's names, the layout's first.
     private val emojiPrefs by lazy { getSharedPreferences("emoji", MODE_PRIVATE) }
     private val emojiPicks by lazy { EmojiWords.Picks.read(emojiPrefs.getString(EMOJI_PICKS, "").orEmpty()) }
+    internal val emojiRecent by lazy { EmojiRecent(emojiPrefs) }
+    internal val emojiTones by lazy { EmojiTones(emojiPrefs) }
     private val emojiLists = HashMap<String, EmojiWords>()
-    private fun emojiLists(language: String): EmojiWords? {
+    private val emojiFiles = HashMap<String, Map<String, List<String>>>()
+    private val emojiNames by lazy { EmojiWords.Named.parse(asset("typing/emoji.names")) }
+    private fun asset(name: String) = assets.open(name).bufferedReader().use { it.readText() }
+    private fun emojiFile(name: String) = emojiFiles.getOrPut(name) { EmojiWords.parse(asset("typing/$name.emoji")) }
+    private fun emojiLists(language: String): EmojiWords {
         emojiLists[language]?.let { return it }
-        val names = when (language) {
-            Spoken.English.code -> listOf("en")
-            Spoken.Hinglish.code -> listOf("hien", "en")
-            else -> return null
+        val strip = when (language) {
+            Spoken.English.code -> listOf("en", "slang")
+            Spoken.Hinglish.code -> listOf("hien", "slang", "en")
+            else -> emptyList()
         }
+        val searched = strip + listOf("en", "hien", "slang").filter { it !in strip }
         val paint = android.graphics.Paint()
-        return EmojiWords(names.map { EmojiWords.parse(assets.open("typing/$it.emoji").bufferedReader().use { r -> r.readText() }) },
+        return EmojiWords(strip.map(::emojiFile), emojiNames, searched.map(::emojiFile), suggests = strip.isNotEmpty(),
             shows = paint::hasGlyph).also { emojiLists[language] = it }
     }
     // The email addresses the strip offers: the phone's accounts, read once, and the signed-in accounts
@@ -237,6 +245,7 @@ class HexKeyboard : InputMethodService() {
             learned = learned, phrases = phrases, touch = touch, typos = typos, stats = stats, learnedChanged = ::learnedChanged, forgotten = forgotten, forgottenChanged = ::forgottenChanged,
             emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
             emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() },
+            emojiRecent = { emojiRecent.list() }, emojiUsed = { emojiRecent.add(it) }, emojiTone = { emojiTones.tone(it) },
             freeTimes = { before ->
                 if (!feedback.freeTimes || !FreeTimes.allowed(this)) emptyList()
                 else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {

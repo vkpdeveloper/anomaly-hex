@@ -15,7 +15,8 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     private val feedback = LetterFeedback(this)
     private val toolbar = Toolbar(context, ime, ::openMenu)
     private val keys = KeyPlaneView(context, ime, this, feedback)
-    private val emoji = EmojiPanel(context, ime, ::closeEmoji)
+    private val emoji = EmojiPanel(context, ime, ::closeEmoji, ::openSearch)
+    private val search = EmojiSearchBar(context, back = ::openEmoji, clear = { ime.engine.stopSearch(); ime.engine.startSearch() })
     private val clipboard = ClipboardPanel(context, ime, ::closeClipboard)
     private val menu = MenuPanel(context, ime, ::closeMenu, ::openClipboard)
     private var phase = DictationPhase.Idle
@@ -33,6 +34,8 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
             insets
         }
         setBackgroundColor(context.getColor(R.color.kb_background))
+        search.visibility = GONE
+        addView(search, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
         addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
         addView(keys, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         emoji.visibility = GONE
@@ -52,8 +55,14 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     override fun suggestions(slots: List<Suggestion>) = toolbar.suggestions(slots)
     override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
     override fun actions(list: List<StripAction>) = toolbar.actions(list)
+    override fun emojiRow(emoji: List<String>) = toolbar.found(emoji)
+    override fun emojiSearch(query: String?) {
+        toolbar.searching(query != null)
+        if (query == null) search.visibility = GONE else { search.visibility = VISIBLE; search.show(query) }
+    }
 
     fun openEmoji() {
+        ime.engine.stopSearch()
         keys.cancelGestures(); ime.engine.pause()
         toolbar.visibility = GONE; keys.visibility = GONE; emoji.visibility = VISIBLE
         setBackgroundColor(context.getColor(R.color.kb_emoji_background))
@@ -64,6 +73,13 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         emoji.visibility = GONE; toolbar.visibility = VISIBLE; keys.visibility = VISIBLE
         setBackgroundColor(context.getColor(R.color.kb_background))
         ime.engine.configureTyping(keepWord = true)
+    }
+    /** The emoji search, from the panel: the toolbar and keys come back under its bar, and the keys type into it. */
+    private fun openSearch() {
+        emoji.visibility = GONE; toolbar.visibility = VISIBLE; keys.visibility = VISIBLE
+        setBackgroundColor(context.getColor(R.color.kb_background))
+        ime.engine.configureTyping(keepWord = true)
+        ime.engine.startSearch()
     }
     /** The menu takes the toolbar's and the keys' place at their height, so the editor doesn't move. */
     private fun openMenu() {
@@ -92,7 +108,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     fun clipsChanged() { toolbar.update(); if (clipboard.visibility == VISIBLE) clipboard.show() }
     fun dictation(phase: DictationPhase) {
         cue(this.phase, phase); this.phase = phase
-        if (phase != DictationPhase.Idle) { closeEmoji(); closeMenu(); closeClipboard() }
+        if (phase != DictationPhase.Idle) { ime.engine.stopSearch(); closeEmoji(); closeMenu(); closeClipboard() }
         toolbar.dictation(phase)
     }
     /** A light tap as the microphone opens and a lighter tick as it closes, so someone using TalkBack,
@@ -114,6 +130,6 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     fun fixChanged() = toolbar.update()
     fun numberRowChanged() = keys.numberRowChanged()
     /** The keyboard came up in a field. */
-    fun shown() { closeEmoji(); closeMenu(); closeClipboard(); toolbar.update() }
+    fun shown() { ime.engine.stopSearch(); closeEmoji(); closeMenu(); closeClipboard(); toolbar.update() }
     fun cancelGestures() { toolbar.cancelGestures(); keys.cancelGestures() }
 }
