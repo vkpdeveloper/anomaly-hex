@@ -14,11 +14,11 @@ A transcript goes back to the field it was spoken in. If that field went away wh
 
 ## Typing assistance
 
-Every layout has a bundled, memory-mapped **HXTM v3** word and word-pair model. English and Spanish keep the original iOS Google Books files. German uses Google Books; Bokmål uses the National Library of Norway’s book counts filtered by Norsk ordbank. Hinglish is English’s model with Hindi written in Latin letters mixed in from the PHINC corpus, so “kya”, “nahi” and “yaar” tap and glide as English words do. Start typing to see ranked suggestions; tap one to insert it. A space brings up next-word predictions. Passwords, addresses and editors that disable suggestions use literal typing.
+Every layout has a bundled, memory-mapped **HXTM v3** word and word-pair model. English is the original iOS Google Books file plus chat words the books lack (“tbh”, “ngl”, “rizz”); Spanish keeps its iOS file. German uses Google Books; Bokmål uses the National Library of Norway’s book counts filtered by Norsk ordbank. Hinglish is English’s model with Hindi written in Latin letters mixed in from the PHINC corpus and chat words PHINC lacks (“bindaas”, “chapri”), so “kya”, “nahi” and “yaar” tap and glide as English words do. Start typing to see ranked suggestions; tap one to insert it. A space brings up next-word predictions. Passwords, addresses and editors that disable suggestions use literal typing.
 
 Spanish has a dedicated ñ and ¿/¡ on the second symbols page. German is QWERTZ with ü, ö and ä; hold s for ß. Bokmål has å, ø and æ. Hinglish uses English’s keys and spelling rules; no phone language picks it, so choose it in Keyboard layout.
 
-**Keyboard › Suggest swear words** is off by default on every layout. Slurs on the
+**Keyboard › Suggest swear words** is on by default on every layout; English and Hinglish models also know chat swears the books and PHINC lack (“stfu”, “bsdk”, “chutiya”). Slurs on the
 [curated list](app/src/main/assets/typing/never-suggest.tsv) are never offered, even when
 swear words are enabled. The filter applies to completions, next words, autocorrect and
 both halves of a missed-space correction. Typing a listed word in full keeps your exact

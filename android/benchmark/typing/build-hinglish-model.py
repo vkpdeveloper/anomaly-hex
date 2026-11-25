@@ -18,7 +18,9 @@ likely as people write it. Left out: handles, hashtags and links, stretched spel
 a capital at least NAME_SHARE of the time inside a sentence, seen there MIN_SEEN times, goes in
 the capitals list instead, as English's names outside its model do, unless never-suggest.tsv lists
 it for English or Hinglish (then it stays a word, never capitalised). Capitals are read only from
-posts that write mostly in lowercase, since many are all lowercase, title case or capitals.
+posts that write mostly in lowercase, since many are all lowercase, title case or capitals. Then
+chat-words.tsv's Hinglish words that are still missing ("bindaas", "chapri"), each at the cost
+add-chat-words.py gives its kind; English's chat words come with en.hextm.
 
 Probabilities mix the two: P(w) = H P_h(w) + (1 - H) P_e(w), with P_h from the corpus's counts
 and P_e from en.hextm's costs. A pair's P(b | a) mixes each side's estimate, its stored pair or
@@ -215,6 +217,10 @@ def main(assets, work):
         return counts[w] / total
 
     probability = {w: H * p_h(w) + (1 - H) * english.get(w, 0.0) for w in vocab}
+    # Hinglish chat words PHINC lacks ("bindaas", "chapri"), each at its kind's cost (add-chat-words.py).
+    chat = {w: p for w, p in importlib.import_module("add-chat-words").probabilities(LANGUAGE, assets).items() if w not in vocab}
+    vocab |= set(chat)
+    probability.update(chat)
     scalars, code, enc, words = lexicon(vocab)
     index = {w: i for i, w in enumerate(words)}
     kept = []

@@ -45,6 +45,7 @@ pairs (no text is kept), mixed them half and half with the English model's proba
 selected informative pairs and quantized probabilities into HXTM v3. The Hinglish capitalization
 list (hien.capitals) is the English list without Hindi words English writes as names, plus the
 names PHINC's posts nearly always write with a capital.
+The English and Hinglish chat words (abbreviations such as "tbh" and "nhi") are Hex's own list.
 
 Norwegian Bokmål keyboard language model: N-grammer fra Nasjonalbiblioteket 2026,
 National Library of Norway (Nasjonalbiblioteket). Book unigrams and bigrams ("digibok"),

@@ -16,8 +16,9 @@ internal class TypingPreferences(context: Context) {
     var autoCapitalize: Boolean
         get() = prefs.getBoolean("autoCapitalize", false)
         set(value) { prefs.edit().putBoolean("autoCapitalize", value).apply() }
+    /** On by default: swears are suggested like other words. Slurs never are. */
     var suggestSwearWords: Boolean
-        get() = prefs.getBoolean(SUGGEST_SWEAR_WORDS, false)
+        get() = prefs.getBoolean(SUGGEST_SWEAR_WORDS, true)
         set(value) { prefs.edit().putBoolean(SUGGEST_SWEAR_WORDS, value).apply() }
     var spatial: Boolean
         get() = prefs.getBoolean("spatial", true)
