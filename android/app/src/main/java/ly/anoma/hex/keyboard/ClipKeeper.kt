@@ -54,6 +54,7 @@ internal class ClipKeeper(
         private const val PINNED = "pinned.txt"
         /** Copies of photos made for an editor, in the cache, kept a day for an app that reads them late. */
         private const val PHOTOS = "photos"
+        private const val FAVICONS = "favicons"
         private const val PHOTO_KEEP_MS = 24 * 60 * 60_000L
         /** A larger image is neither kept nor inserted. */
         private const val MAX_IMAGE_BYTES = 16L shl 20
@@ -111,7 +112,7 @@ internal class ClipKeeper(
     private var copyAt = 0L
     private val usedPhotos = HashSet<Long>()
     /** Site icons for copied links, shown on the chip and in the panel. */
-    val favicons = Favicons()
+    val favicons = Favicons(File(ime.cacheDir, FAVICONS))
     /** Codes from texts, for the chip. */
     private val codes = TextedCodes(ime, changed)
     /** What [ClipPieces] found in each text clip the panel showed, by clip id; looked for once. */

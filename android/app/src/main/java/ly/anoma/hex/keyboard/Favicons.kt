@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
@@ -14,9 +15,10 @@ import java.util.concurrent.Executors
 
 /** The small icon of a copied link's site, for the strip's chip. It comes from the site itself (its
  * `/favicon.ico`, else the icon its home page names), over HTTPS, never through a third party, and only
- * once the chip shows. Icons are kept in memory while the keyboard runs; a site without one isn't
- * asked again until then. */
-internal class Favicons {
+ * once the chip shows. Each icon is kept in memory while the keyboard runs and in [dir] (the app's
+ * cache, which Android may clear) for [FRESH_MS], so a site is asked once a month at most. A site
+ * without one isn't asked again until the keyboard restarts. */
+internal class Favicons(private val dir: File) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "hex-favicons").apply { isDaemon = true } }
     private val icons = LruCache<String, Bitmap>(64)
@@ -28,8 +30,30 @@ internal class Favicons {
         icons.get(host)?.let { show(it); return }
         if (host in missing) return
         worker.execute {
-            val icon = runCatching { image(URL("https://$host/favicon.ico")) ?: pageIcon(host)?.let(::image) }.getOrNull()
+            val icon = saved(host) ?: runCatching { image(URL("https://$host/favicon.ico")) ?: pageIcon(host)?.let(::image) }
+                .getOrNull()?.also { save(host, it) }
             main.post { if (icon != null) { icons.put(host, icon); show(icon) } else missing += host }
+        }
+    }
+
+    /** A host as a file name; null for one that isn't plain letters, digits, dots and hyphens. */
+    private fun file(host: String) = if (SAFE_HOST.matches(host)) File(dir, "$host.png") else null
+
+    private fun saved(host: String): Bitmap? {
+        val file = file(host)?.takeIf { System.currentTimeMillis() - it.lastModified() < FRESH_MS } ?: return null
+        return BitmapFactory.decodeFile(file.path)
+    }
+
+    /** Writes [icon] whole or not at all, then drops the oldest icons past [MAX_SAVED]. */
+    private fun save(host: String, icon: Bitmap) {
+        val file = file(host) ?: return
+        runCatching {
+            dir.mkdirs()
+            val part = File(dir, "${file.name}.part")
+            part.outputStream().use { icon.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            if (!part.renameTo(file)) part.delete()
+            dir.listFiles { f -> f.name.endsWith(".png") }?.sortedByDescending { it.lastModified() }
+                ?.drop(MAX_SAVED)?.forEach { it.delete() }
         }
     }
 
@@ -85,6 +109,9 @@ internal class Favicons {
         const val MAX_PAGE = 128 * 1024
         /** Decoded no smaller than this, a few times the chip's 16 dp icon. */
         const val ICON_PX = 64
+        const val FRESH_MS = 30L * 24 * 60 * 60 * 1000
+        const val MAX_SAVED = 200
+        val SAFE_HOST = Regex("[a-z0-9.-]{1,200}")
         val LINK_TAG = Regex("<link\\b[^>]*>", RegexOption.IGNORE_CASE)
         val ICON_REL = Regex("rel\\s*=\\s*[\"']?[^\"'>]*\\bicon\\b", RegexOption.IGNORE_CASE)
         val HREF = Regex("href\\s*=\\s*([\"'])(.*?)\\1", RegexOption.IGNORE_CASE)
