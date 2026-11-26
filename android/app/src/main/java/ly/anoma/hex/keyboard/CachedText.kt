@@ -110,7 +110,28 @@ internal class CachedText(
 
     override fun beginBatch() = field.beginBatch()
     override fun endBatch() = field.endBatch()
-    override fun setSelection(start: Int, end: Int) = field.setSelection(start, end).also { lose() }
+    // A cursor put somewhere in the text the copy holds (each step of a slide on space) moves the copy
+    // with it: read from the editor, every step waited 17 ms for Messages on the emulator.
+    override fun setSelection(start: Int, end: Int): Boolean {
+        val ok = field.setSelection(start, end)
+        if (!ok || start != end || !fresh() || !moveCopy(start)) lose()
+        return ok
+    }
+    private fun moveCopy(to: Int): Boolean {
+        val b = before ?: return false
+        val a = after ?: return false
+        val by = to - caret
+        when {
+            by == 0 -> return true
+            by < 0 && -by <= b.length -> { before = b.dropLast(-by); after = b.takeLast(-by) + a }
+            by > 0 && by <= a.length -> { before = b + a.take(by); after = a.drop(by) }
+            else -> return false
+        }
+        before?.let { if (it.length > KEEP) { before = it.takeLast(KEEP); beforeAll = false } }
+        after?.let { if (it.length > KEEP) { after = it.take(KEEP); afterAll = false } }
+        moved(to)
+        return true
+    }
     override fun performEditorAction(id: Int) = field.performEditorAction(id).also { lose() }
     override fun defaultEditorAction() = field.defaultEditorAction().also { lose() }
     override fun sendKey(code: Int) { field.sendKey(code); lose() }

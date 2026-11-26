@@ -36,6 +36,22 @@ class CachedTextTest {
         assertEquals(2, t.editor.reads)
     }
 
+    @Test fun aSlideOnSpaceMovesTheCopy() {
+        val t = Setup("one two three")
+        t.text.started(4, 4, "one ", "two three"); t.editor.caret = 4
+        t.text.setSelection(6, 6); t.text.setSelection(7, 7)
+        assertEquals("one two", t.text.before(96)); assertEquals(" three", t.text.after(96))
+        t.report() // The editor reports only where the slide ended.
+        t.text.setSelection(2, 2); t.report()
+        assertEquals("on", t.text.before(96)); assertEquals("e two three", t.text.after(96))
+        assertEquals(0, t.editor.reads)
+        // Past what the copy holds, or a selection, it asks the editor again.
+        t.text.setSelection(0, 3)
+        t.editor.caret = 3; t.text.selectionChanged(3, 3)
+        assertEquals("one", t.text.before(96))
+        assertEquals(1, t.editor.reads)
+    }
+
     @Test fun anEditTheEditorNeverReportsReadsItAgain() {
         val t = Setup("abc")
         t.editor.refuse = true
