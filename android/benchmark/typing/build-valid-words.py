@@ -9,7 +9,8 @@ round(8 ln(corpus / count)), as the model stores its words', so a rare word cost
     python3 build-valid-words.py {es|de|fr|it} MODEL.hextm WORKDIR OUTPUT.valid [MIN_COUNT]
     python3 build-valid-words.py nb MODEL.hextm WORKDIR OUTPUT.valid [MIN_COUNT]
 
-English: SCOWL spellings, sizes through 70. Spanish, German, French and Italian: Google Books Ngram
+English: SCOWL spellings, sizes through 70, and through size 40 its accented ones without their accents
+("cafe"), unless one letter short of a common word ("nee"). Spanish, German, French and Italian: Google Books Ngram
 v3 1-grams (2020-02-17, CC BY 3.0), 1980-2019, as build-capitals.py counts them into
 WORKDIR/counts.tsv: every spelling of two letters or more the books use at least MIN_COUNT times,
 in lowercase or with a capital. Left out: two model words run together whose pair is ten times as
@@ -27,6 +28,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 capitals = importlib.import_module("build-capitals")
 
 SCOWL_SHA256 = "5587667caa20c4891390c2d42dbb4d5c4c3f41bee77af1457ece3ba23fb859cc"
+# The largest SCOWL size whose accented words are also kept without their accents, as people type them
+# ("café" as "cafe"). Past it most are rare and one slip from a common word ("pere", "ole").
+SCOWL_FOLDED = 40
+# A plain spelling one letter short of a model word at most this costly (in nats) is left out: "nee"
+# would stand for "need", "passe" for "passed", and missing the last letter is a common slip.
+FOLDED_SHORT_OF = 12
 # The fewest uses that make a spelling a word, chosen per language on the typing benchmark
 # against both the rare words it keeps and the typos it lets stand (README.md).
 MIN_COUNT = {"es": 3000, "de": 10000, "fr": 3000, "it": 3000, "nb": 1000}
@@ -55,13 +62,18 @@ def cost(count, corpus):
 
 def english(source, model, output):
     assert hashlib.sha256(Path(source).read_bytes()).hexdigest() == SCOWL_SHA256
-    scored = set(capitals.model_words(model)[0])
+    unigram = capitals.model_words(model)[0]
+    scored = set(unigram)
     valid = set()
     with tarfile.open(source) as archive:
         for entry in archive:
             m = re.fullmatch(r".*/final/(english|british|american)-(words|contractions|proper-names|upper|abbreviations)\.(\d+)", entry.name)
             if m and int(m[3]) <= 70:
                 for w in archive.extractfile(entry).read().decode("latin-1").lower().split():
+                    if int(m[3]) <= SCOWL_FOLDED and folded(w) != w:
+                        w = folded(w)
+                        if any(unigram.get(w + c, math.inf) <= FOLDED_SHORT_OF for c in "abcdefghijklmnopqrstuvwxyz"):
+                            continue
                     if re.fullmatch("[a-z]{2,32}", w) and w not in scored:
                         valid.add(w)
     write(output, valid)
