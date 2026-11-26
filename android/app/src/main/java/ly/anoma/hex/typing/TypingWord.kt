@@ -21,6 +21,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         private set
     private var previous = -1
     private var literalOnly = false
+    // A word put back whole ([restored]): it stands as it is until a letter is typed onto it.
+    private var restoredWord = false
     private val taps = ArrayList<SpatialDecoder.Tap>()
     // Where each of the word's letters was tapped, in the grid they were scored on, for [TouchOffsets].
     private val touches = ArrayList<KeyPoint>()
@@ -59,19 +61,27 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     var phrases: LearnedPhrases? = null
     /** The next-word model ([NextWords]), for English and Hinglish; none, the word pairs and lists alone. */
     var next: NextWords? = null
+    /** Whether the last [strip] or [predictions] went without the next-word model's words because they
+     * were still being worked out; [NextWords.ready] follows once they are in. */
+    var awaitingModel = false
+        private set
     // The model's words after `before` that start with `prefix` and this layout knows and may suggest after
     // `previous`; none while they are worked out.
-    private fun modelWords(before: String, prefix: String, previous: Int): List<String> =
-        next?.words(NextWords.context(before), prefix)?.filter {
-            model.index(it) >= 0 && !model.neverSuggest.blocks(it, suggestSwearWords, previous)
+    // A letter alone only when it is a word: the model reads "e.g." and "Dr." as words and guesses letters after them ("G").
+    private fun modelWords(before: String, prefix: String, previous: Int): List<String> {
+        val words = next?.words(NextWords.context(before), prefix)
+        if (next != null && words == null) awaitingModel = true
+        return words?.filter {
+            (it.length > 1 || it in oneLetterWords) && model.index(it) >= 0 && !model.neverSuggest.blocks(it, suggestSwearWords, previous)
         }.orEmpty()
+    }
     /** Starts a word after `before`. The word a space just finished stays revisable only when
      * `before` is still the text it left; an empty `before` keeps it for the next call. */
     fun reset(before: String = "") {
         val grid = touchGrid
         touched = if (grid != null && token.isNotEmpty() && !literalOnly && touches.size == token.length) Touched(token, ArrayList(touches), grid) else null
         ended = token.takeIf { it.isNotEmpty() && !literalOnly }?.lowercase()
-        token = ""; taps.clear(); touches.clear(); decision = null; literalOnly = false
+        token = ""; taps.clear(); touches.clear(); decision = null; literalOnly = false; restoredWord = false
         this.before = before
         previousText = previousWord(before).takeIf { it.isNotEmpty() }
         previous = model.context(previousText.orEmpty())
@@ -82,7 +92,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         finished = pending?.takeIf { sameText(before, it.anchor) }
         pending = null
     }
-    fun restored(text: String, before: String) { reset(before); explicit(text) } // No taps: space keeps the undone spelling.
+    /** A word put back whole, by delete reaching it or undoing its autocorrection: with no taps, space keeps it
+     * as it stands. A letter typed onto it makes it a word being typed again ([retap]). */
+    fun restored(text: String, before: String) { reset(before); explicit(text); restoredWord = true }
     /** A word already in the text, read for the strip: unlike [restored] it may be fixed, by its letters alone,
      * read as each key tapped at its centre, so a slip or swapped letters still find the word ("wrods" ->
      * "words"). A letter off the QWERTY keys (ø) leaves it untapped: fixed by the tables alone. */
@@ -97,15 +109,17 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * the likeliest next words from the word pairs with the language's commonest words filling the
      * rest; nothing after a handle, path, number or a second space, or before a space is typed. With the
      * next-word model ([next]), its words for the text before come first in each case (after the words
-     * you write after that word, after a word).
+     * you write after that word, after a word; after an emoji, the commonest words).
      * `before` is the text before the cursor; a bare word counts as one just finished. Capitalised
      * as shift would be, by default at a sentence's start. */
     fun predictions(before: String, capitalize: Boolean? = null): List<String> {
+        awaitingModel = false
         val text = if (before.lastOrNull()?.let { it.isLetter() || it == '\'' } == true) "$before " else before
         val words = when {
             startsSentence(text) -> modelWords(text, "", -1) + sentenceStarters[model.language].orEmpty()
             !text.last().isWhitespace() -> return emptyList()
             text.dropLast(1).lastOrNull()?.let { it in midSentenceMarks } == true -> modelWords(text, "", -1) + clauseStarters[model.language].orEmpty()
+            EmojiWords.endsWithEmoji(text.dropLast(1)) -> modelWords(text, "", -1) + commonWords[model.language].orEmpty()
             else -> {
                 val finished = currentToken(text.dropLast(1)) ?: return emptyList()
                 val previous = finished.lowercase()
@@ -175,6 +189,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * letters the word is usually unfinished: completions first). Each in the spelling you write.
      * Never what was typed again. [autocorrect] off: no fix and no readings, completions only. */
     fun strip(autocorrect: Boolean = true): List<Suggestion> {
+        awaitingModel = false
         if (token.length !in 1..MAX_LENGTH) return emptyList()
         val typed = Suggestion(token, Suggestion.Kind.Typed)
         val shortcut = decoder.personal?.shortcut(token)
@@ -236,6 +251,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // A candidate cased as the word was typed, with the capital the strip shows for names.
     private fun shown(word: String) = matchCase(token, if (token.firstOrNull()?.isUpperCase() == true) word else displayed(word))
     fun letter(text: String, x: Double, y: Double, grid: KeyGrid) {
+        if (restoredWord) retap()
         token += text; decision = null
         if (spatial && !literalOnly && taps.size < MAX_LENGTH) {
             taps.add(decoder.score(grid, x, y)); touches.add(KeyPoint(x, y)); touchGrid = grid
@@ -250,7 +266,16 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         taps.add(decoder.apostropheTap()); touches.add(KeyPoint(0.0, 0.0))
     }
     fun explicit(text: String) {
-        token += text; taps.clear(); touches.clear(); decision = null; literalOnly = true
+        token += text; taps.clear(); touches.clear(); decision = null; literalOnly = true; restoredWord = false
+    }
+    // The restored word's letters read as tapped at their keys' centres, as [reread] reads them, so the word
+    // you go on typing can be fixed; their touches stay unknown, so [TouchOffsets] learns nothing from them.
+    private fun retap() {
+        restoredWord = false
+        if (!spatial || token.length >= MAX_LENGTH) return
+        val centres = token.map { QWERTY.centres[it.lowercaseChar()] ?: QWERTY.centres[base(it)] ?: return }
+        literalOnly = false; taps.clear(); touches.clear()
+        for (p in centres) taps.add(decoder.score(QWERTY, p.x, p.y))
     }
     fun pop() {
         if (token.isEmpty()) return
@@ -332,11 +357,15 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         return codes.also { lastKeyed = Keyed(chars, it) }
     }
 
-    /** Whether a letter typed after `before` starts a word the keyboard should read: after a space or
-     * an opening mark (`boundary`), and in French and Italian also right after an elided article
-     * or pronoun ("l'", "qu'", "dell'"), so "l'hpmme" is read as "homme" after "l'". */
+    /** Whether a letter typed after `before` starts a word the keyboard should read: after a space,
+     * an opening mark (`boundary`) or an emoji, a straight quote that opens a quotation ("'teh"), the hyphen inside
+     * a word ("well-kn", as [currentToken] reads it), and in French and Italian also right after an
+     * elided article or pronoun ("l'", "qu'", "dell'"), so "l'hpmme" is read as "homme" after "l'". */
     fun startsWord(before: String): Boolean {
-        if (boundary(before.lastOrNull())) return true
+        if (boundary(before.lastOrNull()) || EmojiWords.endsWithEmoji(before)) return true
+        // A straight quote is an apostrophe after a letter ("don'"), an opening quote after a space or mark.
+        if (before.lastOrNull() == '\'' && boundary(before.dropLast(1).lastOrNull())) return true
+        if (before.lastOrNull() == '-' && currentToken(before.dropLast(1)) != null) return true
         val elisions = ELISIONS[model.language] ?: return false
         if (before.lastOrNull() != '\'' && before.lastOrNull() != '\u2019') return false
         val prefix = before.dropLast(1).takeLastWhile { it.isLetter() }.lowercase()
@@ -367,6 +396,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         // Your own word: never corrected into another, and spelled your way ("github" -> "GitHub").
         personal?.index(token)?.takeIf { it >= 0 }?.let { return yours(personal.text(it)).takeIf { s -> s != token } }
         if (literalOnly || blocked(token)) return null
+        // A short part after a hyphen is seldom a slip: "hi-fi", "anti-vax" and "bf-gf" stay ("hi-if" otherwise).
+        if (before.lastOrNull() == '-' && token.length < HYPHEN_PART_FIXED) return null
         val lower = token.lowercase()
         val allCaps = token.length >= 2 && token.all { it.isUpperCase() }
         if (token.drop(1).any { it.isUpperCase() } && !allCaps) return null
@@ -415,8 +446,9 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * the word before revised now that this one follows ("well see" -> "we'll see"), or both words
      * joined when the space between them was tapped for a letter ("deli ate" -> "delicate"). Null
      * leaves the text as typed. [space] is where the space bar was tapped, in [grid]'s coordinates.
-     * Call it once per space or mark, then `reset` with the text after it. */
-    fun finish(ending: Char = ' ', space: KeyPoint? = null, grid: KeyGrid? = null): Correction? {
+     * A correction [undone] says was undone before is passed over for the next one down, down to the
+     * word's own fix. Call it once per space or mark, then `reset` with the text after it. */
+    fun finish(ending: Char = ' ', space: KeyPoint? = null, grid: KeyGrid? = null, undone: (Correction) -> Boolean = { false }): Correction? {
         val word = finished
         finished = null; pending = null
         if (token.isEmpty() || (ending == '.' && token.lowercase() in abbreviations)) return null
@@ -426,15 +458,16 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
             val prev = previousWord(before.dropLast(word.text.length + 1)).takeIf { it.isNotEmpty() }
             decoder.merge(word.typed.lowercase(), word.taps, word.space, word.reach, token.lowercase(), taps,
                 model.context(prev.orEmpty()), knows(word.typed), knows(token), suggestSwearWords)?.let { merged ->
-                result = Correction(word.text + " " + token, matchCase(word.typed, merged))
+                result = Correction(word.text + " " + token, matchCase(word.typed, merged)).takeUnless(undone)
             }
         }
         if (result == null) {
             val fix = replacement()
             val now = fix ?: token
             val revised = if (word != null && '\'' !in word.typed) revision(word.text, now) else null
-            if (fix != null || revised != null)
-                result = Correction((if (revised != null) word!!.text + " " else "") + token, (revised?.let { "$it " } ?: "") + now)
+            if (revised != null) result = Correction(word!!.text + " " + token, "$revised $now").takeUnless(undone)
+            // The word before's revision undone, this word's own fix (the strip's) still goes in.
+            if (result == null && fix != null) result = Correction(token, fix).takeUnless(undone)
         }
         if (ending == ' ') remember(result, space, grid)
         return result
@@ -484,6 +517,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     }
     companion object {
         const val MAX_LENGTH = 32
+        /** The fewest letters a part after a hyphen needs before space corrects it ("well-knwn"). */
+        private const val HYPHEN_PART_FIXED = 4
         private const val FIELD_COMPLETES = 2
         /** The longest phrase the strip's wide slot shows without cutting it. */
         const val MAX_PHRASE_CHARS = 24
@@ -515,6 +550,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
             "nb" to listOf("og", "i", "det", "er", "på", "som"), "fr" to listOf("de", "la", "et", "le", "je", "à"),
             "it" to listOf("di", "e", "che", "la", "il", "a"), "hien" to listOf("hai", "to", "ke", "the", "nahi", "and"))
         private val midSentenceMarks = ",;:)\"'\u201D\u2019\u2014"
+        // The next-word model's languages (English, Hinglish) write these letters alone as words.
+        private val oneLetterWords = setOf("a", "i")
         /** The word right before the cursor, or null inside a handle, path, address or number. */
         fun currentToken(before: CharSequence): String? {
             var start = before.length
@@ -523,7 +560,13 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
                 if (c.isLetter() || (c == '\'' && start < before.length && start >= 2 && before[start - 2].isLetter())) start-- else break
             }
             if (start == before.length) return null
-            if (start > 0 && before[start - 1].let { it in "@/.#_-:" || it.isDigit() }) return null
+            // A hyphenated word's last part is a word of its own ("well-kn"), when the whole starts where a word does.
+            var head = start
+            while (head >= 2 && before[head - 1] == '-' && before[head - 2].isLetter()) {
+                head--
+                while (head > 0 && before[head - 1].isLetter()) head--
+            }
+            if (head > 0 && before[head - 1].let { it in "@/.#_-:" || it.isDigit() }) return null
             return before.substring(start).takeIf { it.first().isLetter() }
         }
         /** Marks that close a word and correct it as space does. */

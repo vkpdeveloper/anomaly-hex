@@ -12,7 +12,7 @@ internal class NextWords(private val load: () -> NextWordModel, private val work
     /** Called on the worker once an answer [words] didn't have is ready. */
     @Volatile var ready: () -> Unit = {}
     private var model: NextWordModel? = null
-    private var broken = false
+    @Volatile private var broken = false
     private data class Key(val context: List<String>, val prefix: String)
     private val answers = object : LinkedHashMap<Key, List<String>>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<Key, List<String>>?) = size > 64
@@ -20,8 +20,10 @@ internal class NextWords(private val load: () -> NextWordModel, private val work
     @Volatile private var wanted: Key? = null
 
     /** The likeliest words after [context] ([context]'s words) that start with [prefix], likeliest first,
-     * or null while they are being worked out. Lowercase, and not yet filtered for the layout. */
+     * or null while they are being worked out; none once the model couldn't be read. Lowercase, and not
+     * yet filtered for the layout. */
     fun words(context: List<String>, prefix: String): List<String>? {
+        if (broken) return emptyList()
         val key = Key(context, prefix)
         synchronized(answers) { answers[key]?.let { return it } }
         if (wanted != key) {
@@ -29,7 +31,7 @@ internal class NextWords(private val load: () -> NextWordModel, private val work
             worker.execute { answer(key) }
         }
         // A worker that runs the task at once (tests, the bench) has the answer now.
-        return synchronized(answers) { answers[key] }
+        return if (broken) emptyList() else synchronized(answers) { answers[key] }
     }
 
     private fun answer(key: Key) {

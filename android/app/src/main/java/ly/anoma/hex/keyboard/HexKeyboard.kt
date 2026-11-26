@@ -253,7 +253,7 @@ class HexKeyboard : InputMethodService() {
                     FreeTimes.busy(contentResolver, it)
                 }
             }, corrected = ::correctionFound, background = words, nextWords = nextWords, deferStrip = true,
-            fixFinder = ::findFixes, fixOn = { fixShown })
+            fixFinder = ::findFixes, fixOn = { fixShown }, typingLog = typingLog)
     }
     internal val dictation by lazy {
         Dictation(this,
@@ -300,6 +300,16 @@ class HexKeyboard : InputMethodService() {
     // The fix button: its checker ([TinyfixFiles.withFixer], shared with the spell checker) is read from
     // the downloaded files on first use, on its own thread, and dropped when the button goes off.
     private val fixWork = Executors.newSingleThreadExecutor { Thread(it, "Hex fix") }
+    // Keep a typing log: written to Download/Hex on its own thread whenever the keyboard goes away.
+    private val logWork = Executors.newSingleThreadExecutor { Thread(it, "Hex typing log") }
+    private val typingLog by lazy {
+        TypingLog({ feedback.typingLog }, { lines ->
+            logWork.execute {
+                try { TypingLog.append(contentResolver, lines) }
+                catch (e: Exception) { android.util.Log.w("Hex", "typing log not written", e) }
+            }
+        })
+    }
     // Hinglish's Hindi words, those its typing model has and English's lacks: tinyfix knows only English
     // and would "fix" them ("nahi" into "nazi"). Read on first use, on fixWork.
     private val hindiWords: (String) -> Boolean by lazy {
@@ -439,7 +449,7 @@ class HexKeyboard : InputMethodService() {
         }
         view?.note(getString(R.string.keyboard_dictation_copied))
     }
-    private fun leaveEditor() { view?.cancelGestures(); engine.leave(); dictation.leave() }
+    private fun leaveEditor() { view?.cancelGestures(); engine.leave(); dictation.leave(); typingLog.flush() }
     override fun onFinishInputView(finishingInput: Boolean) { leaveEditor(); super.onFinishInputView(finishingInput) }
     override fun onFinishInput() { leaveEditor(); super.onFinishInput() }
     override fun onWindowHidden() { leaveEditor(); super.onWindowHidden() }
@@ -454,6 +464,9 @@ class HexKeyboard : InputMethodService() {
         if (learnedLoaded) saveWords()
         words.shutdown(); nextWork.shutdown(); fixWork.shutdown()
         view?.cancelGestures(); view = null; engine.surface = null; dictation.close(); super.onDestroy()
+        // super.onDestroy finishes the input, which logs the keyboard leaving and flushes the log, so its
+        // thread stops only after that.
+        typingLog.flush(); logWork.shutdown()
     }
     private companion object {
         const val SAVE_DELAY_MS = 3_000L

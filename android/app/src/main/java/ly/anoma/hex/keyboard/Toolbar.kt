@@ -324,23 +324,14 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         return true
     }
 
-    /** The typing model's slots in its order. With what was typed among them they show as given: typed
-     * on the left, then the fix or the likeliest word in the middle. Without it, the likeliest word takes
-     * the middle and the next the left, as Gboard places them. With emoji, two words come first, in
-     * the order given, and up to two emoji after them in the third word's place. */
+    /** The typing model's slots, placed as [StripSlots.place] places them. */
     fun suggestions(list: List<Suggestion>) {
         val shown = offered
-        shown.fill(null)
+        StripSlots.place(list).copyInto(shown)
         val emoji = list.filter { it.kind == Suggestion.Kind.Emoji }.take(2)
         val words = list.filter { it.kind != Suggestion.Kind.Emoji }
         // A phrase takes the middle slot at twice its width, the third slot's room, so it is shown whole.
         val phrase = words.firstOrNull { it.kind == Suggestion.Kind.Phrase }
-        if (phrase != null) {
-            shown[1] = phrase; shown[0] = words.firstOrNull { it !== phrase }
-        } else if (emoji.isNotEmpty() || words.any { it.kind == Suggestion.Kind.Typed }) {
-            words.take(if (emoji.isEmpty()) 3 else 2).forEachIndexed { i, slot -> shown[i] = slot }
-        } else { shown[1] = words.getOrNull(0); shown[0] = words.getOrNull(1); shown[2] = words.getOrNull(2) }
-        emoji.forEachIndexed { i, slot -> shown[3 + i] = slot }
         forgetting = -1
         guessing = words.all { it.kind == Suggestion.Kind.Next || it.kind == Suggestion.Kind.Phrase }
         typingWord = wordInProgress(words)

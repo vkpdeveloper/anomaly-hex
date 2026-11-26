@@ -3,6 +3,7 @@ package ly.anoma.hex.typing
 import java.io.File
 import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,6 +55,24 @@ class NextWordsTest {
         val after = typing.predictions("thanks for the ")
         assertEquals(listOf("advice", "recommendation", "tip"), after)
         assertTrue(before != after)
+    }
+
+    // A strip worked out before the model answered says so, so the keyboard can wait a moment for its
+    // words; a word too long to ask the model, or a model that can't be read, never keeps it waiting.
+    @Test fun aStripKnowsWhenTheModelsWordsAreStillComing() {
+        val queued = ArrayList<Runnable>()
+        val typing = writing(english, NextWords({ neural }, Executor { queued.add(it) }))
+        typing.predictions("thanks for the ")
+        assertTrue(typing.awaitingModel)
+        queued.removeAt(0).run()
+        typing.predictions("thanks for the ")
+        assertFalse(typing.awaitingModel)
+        typing.typed("thanks for the ", "advi").strip()
+        assertFalse(typing.awaitingModel)
+        val broken = writing(english, NextWords({ throw java.io.IOException("unreadable") }, Executor { it.run() }))
+        broken.predictions("thanks for the ")
+        assertFalse(broken.awaitingModel)
+        assertTrue(broken.predictions("thanks for the ").isNotEmpty())
     }
 
     // Only the newest question is worked out: the older one waiting behind it is dropped.

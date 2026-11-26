@@ -3055,7 +3055,8 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   (SpokenSendTest; unit tests only, no device run)
 ├── Two-finger swipe left / right on the keys -> undo / redo a word, a run of deletes, or one
 │   larger edit, kept by Hex in any field; none in password fields; sending forgets them
-│   (UndoTest; seen on a Pixel emulator)
+│   (UndoTest; seen on a Pixel emulator). An undone word's count is taken back with it,
+│   and a redo counts it again (LearningUndoReturnTest; unit tests only, no device run)
 ├── A selection -> Cut and Copy on the strip; shift held while sliding on space
 │   selects (SelectionTest; Cut seen on a Pixel emulator, the shift slide unit-tested only)
 ├── A sum before the caret (45*12) -> its answer as a chip that replaces it; an amount and a

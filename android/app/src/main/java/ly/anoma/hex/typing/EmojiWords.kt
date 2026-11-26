@@ -249,6 +249,17 @@ internal class EmojiWords(
             return word.lowercase()
         }
 
+        /** Whether [text] ends in an emoji ("😀", "👍🏽", "❤️", "1️⃣", a flag), which ends a word as a space
+         * does and can start the next one right after it. */
+        fun endsWithEmoji(text: String): Boolean {
+            if (text.isEmpty()) return false
+            val cp = text.codePointBefore(text.length)
+            // The emoji style selector, a keycap, a flag's closing tag, the emoji planes, and the older
+            // symbols the emoji panel has (☕ ⚡ ✅ ⭐), which have no selector after them.
+            return cp == 0xFE0F || cp == 0x20E3 || cp == 0xE007F || cp in 0x1F000..0x1FAFF ||
+                cp in 0x2300..0x2BFF && Character.getType(cp) == Character.OTHER_SYMBOL.toInt()
+        }
+
         /** The search typed after a colon right before the cursor (":fire", ":red_heart"), as Slack and
          * Discord read one: the colon starts the text or follows a space, and two letters or more follow
          * it, so ":)", ":p", "10:30" and "https:" stay as they are. Null when there's none. */

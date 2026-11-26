@@ -33,14 +33,33 @@ class EmojiSuggestionsTest {
         assertTrue(k.emoji.isEmpty())
     }
 
-    @Test fun aPickEndsTheWordThenTypesTheEmojiAndItsSpaceWaits() {
+    @Test fun aPickTakesThePlaceOfTheWordBeingTypedAndItsSpaceWaits() {
         val k = Keyboard()
-        k.tap("pizza")
-        k.engine.pickEmoji("🍕")
-        assertEquals("pizza 🍕", k.field.text)
+        k.chars("so ")
+        k.tap("fire")
+        assertTrue(k.emoji.toString(), "🔥" in k.emoji)
+        k.engine.pickEmoji("🔥")
+        assertEquals("so 🔥", k.field.text)
         // A comma goes against the emoji, as after a picked word.
         k.chars(",")
-        assertEquals("pizza 🍕,", k.field.text)
+        assertEquals("so 🔥,", k.field.text)
+    }
+
+    @Test fun aPickTakesThePlaceOfAPickedWordWhoseSpaceWaits() {
+        val k = Keyboard()
+        k.tap("piz")
+        k.engine.pickSuggestion("pizza")
+        assertEquals("pizza", k.field.text)
+        assertEquals("🍕", k.emoji.first())
+        k.engine.pickEmoji("🍕")
+        assertEquals("🍕", k.field.text)
+    }
+
+    @Test fun afterASpaceAPickGoesAfterTheWord() {
+        val k = Keyboard()
+        k.chars("pizza ")
+        k.engine.pickEmoji("🍕")
+        assertEquals("pizza 🍕", k.field.text)
     }
 
     @Test fun theEmojiYouPickComeFirstNextTime() {

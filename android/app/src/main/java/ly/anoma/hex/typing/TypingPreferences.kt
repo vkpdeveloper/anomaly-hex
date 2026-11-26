@@ -51,6 +51,10 @@ internal class TypingPreferences(context: Context) {
     var fixButton: Boolean
         get() = prefs.getBoolean(FIX_BUTTON, false)
         set(value) { prefs.edit().putBoolean(FIX_BUTTON, value).apply() }
+    /** Off by default: every key, strip, pick and autocorrection goes to a file in Download/Hex ([ly.anoma.hex.keyboard.TypingLog]). */
+    var typingLog: Boolean
+        get() = prefs.getBoolean(TYPING_LOG, false)
+        set(value) { prefs.edit().putBoolean(TYPING_LOG, value).apply() }
     /** Whether the strip offers your contacts' email addresses (`EmailAddresses`); it reads them only
      * while Hex has the Contacts permission too. */
     var contactEmails: Boolean
@@ -127,6 +131,7 @@ internal class TypingPreferences(context: Context) {
         const val LEARN_FROM_CORRECTIONS = "learnFromCorrections"
         const val FORGET_LEARNED = "forgetLearned"
         const val FIX_BUTTON = "fixButton"
+        const val TYPING_LOG = "typingLog"
         const val CONTACT_EMAILS = "contactEmails"
         const val SAY_TO_SEND = "sayToSend"
         const val REPLACEMENTS = "replacements"

@@ -129,7 +129,8 @@ class GlideEngineTest {
         k.tap("w"); k.tap("o"); k.tap("r")
         k.engine.deleteWord()
         assertEquals("Say ", k.field.text)
-        assertTrue(k.strip.isEmpty())
+        // Nothing of the deleted word stays: back at the space, the strip guesses the next word.
+        assertTrue(k.strip.all { it.kind == Suggestion.Kind.Next })
         k.tap("a")
         assertEquals("Say a", k.field.text)
     }

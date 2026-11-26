@@ -41,7 +41,10 @@ There is no setting.
 your words; one you pick from the strip as you typed it, or keep by deleting an autocorrection with one
 backspace, or by picking it over the autocorrection, joins at once. Undoing an autocorrection also takes back what
 the corrected word just counted, so repeated undos never make it yours, and so does tapping back into a
-word later and picking another: the pick counts in its place. Search boxes that show their app's own
+word later and picking another: the pick counts in its place. Deleting into a pick takes back what it
+counted and taught, a phrase word by word, and so does a swipe undo of a word, which a redo counts again. A
+word already in the text counts nothing when you only put the caret after it, or delete back into it, and end
+it again. Search boxes that show their app's own
 suggestions learn too, though nothing is corrected there. It learns which word follows one
 word and which follows two ("see you" then "soon",
 [PersonalTrigrams](app/src/main/java/ly/anoma/hex/typing/PersonalTrigrams.kt)), so a space offers your
@@ -59,7 +62,8 @@ email) are read and completed more readily while you stay in it
 password fields). It learns your slips ([TypoMemory](app/src/main/java/ly/anoma/hex/typing/TypoMemory.kt)):
 a misspelling you fixed by hand, by picking from the strip or deleting and retyping, is corrected that
 way next time even where the tap decoder alone is unsure; one undo of an autocorrection stops that one
-change (typed to replacement) without banning the replacement elsewhere. An apostrophe typed inside a
+change (typed to replacement) without banning the replacement elsewhere; when that change also fixed the
+word before ("your welcom" to "you're welcome"), space still fixes the word itself. An apostrophe typed inside a
 word stays part of it, so "cna't" becomes "can't". It learns where your
 thumbs land on each key ([TouchOffsets](app/src/main/java/ly/anoma/hex/typing/TouchOffsets.kt)): once
 a key has eight taps, the tap decoder reads that key as sitting where you aim, moved at most a third of
@@ -112,7 +116,8 @@ answer on the strip, which replaces it; `45*12=` keeps the sum and adds the answ
 followed by a space (`250 usd`, `₹1000`, `8 km`, `70 kg`, `30°c`, `6 ft`) offers its conversion,
 which goes after it in brackets: money into the phone's own currency (dollars when it already is),
 at fixed rates for now. Dates and phone numbers (`23/11`, `98765-43210`) aren't sums, and a unit
-after a number is never autocorrected.
+after a number is never autocorrected. Nor is a part under four letters after a hyphen ("hi-fi",
+"anti-vax"); a longer one is ("well-knwn" becomes "well-known").
 
 **Keyboard › Text shortcuts** are yours to add: typing one offers its text on the strip. One that
 starts with a mark (`;eta`) shows from its mark and one letter (`;e`); a plain one (`omw`) only as

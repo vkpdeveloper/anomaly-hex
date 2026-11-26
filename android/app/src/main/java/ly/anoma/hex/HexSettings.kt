@@ -96,6 +96,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val learnFromHistory = remember(revision) { typing.learnFromHistory }
     val learnFromCorrections = remember(revision) { typing.learnFromCorrections }
     val sayToSend = remember(revision) { typing.sayToSend }
+    val typingLog = remember(revision) { typing.typingLog }
     val cleanLinks = remember(revision) { typing.cleanLinks }
     val expandLinks = remember(revision) { typing.expandLinks }
     val snippets = remember(revision) { Snippets.read(typing.snippets) }
@@ -283,6 +284,9 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             }
                             Rule(); Toggle("Say \"send it\" to send", "End a dictation with it to press send", sayToSend) {
                                 typing.sayToSend = it
+                            }
+                            Rule(); Toggle("Keep a typing log", "Every key and suggestion, saved to Download/Hex", typingLog) {
+                                typing.typingLog = it
                             }
                             Rule(); Entry("Forget learned words", if (confirmForget) "Tap again to forget everything the keyboard learned" else helped, "", {
                                 if (confirmForget) { typing.forgetLearned(context.filesDir); confirmForget = false } else confirmForget = true
