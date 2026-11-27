@@ -49,6 +49,9 @@ internal class NextWords(private val load: () -> NextWordModel, private val work
         worker.execute { answer(key) }
     }
 
+    /** What [words] already worked out for exactly [prefix] after [context], or null; never asks the worker. */
+    fun known(context: List<String>, prefix: String): List<String>? = if (broken) null else answered(Key(context, prefix))
+
     private fun answered(key: Key) = synchronized(answers) { answers[key] }
 
     private fun answer(key: Key) {

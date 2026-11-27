@@ -61,6 +61,28 @@ class SlippedPrefixTest {
         for ((letters, fix) in listOf("wor" to "work", "bene" to "been", "teh" to "the")) assertEquals(letters, fix, typed(letters, "I said ").replacement())
     }
 
+    // Nor does space put in a fix that a word the letters start beats, when the fix drops the last letter ("aac" is
+    // on its way to "aacha", not "aa") or the words it starts are each far likelier ("inte"); the strip offers both.
+    // Three letters cut short of a rare word don't complete through a slip ("aac" isn't "academic"), and a
+    // three-letter slip still goes in ("det" -> "set").
+    @Test fun aWordTheLettersStartHoldsBackAWorseFix() {
+        val hinglish = TypingModel.file(File("src/main/assets/typing/hien.hextm"), "hien")
+        fun typedIn(m: TypingModel, letters: String) = TypingWord(SpatialDecoder(m), true).apply {
+            reset("I said ")
+            for (c in letters) grid.centres.getValue(c).let { letter(c.toString(), it.x, it.y, grid) }
+        }
+        val aac = typedIn(hinglish, "aac")
+        assertEquals(null, aac.replacement())
+        assertTrue(aac.strip().toString(), "aacha" in texts(aac.strip()))
+        for (m in listOf(model, hinglish)) {
+            val inte = typedIn(m, "inte")
+            assertEquals(m.language, null, inte.replacement())
+            assertTrue(inte.strip().toString(), "international" in texts(inte.strip()))
+        }
+        assertTrue(typedIn(model, "aac").replacement() != "academic")
+        assertEquals("set", typedIn(model, "det").replacement())
+    }
+
     @Test fun commonestTakesTheCommonestLongEnoughWordsOfARange() {
         val range = model.range("some")
         val lo = (range ushr 32).toInt(); val hi = range.toInt()

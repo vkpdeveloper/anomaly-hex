@@ -61,7 +61,8 @@ class WordBoundsTest {
         k.ed.end = "I walked".length; k.ed.report()
         k.keys("i")
         assertEquals("I walki home", k.ed.text)
-        assertTrue(k.strip.toString(), k.strip.any { it.kind == Suggestion.Kind.Typed && it.text == "walki" })
+        // The strip reads "walki", not "i": it completes the joined word.
+        assertTrue(k.strip.toString(), k.strip.any { it.text == "walking" })
     }
 
     @Test fun aGlideBeforeAWordPutsASpaceBetween() {
