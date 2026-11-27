@@ -35,7 +35,7 @@ class ResumeWordTest {
         k.tap("t")
         assertEquals("hello world somet", k.field.text)
         assertTrue("strip after t: ${k.strip}", k.strip.none { it.kind == Suggestion.Kind.Next })
-        assertTrue("strip after t: ${k.strip}", k.strip.any { it.text == "something" })
+        assertTrue("strip after t: ${k.strip}", k.strip.any { it.kind == Suggestion.Kind.Typed && it.text == "somet" })
     }
 
     @Test fun aWordFinishedAfterDeletingBackIsEndedByItsSpace() {

@@ -3,7 +3,6 @@ package ly.anoma.hex.typing
 import java.io.File
 import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,22 +56,48 @@ class NextWordsTest {
         assertTrue(before != after)
     }
 
-    // A strip worked out before the model answered says so, so the keyboard can wait a moment for its
-    // words; a word too long to ask the model, or a model that can't be read, never keeps it waiting.
-    @Test fun aStripKnowsWhenTheModelsWordsAreStillComing() {
+    // While a letter's words are worked out, the words already in for the letters before it that still fit
+    // answer, and [NextWords.ready] follows with its own; a model that can't be read answers none.
+    @Test fun aLetterGetsTheWordsOfTheLettersBeforeUntilItsOwnAreIn() {
         val queued = ArrayList<Runnable>()
-        val typing = writing(english, NextWords({ neural }, Executor { queued.add(it) }))
-        typing.predictions("thanks for the ")
-        assertTrue(typing.awaitingModel)
+        var readied = 0
+        val next = NextWords({ neural }, Executor { queued.add(it) }).also { it.ready = { readied++ } }
+        val context = listOf("bhai", "kal")
+        assertNull(next.words(context, "k"))
         queued.removeAt(0).run()
-        typing.predictions("thanks for the ")
-        assertFalse(typing.awaitingModel)
-        typing.typed("thanks for the ", "advi").strip()
-        assertFalse(typing.awaitingModel)
-        val broken = writing(english, NextWords({ throw java.io.IOException("unreadable") }, Executor { it.run() }))
-        broken.predictions("thanks for the ")
-        assertFalse(broken.awaitingModel)
-        assertTrue(broken.predictions("thanks for the ").isNotEmpty())
+        val k = next.words(context, "k")!!
+        val ka = next.words(context, "ka")
+        assertEquals(k.filter { it.startsWith("ka") }, ka)
+        assertEquals(1, queued.size)
+        queued.removeAt(0).run()
+        assertEquals(2, readied)
+        val own = next.words(context, "ka")!!
+        assertTrue(own.toString(), own.all { it.startsWith("ka") } && own.size > ka!!.size)
+        val broken = NextWords({ throw java.io.IOException("unreadable") }, Executor { it.run() })
+        assertEquals(emptyList<String>(), broken.words(context, "k"))
+    }
+
+    // The words after the word being typed, asked ahead, are worked out behind the question for its letters
+    // and are in when the space asks for them; asking ahead never calls [NextWords.ready].
+    @Test fun wordsAskedAheadAreInWhenTheSpaceAsks() {
+        val queued = ArrayList<Runnable>()
+        var readied = 0
+        val next = NextWords({ neural }, Executor { queued.add(it) }).also { it.ready = { readied++ } }
+        val typing = writing(english, next).typed("thanks for the ", "adv")
+        typing.strip()
+        next.ahead(NextWords.context("thanks for the advice "))
+        // A newer guess replaces one not yet begun, and the same one isn't asked twice.
+        next.ahead(NextWords.context("thanks for the advise "))
+        next.ahead(NextWords.context("thanks for the advise "))
+        assertEquals(3, queued.size)
+        for (r in queued) r.run()
+        queued.clear()
+        assertEquals(1, readied)
+        assertNull(next.words(NextWords.context("thanks for the advice "), ""))
+        queued.clear()
+        assertEquals(NextWords.WORDS, next.words(NextWords.context("thanks for the advise "), "")?.size)
+        assertTrue(queued.isEmpty())
+        assertEquals(1, readied)
     }
 
     // Only the newest question is worked out: the older one waiting behind it is dropped.

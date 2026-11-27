@@ -43,6 +43,30 @@ class HinglishTest {
             for (found in top(model, word, previous)) assertEquals("$previous $word: $found", word, found.firstOrNull())
     }
 
+    // A finger that turns before the a still glides the Hindi word, after the word before or alone.
+    @Test fun aHindiWordTheFingerTurnedShortOfStillReads() {
+        val g = Glides.grid()
+        val short = Glides.moved(g, 'a' to (1.2 to 0.0))
+        for ((previous, word) in listOf("kya" to "hai", "" to "nahi", "bas" to "kaam")) {
+            val found = glide.decode(Glides.path(word, short, smooth = .5 * g.pitchX), g, model.context(previous), false, null).map { it.text }
+            assertEquals("'$previous' $word: $found", word, found.firstOrNull())
+        }
+    }
+
+    // Hurried glides of the commonest Hindi words: nearly all are still offered.
+    @Test fun hurriedHindiGlidesStillOfferTheWord() {
+        val g = Glides.grid()
+        val words = (0 until model.size).filter { w -> model.length(w) >= 2 && model.text(w).all { it in 'a'..'z' } && english.index(model.text(w)) < 0 }
+            .sortedBy { model.frequencyCost(it) }.take(100).map { model.text(it) }
+        var shown = 0; var total = 0
+        for (word in words) for (seed in 1L..3L) {
+            total++
+            if (glide.decode(Glides.hurried(word, g, seed), g, -1, false, null).any { it.text == word }) shown++
+        }
+        println("hurried Hindi glides: in the strip $shown/$total")
+        assertTrue("in the strip $shown/$total", shown >= total * .8)
+    }
+
     // Hindi has no one spelling in Latin letters: each common one is a word.
     @Test fun everyCommonSpellingIsAWord() {
         for (word in "nahi nahin nai nhi acha accha achha theek thik yaar yar kyu kyun khush khushi".split(' '))

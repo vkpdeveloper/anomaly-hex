@@ -119,18 +119,22 @@ internal class KeyboardEngine(
     private val deferStrip: Boolean = false,
 ) {
     private companion object {
-        /** The fix and the decoder's readings wait for this pause in typing: working them out costs a
-         * search (2 ms median, 16 ms p95 per letter on the API 31 emulator), which shouldn't delay keys. */
-        const val CHIP_PAUSE_MS = 100L
-        /** A key's strip waits this long at most for the next-word model's words (a warm answer takes
-         * about 25 ms on the emulator), so the key changes the strip once rather than twice. */
-        const val MODEL_WAIT_MS = 60L
+        /** Words that come after the strip showed (the next-word model's take 85 to 100 ms on a phone) may take
+         * its weakest word's slot only this soon after it showed for the text: later a tap may be on its way there. */
+        const val LATE_SWAP_MS = 150L
+        /** A word this long has its strip's word for space asked ahead to the next-word model ([NextWords.ahead]),
+         * so the next words are ready when space comes. Shorter ones are still asked the model letter by letter. */
+        const val AHEAD_LETTERS = 3
+        /** How much of the text before the cursor the strip and the next-word model read. */
+        const val BEFORE = 96
         /** A selection change this long after the keyboard's last edit is the person's: a tap in the text. */
         const val OWN_EDIT_MS = 500L
         /** How much of the text before the caret tells a selection change from the keyboard's own edit. */
         const val OWN_TEXT = 48
         /** How much of the text before the caret each typing-log event keeps. */
         const val LOG_BEFORE = 80
+        /** How much text on each side of the caret the typing log keeps to tell a caret move from a change. */
+        const val SEEN = 64
         /** Undo dictation stays this long unless something else happens first (iPhone Hex: 12 s). */
         const val UNDO_MS = 12_000L
         /** How much text on each side of the caret the fix button reads and checks. Each word costs a
@@ -283,11 +287,11 @@ internal class KeyboardEngine(
     private class Fixed(val field: FieldText, val fixes: List<Fix>, val result: String) : Offer
     private var offer: Offer? = null
     private val dropDictation = Runnable { offerUndo(null) }
-    private var pendingChip: Runnable? = null
-    /** Shows the strip last shown again, if what it was for is still there: the next-word model's
-     * words arrive after the strip ([NextWords]), and take their place in it then. */
-    private var redo: (() -> Unit)? = null
-    private val nextReady = Runnable { redo?.invoke() }
+    /** The strip last shown, worked out again, or null once what it was for is gone: the next-word model's
+     * words arrive after the strip ([NextWords]), and shift recases it. */
+    private var redo: (() -> List<Suggestion>?)? = null
+    // Internal so a test can run it as the main thread would once the model answers.
+    internal val nextReady = Runnable { redo?.invoke()?.let { showStrip(it, late = true) } }
     init { nextWords?.ready = { main.removeCallbacks(nextReady); main.post(nextReady) } }
     var surface: KeyboardSurface? = null
     private val models = HashMap<String, SpatialDecoder>()
@@ -301,8 +305,14 @@ internal class KeyboardEngine(
     private var learnHere = false
     private var prefix = ""
     private var expectedCaret = -1
-    private data class Undo(val language: String, val original: String, val replacement: String)
+    /** An autocorrection the next delete takes back while the text still ends with [replacement] and [ending]
+     * (the space or the line break that made it). */
+    private data class Undo(val language: String, val original: String, val replacement: String, val ending: String = " ")
     private var undo: Undo? = null
+    /** The last autocorrection a space or return made and the text before its word ([start]): deleting the word
+     * and typing [Undo.original] there again is undoing it, as delete right after it is. */
+    private class LastFix(val undo: Undo, val start: String)
+    private var fixed: LastFix? = null
     /** A period's autocorrection, while [anchor], the text before the cursor right after the period, is still
      * there: a letter typed next shows the word was an abbreviation's or a link's ("i.e.", "anoma.ly"), not
      * one the period ended, so it goes back as typed. */
@@ -402,7 +412,7 @@ internal class KeyboardEngine(
             attribute.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS == 0
         addressField = addressesHere && variation in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
-        addressesLearned.clear(); typedHere = false; unglided = null; counted = null; standing = null; ended = null; redone = null
+        addressesLearned.clear(); typedHere = false; unglided = null; counted = null; standing = null; ended = null; redone = null; fixed = null; seen = null
         // The text around the caret from the copy the keyboard keeps, never from the editor on a key.
         fieldWords.clear()
         if (wordsHere && !secure && attribute.initialSelStart == attribute.initialSelEnd) {
@@ -424,7 +434,8 @@ internal class KeyboardEngine(
     fun updateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) = traced("hex:select") { doUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd) }
     private fun doUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int) {
         selStart = newSelStart; selEnd = newSelEnd
-        if (newSelStart == 0 && newSelEnd == 0 && oldSelStart > 0) fieldWords.clear() // Sent or cleared: a new message.
+        // Sent or cleared: a new message, where the last fix's word typed again is a new word, not a retype.
+        if (newSelStart == 0 && newSelEnd == 0 && oldSelStart > 0) { fieldWords.clear(); fixed = null }
         if (watch.active) watchChanged()
         if (oldSelStart != newSelStart || oldSelEnd != newSelEnd) { offerActions(); fixesStale() }
         (offer as? Dictated)?.let { if (!undoable(it)) offerUndo(null) }
@@ -433,13 +444,42 @@ internal class KeyboardEngine(
             if (expectedCaret >= 0 && (newSelStart != expectedCaret || newSelEnd != expectedCaret)) {
                 // Editors may coalesce selection notifications. Compare the actual surrounding text
                 // before invalidating our own in-flight commit, not a stale intermediate offset.
-                val suffix = undo?.let { it.replacement + " " } ?: word?.token?.takeIf { it.isNotEmpty() }?.let { prefix + it }
+                val suffix = undo?.let { it.replacement + it.ending } ?: word?.token?.takeIf { it.isNotEmpty() }?.let { prefix + it }
                 if (newSelStart != newSelEnd || suffix == null || !endsWith(suffix) ||
                     oldSelStart == expectedCaret) { resetTyping(); clearStrip() }
             }
             refreshCaps()
             val own = expected || clock() - editedAt <= OWN_EDIT_MS && ownBefore.let { it == null || target.before(it.length) == it }
-            if (!own) { log("caret"); caretMoved() }
+            if (!own) { log(if (changedUnder(newSelStart, newSelEnd)) "changed" else "caret"); caretMoved() }
+        }
+        if (typingLog?.recording == true) seen = if (secure || newSelStart != newSelEnd || newSelStart < 0) null
+            else Seen(newSelStart, target.before(SEEN).orEmpty(), target.after(SEEN).orEmpty())
+    }
+    /** For the typing log alone: the text around the caret at the last selection change. */
+    private class Seen(val caret: Int, val before: String, val after: String)
+    private var seen: Seen? = null
+    // Whether a caret the keyboard didn't move came with text the keyboard didn't type (a send that cleared the
+    // field, an app's own paste or edit), not a move through the same text. A move through it puts the text it
+    // passed on the caret's other side; anything else changed. A jump past what [seen] holds can't tell.
+    private fun changedUnder(start: Int, end: Int): Boolean {
+        val was = seen ?: return false
+        if (secure || start != end || start < 0) return false
+        val nb = target.before(SEEN).orEmpty()
+        val na = target.after(SEEN).orEmpty()
+        val b = was.before
+        val a = was.after
+        val k = start - was.caret
+        return when {
+            k < 0 && -k <= b.length -> {
+                val left = b.dropLast(-k)
+                (if (b.length < SEEN) nb != left else !nb.endsWith(left)) || na != (b.takeLast(-k) + a).take(SEEN)
+            }
+            k > 0 && k <= a.length -> {
+                val right = a.drop(k)
+                nb != (b + a.take(k)).takeLast(SEEN) || (if (a.length < SEEN) na != right else !na.startsWith(right))
+            }
+            k < 0 -> b.length < SEEN
+            else -> a.length < SEEN
         }
     }
 
@@ -474,7 +514,7 @@ internal class KeyboardEngine(
         if (right.isEmpty()) { prefix = start.takeLast(40); w.restored(left, prefix); tappedEnd = b; standing = b }
         else { w.reset(); tapped = Tapped(left, right) }
         cancelSuggestions(); emojiWord = null
-        strip(strip + emojiFor(strip, whole))
+        strip(strip + emojiFor(whole))
     }
 
     /** Suggest swear words changed: the current word's suggestions follow at once. */
@@ -525,8 +565,8 @@ internal class KeyboardEngine(
         if (refresh) showSuggestions(word)
     }
 
-    /** [word] is yours from now on, as if used twice: kept as typed against an autocorrection, picked over
-     * one or over a glide, or put back by undo. Forgotten words come back when you choose them. At a
+    /** [word] is yours from now on, as if used twice: kept as typed against an autocorrection, or picked over
+     * one or over a glide. Forgotten words come back when you choose them. At a
      * [sentenceStart] its capital teaches nothing, as in [LearnedWords.learn]. */
     private fun teach(word: String, sentenceStart: Boolean = false) {
         if (!learnHere) return
@@ -632,7 +672,7 @@ internal class KeyboardEngine(
         val mode = shift.mode
         shift.down(clock()); showPlane()
         // Shift going on or off recases the strip's next words ([predict]), and caps lock all its words ([showStrip]).
-        if (mode != shift.mode) { shiftTapped = true; redo?.invoke() }
+        if (mode != shift.mode) { shiftTapped = true; redo?.invoke()?.let(::showStrip) }
     }
     /** Shift lifted; on the symbol pages its key switches between them, on lifting. */
     fun shiftUp() {
@@ -654,34 +694,21 @@ internal class KeyboardEngine(
         cancelSuggestions(); addressOffer = null; word?.reset(); undo = null; expectedCaret = -1; prefix = ""; tapped = null; tappedEnd = null
     }
     private fun clearSpaces() { spaceAnchor = null; heldAnchor = null; glided = null; periodFix = null }
-    private fun cancelChip() { pendingChip?.let(main::removeCallbacks); pendingChip = null }
     private var pendingStrip: Runnable? = null
-    private var heldStrip: Runnable? = null
-    private fun cancelHeld() { heldStrip?.let(main::removeCallbacks); heldStrip = null }
-    private fun cancelSuggestions() {
-        cancelChip(); cancelHeld()
-        pendingStrip?.let(main::removeCallbacks); pendingStrip = null
-    }
-    /** A key's strip, worked out by [slots] from [w]. While the next-word model still works out its words
-     * for it, the strip shown stays until they arrive ([redo] then shows them) or [MODEL_WAIT_MS] passes:
-     * the strip changes once per key, not twice. It's worked out again then, so an answer that came
-     * just as the wait ended still shows. */
-    private fun showFirst(w: TypingWord, slots: () -> List<Suggestion>) {
-        cancelHeld()
-        val first = slots()
-        if (!w.awaitingModel) { showStrip(first); return }
-        heldStrip = Runnable { heldStrip = null; showStrip(slots()) }.also { main.postDelayed(it, MODEL_WAIT_MS) }
-    }
+    private fun cancelSuggestions() { pendingStrip?.let(main::removeCallbacks); pendingStrip = null }
     /** Empties the strip now, and drops any strip still waiting to be worked out. */
     private fun clearStrip() { cancelSuggestions(); redo = null; strip(emptyList()) }
-    /** The strip's [slots], and in their place the emoji for a colon search right before the cursor. */
-    private fun strip(slots: List<Suggestion>) {
+    /** The strip's [slots], and in their place the emoji for a colon search right before the cursor. [late]:
+     * words that arrived after the strip showed for this text, which change none it shows ([StripSlots.steady]). */
+    private fun strip(slots: List<Suggestion>, late: Boolean = false) {
         val b = before()
-        // A strip worked out again for the same text (the next-word model's answer, the fix after its
-        // pause) shows the same words with each one that already showed left in its slot, so nothing
-        // moves while it's read.
-        val steady = if (stripFor == b to selStart) StripSlots.steady(shown, slots) else slots
-        stripFor = b to selStart
+        // A strip worked out again for the same text (the next-word model's answer, shift) shows the same
+        // words with each one that already showed left in its slot, so nothing moves while it's read.
+        val now = clock()
+        val same = stripFor == b
+        val steady = if (same) StripSlots.steady(shown, slots, late, swap = now - stripSince <= LATE_SWAP_MS) else slots
+        if (!same) stripSince = now
+        stripFor = b
         surface?.suggestions(steady)
         val placed = StripSlots.place(steady)
         if (!placed.contentEquals(shown)) log("strip", "slots" to placed.filterNotNull().map { "${it.kind.name.lowercase()}:${it.text}" })
@@ -692,9 +719,11 @@ internal class KeyboardEngine(
         colonQuery = query.takeIf { found.isNotEmpty() }
         surface?.emojiRow(found)
     }
-    /** What the strip shows now, slot by slot, and the text before the cursor it was for. */
+    /** What the strip shows now, slot by slot, and the text before the cursor it was for. Not the caret's
+     * offset: the app reports it after the key's strip shows, and the strip that follows would count as new. */
     private var shown = arrayOfNulls<Suggestion>(StripSlots.COUNT)
-    private var stripFor: Pair<String, Int>? = null
+    private var stripFor: String? = null
+    private var stripSince = Long.MIN_VALUE / 2
     // Keep a typing log ([TypingLog]): each event with the text before the caret and the word being typed
     // as they are after it. Nothing from a password or incognito field.
     private fun log(kind: String, vararg fields: Pair<String, Any?>) {
@@ -744,28 +773,38 @@ internal class KeyboardEngine(
         else showSuggestions(word)
     }
 
-    // The strip while a word is typed: completions at once, then, after a pause, the model's whole
-    // strip with what space will put in. A fix you turned down twice shows as a plain word.
+    // The strip while a word is typed, whole at once: completions and what space will put in (the decoder's
+    // search, 2 ms median per letter on the API 31 emulator, which space needs anyway), so space never puts
+    // in a fix the strip didn't show. The next-word model's words join it when they come ([redo]).
     private fun showSuggestions(w: TypingWord?) = defer { suggest(w) }
     private fun suggest(w: TypingWord?) {
-        cancelChip()
         if (w != null && w.token.isNotEmpty()) {
             val token = w.token
-            val quick = { if (word === w && w.token == token) showFirst(w) { w.strip(autocorrect = false) } }
-            quick(); redo = quick
-            if (!feedback.autocorrect || !canEndWord()) return
-            val full = {
-                if (word === w && w.token == token) showStrip(w.strip(autocorrect = true).map {
-                    if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || QuickMath.endsInUnit(before()) ||
-                            feedback.blocked(w.decoder.model.language, token, it.text)))
-                        Suggestion(it.text, Suggestion.Kind.Word) else it
-                })
-            }
-            pendingChip = Runnable { pendingChip = null; full(); redo = full }.also { main.postDelayed(it, CHIP_PAUSE_MS) }
+            redo = { if (word === w && w.token == token) wordStrip(w) else null }
+            val slots = wordStrip(w)
+            showStrip(slots); askAhead(w, slots)
             return
         }
         val b = if (w != null && !symbols && selStart == selEnd) before() else null
         showPredictions(if (b != null && TypingWord.boundary(b.lastOrNull())) b else null)
+    }
+    /** The strip for [w], the word being typed. A fix you turned down twice shows as a plain word. */
+    private fun wordStrip(w: TypingWord): List<Suggestion> {
+        if (!feedback.autocorrect || !canEndWord()) return w.strip(autocorrect = false)
+        return w.strip(autocorrect = true).map {
+            if (it.kind == Suggestion.Kind.Fix && (!autocorrectHere || QuickMath.endsInUnit(before()) ||
+                    feedback.blocked(w.decoder.model.language, w.token, it.text)))
+                Suggestion(it.text, Suggestion.Kind.Word) else it
+        }
+    }
+    /** Asks the next-word model now for the words after [w] as space would leave it ([slots]' fix, else as
+     * typed), so the strip after the space has them at once instead of reshuffling when they come. */
+    private fun askAhead(w: TypingWord, slots: List<Suggestion>) {
+        val next = w.next ?: return
+        if (w.token.length < AHEAD_LETTERS) return
+        val ends = slots.firstOrNull { it.kind == Suggestion.Kind.Fix }?.text ?: w.token
+        // The text before the cursor as it will read right after the space, as [predict] reads it.
+        next.ahead(NextWords.context((before().dropLast(w.token.length) + ends + " ").takeLast(BEFORE)))
     }
     /** Next words for the text before the cursor, capitalised as shift would be. */
     private fun showPredictions(before: String?) = defer { predict(before) }
@@ -773,7 +812,10 @@ internal class KeyboardEngine(
         val w = word
         redo = null
         if (w == null || before == null || symbols || !canEndWord()) { showStrip(emptyList()); return }
-        redo = { if (word === w && w.token.isEmpty() && before() == before) predict(before) }
+        redo = { if (word === w && w.token.isEmpty() && before() == before) predicted(w, before) else null }
+        showStrip(predicted(w, before))
+    }
+    private fun predicted(w: TypingWord, before: String): List<Suggestion> {
         // Shift's mode, not whether it's held: the strip redraws as shift goes down.
         val caps = if (shiftTapped) shift.mode != ShiftState.Mode.Off else capsWanted()
         // A shift tapped on capitalises them even with Auto-capitalisation off, as the letter it types would be.
@@ -781,11 +823,9 @@ internal class KeyboardEngine(
         // An emoji whose space waits (picked from the strip or a search) is finished, as a picked word is;
         // one from the panel holds no space, so its next words wait for one.
         val text = if (before == heldAnchor && EmojiWords.endsWithEmoji(before)) "$before " else before
-        showFirst(w) {
-            val words = w.predictions(text, capitalize = caps).map { Suggestion(cased(it), Suggestion.Kind.Next) }
-            val phrase = w.phrase(text, capitalize = caps)?.let(::cased)
-            if (phrase == null) words else withPhrase(phrase, words)
-        }
+        val words = w.predictions(text, capitalize = caps).map { Suggestion(cased(it), Suggestion.Kind.Next) }
+        val phrase = w.phrase(text, capitalize = caps)?.let(::cased)
+        return if (phrase == null) words else withPhrase(phrase, words)
     }
     /** The strip with a [phrase] you write: it takes the wide middle slot and one word stays beside it (the
      * likeliest one that isn't the phrase's own first word, which the phrase already offers). */
@@ -796,7 +836,7 @@ internal class KeyboardEngine(
     /** The strip, with the email addresses that complete the one being typed ([EmailAddresses]): up to
      * three, first, in an address field; elsewhere one in the last slot once three characters match,
      * and your contacts' only once an @ is typed, so they don't crowd out words. */
-    private fun showStrip(slots: List<Suggestion>) {
+    private fun showStrip(slots: List<Suggestion>, late: Boolean = false) {
         addressOffer = null; emojiWord = null
         val typed = if (addressesHere && selStart == selEnd) EmailAddresses.typed(before()) else null
         val found = if (typed == null || typed.length < (if (addressField) 1 else 3)) emptyList()
@@ -807,20 +847,26 @@ internal class KeyboardEngine(
         val cased = if (!shift.locked) slots else slots.map {
             if (it.kind == Suggestion.Kind.Typed || it.kind == Suggestion.Kind.Emoji) it else it.copy(text = it.text.uppercase())
         }
-        if (found.isEmpty()) { strip(cased + emojiFor(slots)); return }
+        if (found.isEmpty()) { strip(cased + emojiFor(), late); return }
         addressOffer = AddressOffer(typed!!, found)
         val offered = found.map { Suggestion(it, Suggestion.Kind.Word) }
-        strip(if (addressField) (offered + cased).take(3) else cased.take(2) + offered)
+        strip(if (addressField) (offered + cased).take(3) else cased.take(2) + offered, late)
     }
-    /** Emoji for the word being typed ([typed], or the one the caret was put in) or one of the strip's words
-     * for it ("medicin" finds 💊 through "medicine"), or after a space for the word before it, as Gboard offers them. */
-    private fun emojiFor(slots: List<Suggestion>, typed: String? = word?.token?.takeIf { it.isNotEmpty() }): List<Suggestion> {
+    /** Emoji for a whole word, as Gboard offers them: the word being typed once its letters are likelier the
+     * whole word than the start of a longer one ([TypingWord.spellsWhole]: "fire", not "tha" for "thanks"), so
+     * emoji never take a slot from the words that would complete it; [written], the word the caret was put in;
+     * or after a space the word before it. */
+    private fun emojiFor(written: String? = null): List<Suggestion> {
         val w = word ?: return emptyList()
         if (symbols || selStart != selEnd) return emptyList()
         val lists = emojiLists(w.decoder.model.language) ?: return emptyList()
-        val words = if (typed != null) listOf(typed) + slots.filter { it.kind == Suggestion.Kind.Fix || it.kind == Suggestion.Kind.Word }.map { it.text }
-            else before().takeIf { it.endsWith(" ") || it == heldAnchor }?.let(EmojiWords::wordBefore)?.let(::listOf) ?: return emptyList()
-        val found = lists.find(words, emojiPicks) ?: return emptyList()
+        val typing = w.token.takeIf { it.isNotEmpty() }
+        val text = when {
+            written != null -> written
+            typing != null -> typing.takeIf { w.spellsWhole() } ?: return emptyList()
+            else -> before().takeIf { it.endsWith(" ") || it == heldAnchor }?.let(EmojiWords::wordBefore) ?: return emptyList()
+        }
+        val found = lists.find(text, emojiPicks) ?: return emptyList()
         emojiWord = found.word
         return found.emoji.map { Suggestion(it, Suggestion.Kind.Emoji) }
     }
@@ -852,6 +898,7 @@ internal class KeyboardEngine(
         }
         if (!typed) { if (t != null) clearStrip(); return }
         if (learnFor != null && learnHere) { emojiPicks.pick(learnFor, emoji); emojiPicked() }
+        log("pick", "text" to tone, "kind" to "emoji")
         val after = before()
         heldAnchor = after
         showPredictions(after); inputDone()
@@ -864,7 +911,7 @@ internal class KeyboardEngine(
 
     /** The emoji panel's search opens: the keys type into it until [stopSearch]. */
     fun startSearch() {
-        cancelChip(); resetTyping(); clearSpaces(); clearStrip()
+        resetTyping(); clearSpaces(); clearStrip()
         search = StringBuilder(); colonQuery = null
         surface?.emojiRow(emptyList())
         showSearch()
@@ -922,7 +969,7 @@ internal class KeyboardEngine(
         if (after != null) { emojiPicks.pick(after, text); emojiPicked() }
     }
 
-    private fun before() = if (secure) "" else target.before(96).orEmpty()
+    private fun before() = if (secure) "" else target.before(BEFORE).orEmpty()
     private fun endsWith(suffix: String) = !secure && target.before(suffix.length) == suffix
     private fun canEndWord() = !secure && (target.after(1)?.firstOrNull()?.let {
         !it.isLetterOrDigit() && it !in "'_/@#"
@@ -1135,13 +1182,15 @@ internal class KeyboardEngine(
             val old = w.token; val lang = w.decoder.model.language
             // "250 usd" stays as typed: its conversion chip needs the unit.
             if (feedback.autocorrect && autocorrectHere && old.isNotEmpty() && endsWith(prefix + old) && !QuickMath.endsInUnit(b)) {
+                retyped(old)
                 val fix = w.finish(' ', point, grid) { feedback.blocked(lang, it.original, it.replacement) }
                 if (fix != null && replace(fix.original, fix.replacement + " ")) {
                     log("fix", "from" to fix.original, "to" to fix.replacement)
                     // What went in is the keyboard's word, not one typed for a missed glide.
-                    cancelChip(); unglided = null
+                    unglided = null
                     if (learnHere) stats.corrected++
-                    undo = Undo(lang, fix.original, fix.replacement)
+                    val made = Undo(lang, fix.original, fix.replacement)
+                    undo = made; fixed = LastFix(made, b.dropLast(fix.original.length))
                     if (expectedCaret >= 0) expectedCaret += fix.replacement.length + 1 - fix.original.length
                     w.reset(); afterSpace(now); return
                 }
@@ -1237,20 +1286,18 @@ internal class KeyboardEngine(
         val last = undo
         undo = null
         val anchor = before()
-        if (last != null && endsWith(last.replacement + " ") && replace(last.replacement + " ", last.original)) {
+        if (last != null && endsWith(last.replacement + last.ending) && replace(last.replacement + last.ending, last.original)) {
             log("unfix", "from" to last.replacement, "to" to last.original)
+            fixed = null
             // The autocorrection's word counted when its space went in: undone, it takes nothing with it.
-            takeBackCount(anchor.dropLast(1))
-            // What you put back is yours: it isn't corrected again (and, like the count, only where learning is allowed).
-            if (learnHere) {
-                stats.undone++
-                feedback.undo(last.language, last.original, last.replacement)
-                typos.remove(last.original, last.replacement)
-                if (' ' !in last.original) teach(last.original)
-            }
+            takeBackCount(anchor.dropLast(last.ending.length))
+            // What you put back isn't corrected again for a while (and, like the count, only where learning is
+            // allowed). It counts once when its space goes in, so kept once it isn't yours yet, and other slips
+            // aren't read as it; used again, it is.
+            if (learnHere) rejected(last)
             val typed = last.original.substringAfterLast(' ')
-            prefix = before().dropLast(typed.length).takeLast(40); word?.restored(typed, prefix)
-            if (expectedCaret >= 0) expectedCaret += last.original.length - last.replacement.length - 1
+            prefix = before().dropLast(typed.length).takeLast(40); word?.restored(typed, prefix, undone = true)
+            if (expectedCaret >= 0) expectedCaret += last.original.length - last.replacement.length - last.ending.length
             cancelSuggestions(); redo = null; strip(listOf(Suggestion(typed, Suggestion.Kind.Typed))); return
         }
         val w = word
@@ -1277,6 +1324,21 @@ internal class KeyboardEngine(
         }
         // Deleted back to a space, the strip guesses the next word again, as it did after that space.
         if (w != null) showSuggestions(w) else clearStrip()
+    }
+    // [u] was undone: that swap is off for good and its word is left alone for a while ([TypingPreferences.blocked]).
+    private fun rejected(u: Undo) {
+        stats.undone++
+        feedback.undo(u.language, u.original, u.replacement)
+        typos.remove(u.original, u.replacement)
+    }
+    // The word [typed], about to end, is the one the last autocorrection replaced, typed again where it was: the
+    // fixed word was deleted and the original typed over it, which undoes the fix as delete right after it does.
+    private fun retyped(typed: String) {
+        val f = fixed ?: return
+        if (!typed.equals(f.undo.original, ignoreCase = true) || !sameStart(f.start, prefix)) return
+        fixed = null
+        log("unfix", "from" to f.undo.replacement, "to" to f.undo.original, "by" to "retype")
+        if (learnHere) rejected(f.undo)
     }
     /** What the word that ends [end] (the text before the cursor up to its last letter) counted is taken back:
      * the space, mark or return that ended it was undone or deleted, so the word isn't finished yet. False
@@ -1321,6 +1383,7 @@ internal class KeyboardEngine(
     fun enter() = traced("hex:key:enter") { if (!searched {}) { log("enter"); doEnter() } }
     private fun doEnter() {
         edited()
+        val fix = enterFix()
         // A pick was learned as it went in.
         if (heldAnchor != before()) learn(before(), 0)
         learnAddressBefore(before())
@@ -1330,8 +1393,29 @@ internal class KeyboardEngine(
             target.performEditorAction(info.actionId)) return
         if (!target.defaultEditorAction()) {
             if (editor?.inputType == InputType.TYPE_NULL) target.sendKey(KeyEvent.KEYCODE_ENTER)
-            else doType("\n")
+            else {
+                doType("\n")
+                // The line break stays in the field after the fixed word: delete takes the fix back, as after a space.
+                if (fix != null) undo = fix.copy(ending = "\n")
+            }
         }
+    }
+    // Return ends the word being typed as space does: the strip's fix goes in before the line break or the
+    // field's action (send, search), wherever autocorrect is on. The fix made, or null.
+    private fun enterFix(): Undo? {
+        val w = word ?: return null
+        val old = w.token
+        val b = before()
+        if (symbols || !canEndWord() || !feedback.autocorrect || !autocorrectHere || old.isEmpty() || !endsWith(prefix + old) ||
+            QuickMath.endsInUnit(b)) return null
+        retyped(old)
+        val lang = w.decoder.model.language
+        val fix = w.finish('\n') { feedback.blocked(lang, it.original, it.replacement) } ?: return null
+        if (!replace(fix.original, fix.replacement)) return null
+        log("fix", "from" to fix.original, "to" to fix.replacement)
+        unglided = null
+        if (learnHere) stats.corrected++
+        return Undo(lang, fix.original, fix.replacement).also { fixed = LastFix(it, b.dropLast(fix.original.length)) }
     }
 
     /** Whether a drag across the letters glides a word: Glide typing on, an ordinary text field (never a
@@ -1417,7 +1501,10 @@ internal class KeyboardEngine(
     fun paste(text: String) {
         if (!target.connected) return
         val clip = if (feedback.cleanLinks) Links.clean(text) else text
-        edited(); resetTyping(); clearSpaces(); target.commit(clip); clearStrip(); refreshCaps()
+        edited(); resetTyping(); clearSpaces()
+        // Only how much went in: a clip may be anything, and the event's text before the cursor shows it in place.
+        if (target.commit(clip)) log("paste", "chars" to clip.length)
+        clearStrip(); refreshCaps()
     }
 
     private var actionsShown = emptyList<StripAction>()
@@ -1480,7 +1567,7 @@ internal class KeyboardEngine(
     /** The editor or the keyboard went away: forget the word, never carry it to the next field. */
     /** A panel (emoji, the grid's menu, the clipboard) takes the keys' place. The word in progress stays,
      * so closing it untouched brings back the word's suggestions ([configureTyping] with keepWord). */
-    fun pause() { cancelChip(); clearStrip() }
+    fun pause() { clearStrip() }
 
     fun leave() {
         log("leave")
@@ -1526,6 +1613,7 @@ internal class KeyboardEngine(
             else SpokenText.continuing(text, before, language) { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 50 }
         val result = insertion(shaped, before?.lastOrNull(), target.after(1)?.firstOrNull())
         if (result.isEmpty() || !target.commit(result)) return false
+        log("dictation", "chars" to result.length)
         if (offer && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
         if (offer) beginWatch(result)
         return true

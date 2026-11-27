@@ -51,17 +51,20 @@ class PersonalWordsLearningTest {
         assertTrue("hello" in k.forgotten)
     }
 
-    @Test fun anUndoneAutocorrectionIsLearnedAndNotMadeAgain() {
+    // An undo isn't made again, but the word put back is yours only once you use it twice: a slip kept once
+    // mustn't become what other slips are corrected to.
+    @Test fun anUndoneAutocorrectionIsNotMadeAgainNorLearnedAtOnce() {
         val k = Keyboard()
         k.tap("teh"); k.engine.space()
         assertEquals("the ", k.field.text)
         k.engine.delete()
         assertEquals("teh", k.field.text)
-        assertEquals(listOf("teh"), k.learned.words())
+        assertEquals(emptyList<String>(), k.learned.words())
         k.engine.space()
         assertEquals("teh ", k.field.text)
         k.tap("teh"); k.engine.space()
         assertEquals("teh teh ", k.field.text)
+        assertEquals(listOf("teh"), k.learned.words())
     }
 
     @Test fun anUndoneAutocorrectionTakesItsCountsBack() {
@@ -74,7 +77,7 @@ class PersonalWordsLearningTest {
         assertEquals("you zorbly wprld", k.field.text)
         assertTrue(k.learned.write(), k.learned.write().lines().none { "world" in it.split('\t') })
         assertTrue(k.learned.cost("world", null).isInfinite())
-        assertEquals(listOf("wprld"), k.learned.words())
+        assertEquals(emptyList<String>(), k.learned.words())
         // What came before is as it was, the taps on "wprld" aside: the keys learned nothing from "world".
         assertEquals(words.lines().filter { it.isNotEmpty() }.toSet(), k.learned.write().lines().filter { it.isNotEmpty() && "wprld" !in it.split('\t') }.toSet())
         assertEquals(stats(touches), stats(k.engine.touch.write()).filterKeys { it in stats(touches) })

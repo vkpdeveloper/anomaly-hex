@@ -5,11 +5,12 @@ import java.util.concurrent.Executor
 /**
  * [NextWordModel]'s words for the strip, worked out on [worker] so typing never waits for them. [words]
  * answers from what was already worked out and otherwise asks the worker, which calls [ready] once the
- * answer is in; only the newest question is worked on, older ones waiting behind it are dropped. The model
- * loads on the worker the first time it is asked.
+ * answer is in; only the newest question is worked on, older ones waiting behind it are dropped. [ahead]
+ * asks one more question behind it, for the words after the word being typed. The model loads on the
+ * worker the first time it is asked.
  */
 internal class NextWords(private val load: () -> NextWordModel, private val worker: Executor) {
-    /** Called on the worker once an answer [words] didn't have is ready. */
+    /** Called on the worker once the answer to the newest [words] question is in. */
     @Volatile var ready: () -> Unit = {}
     private var model: NextWordModel? = null
     @Volatile private var broken = false
@@ -18,33 +19,51 @@ internal class NextWords(private val load: () -> NextWordModel, private val work
         override fun removeEldestEntry(eldest: Map.Entry<Key, List<String>>?) = size > 64
     }
     @Volatile private var wanted: Key? = null
+    @Volatile private var soon: Key? = null
 
-    /** The likeliest words after [context] ([context]'s words) that start with [prefix], likeliest first,
-     * or null while they are being worked out; none once the model couldn't be read. Lowercase, and not
-     * yet filtered for the layout. */
+    /** The likeliest words after [context] ([context]'s words) that start with [prefix], likeliest first;
+     * none once the model couldn't be read. Lowercase, and not yet filtered for the layout. While they are
+     * worked out (a phone takes 85 to 100 ms), the words already in for a shorter [prefix] that still fit
+     * ("k" -> "kya", "kal" for "ka"), or null without any. */
     fun words(context: List<String>, prefix: String): List<String>? {
         if (broken) return emptyList()
         val key = Key(context, prefix)
-        synchronized(answers) { answers[key]?.let { return it } }
+        answered(key)?.let { return it }
         if (wanted != key) {
             wanted = key
             worker.execute { answer(key) }
         }
         // A worker that runs the task at once (tests, the bench) has the answer now.
-        return if (broken) emptyList() else synchronized(answers) { answers[key] }
+        if (broken) return emptyList()
+        return answered(key) ?: synchronized(answers) {
+            (prefix.length - 1 downTo 0).firstNotNullOfOrNull { answers[Key(context, prefix.take(it))] }
+        }?.filter { it.startsWith(prefix) }
     }
 
+    /** Works out the words after [context] behind the newest [words] question, so asking for them later
+     * (the word being typed ended) finds them in. A newer [ahead] replaces one not yet begun. */
+    fun ahead(context: List<String>) {
+        val key = Key(context, "")
+        if (broken || key == soon || key == wanted || answered(key) != null) return
+        soon = key
+        worker.execute { answer(key) }
+    }
+
+    private fun answered(key: Key) = synchronized(answers) { answers[key] }
+
     private fun answer(key: Key) {
-        if (wanted != key || broken) return
-        val words = try {
-            val m = model ?: load().also { model = it }
-            m.predict(key.context, key.prefix, WORDS)
-        } catch (_: Exception) {
-            // An unreadable model leaves the strip to the word pairs, as before it shipped.
-            broken = true
-            return
+        if ((wanted != key && soon != key) || broken) return
+        if (answered(key) == null) {
+            val words = try {
+                val m = model ?: load().also { model = it }
+                m.predict(key.context, key.prefix, WORDS)
+            } catch (_: Exception) {
+                // An unreadable model leaves the strip to the word pairs, as before it shipped.
+                broken = true
+                return
+            }
+            synchronized(answers) { answers[key] = words }
         }
-        synchronized(answers) { answers[key] = words }
         if (wanted == key) ready()
     }
 

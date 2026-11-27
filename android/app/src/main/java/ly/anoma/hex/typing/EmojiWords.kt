@@ -63,16 +63,16 @@ internal class EmojiWords(
         sorted = index.keys.toTypedArray().also { it.sort() }
     }
 
-    /** The emoji for the first of [words] that has any, in a form the lists know ("cats" finds "cat",
-     * "lmaooo" "lmao"): your picks first, most picked first, then the lists', then an emoji the word
-     * names on its own ("mango" 🥭, "india" 🇮🇳). One you picked from the emoji panel for a word the lists
-     * don't give it shows once you've picked it [PANEL_PICKS] times, so a one-off doesn't stick.
-     * Words of one letter find none here; the search finds them. */
-    fun find(words: List<String>, picks: Picks, limit: Int = 2): Found? {
+    /** The emoji for [typed], in a form the lists know ("cats" finds "cat", "lmaooo" "lmao"): your picks
+     * first, most picked first, then the lists', then an emoji the word names on its own ("mango" 🥭,
+     * "india" 🇮🇳). One you picked from the emoji panel for a word the lists don't give it shows once
+     * you've picked it [PANEL_PICKS] times, so a one-off doesn't stick. Words of one letter find none
+     * here; the search finds them. */
+    fun find(typed: String, picks: Picks, limit: Int = 2): Found? {
         if (!suggests) return null
         // A single letter ("k", "w") is a word only once it stands alone; on the strip it would be every
         // word's first key.
-        for (typed in words) if (typed.length >= 2) for (word in variants(typed.lowercase())) {
+        if (typed.length >= 2) for (word in variants(typed.lowercase())) {
             val listed = lists.flatMap { it[word].orEmpty() } + strongNames[word].orEmpty()
             val mine = picks.of(word).filter { (emoji, count) -> count >= PANEL_PICKS || emoji in listed }.map { it.first }
             val all = (mine + listed).distinct().filter(shows)

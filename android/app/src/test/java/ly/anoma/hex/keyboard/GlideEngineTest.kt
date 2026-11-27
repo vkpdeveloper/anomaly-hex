@@ -153,6 +153,18 @@ class GlideEngineTest {
         assertTrue(k.field.text, k.field.text.endsWith(" Vaibhav"))
     }
 
+    // Shouting a word once doesn't make it how you write it: "you can" glided "you CAN".
+    @Test fun aWordYouOnceWroteInCapitalsGlidesInItsOwnForm() {
+        val k = Keyboard("you ")
+        repeat(2) { k.learned.learn("CAN", "you", sentenceStart = false) }
+        k.glide("can")
+        assertEquals("you can", k.field.text)
+        // A first capital is how you write a name or a brand, and stays.
+        repeat(2) { k.learned.learn("Hex", "use", sentenceStart = false) }
+        k.glide("hex")
+        assertEquals("you can Hex", k.field.text)
+    }
+
     @Test fun aGlidedWordIsLearnedOnlyOnceItStays() {
         val k = Keyboard()
         k.glide("hello"); k.engine.delete()

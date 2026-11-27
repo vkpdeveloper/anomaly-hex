@@ -61,7 +61,7 @@ class WordBoundsTest {
         k.ed.end = "I walked".length; k.ed.report()
         k.keys("i")
         assertEquals("I walki home", k.ed.text)
-        assertTrue(k.strip.toString(), k.strip.any { it.text == "walking" })
+        assertTrue(k.strip.toString(), k.strip.any { it.kind == Suggestion.Kind.Typed && it.text == "walki" })
     }
 
     @Test fun aGlideBeforeAWordPutsASpaceBetween() {
@@ -99,10 +99,10 @@ class WordBoundsTest {
         val k = Keyboard()
         k.keys("I went to a cafe ")
         assertEquals("I went to a cafe ", k.ed.text)
-        // One a letter short of a common word ("nee", "need") is left out of the list, so space fixes it.
+        // One a letter short of a common word ("nee", "need") is left out of the list, so space completes it.
         val nee = Keyboard()
         nee.keys("the nee ")
-        assertEquals("the new ", nee.ed.text)
+        assertEquals("the need ", nee.ed.text)
     }
 
     /** An editor with a selection that tells the engine of each change once the key's work is done, as Android does. */

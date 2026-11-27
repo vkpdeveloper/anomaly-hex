@@ -16,14 +16,17 @@ internal interface Lexicon {
  * as iOS reads `UILexicon`: the decoder reads taps as them (a word you added is a word, scored as a
  * moderately common one), the strip completes them, a word typed in lowercase takes the capitals you
  * gave it ("github" -> "GitHub") unless it is also an ordinary word ("will"), and a shortcut typed
- * offers its phrase ([shortcut]). Words in the model's alphabet only; nothing is written. */
+ * offers its phrase ([shortcut]). [learned] are those of [words] that are yours only because you
+ * wrote them ([LearnedWords.yours]): read as words like the rest, but not [added], so the strip ranks
+ * them by how much you use them. Words in the model's alphabet only; nothing is written. */
 internal class PersonalWords(private val model: TypingModel, words: Collection<String>, shortcuts: Map<String, String>,
-                             hidden: (String) -> Boolean = { false }) : Lexicon {
+                             hidden: (String) -> Boolean = { false }, learned: Collection<String> = emptyList()) : Lexicon {
     private val codes: Array<ByteArray>
     private val texts: Array<String>
     private val lookup = HashMap<String, Int>()
     // Lowercase shortcut -> phrase as stored.
     private val shortcuts = shortcuts.mapKeys { it.key.lowercase() }
+    private val learned = learned.mapTo(HashSet()) { it.lowercase() }
 
     init {
         val byCodes = LinkedHashMap<String, Pair<ByteArray, String>>()
@@ -78,6 +81,8 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         return found.sortedBy { it.length }.also { last = prefix to it }
     }
     @Volatile private var last: Pair<String, List<String>>? = null
+    /** The [completions] you added yourself (the personal dictionary, a contact, the computer's words), not [learned] ones. */
+    fun added(prefix: String) = completions(prefix).let { all -> if (learned.isEmpty()) all else all.filter { it.lowercase() !in learned } }
 
     /** Your phrase for a shortcut typed as [typed], cased as Apple's keyboard writes it (#2153, #2173):
      * a shortcut typed with a leading capital, but not all capitals, capitalises the phrase's first
@@ -145,8 +150,9 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
                 else words.add(word)
             }
             val mine = shortcuts.keys.mapTo(HashSet()) { it.lowercase() }
+            val added = (words + contactNames + replacements.words + shortcuts.values).mapTo(HashSet()) { it.lowercase() }
             return PersonalWords(model, words + learned + contactNames + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts,
-                { forgotten?.contains(it) == true })
+                { forgotten?.contains(it) == true }, learned.filter { it.lowercase() !in added })
         }
     }
 }

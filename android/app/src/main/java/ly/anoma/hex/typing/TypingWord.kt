@@ -23,6 +23,10 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private var literalOnly = false
     // A word put back whole ([restored]): it stands as it is until a letter is typed onto it.
     private var restoredWord = false
+    // Put back by undoing its autocorrection ([restored] with undone), and then edited by hand once letters
+    // go onto it: space then fixes only a slip in what you typed ([holdsBack]).
+    private var undone = false
+    private var handEdited = false
     private val taps = ArrayList<SpatialDecoder.Tap>()
     // Where each of the word's letters was tapped, in the grid they were scored on, for [TouchOffsets].
     private val touches = ArrayList<KeyPoint>()
@@ -61,20 +65,14 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     var phrases: LearnedPhrases? = null
     /** The next-word model ([NextWords]), for English and Hinglish; none, the word pairs and lists alone. */
     var next: NextWords? = null
-    /** Whether the last [strip] or [predictions] went without the next-word model's words because they
-     * were still being worked out; [NextWords.ready] follows once they are in. */
-    var awaitingModel = false
-        private set
     // The model's words after `before` that start with `prefix` and this layout knows and may suggest after
-    // `previous`; none while they are worked out.
+    // `previous`; while they are worked out, those in for a shorter prefix ([NextWords.words]), which
+    // [NextWords.ready] then follows.
     // A letter alone only when it is a word: the model reads "e.g." and "Dr." as words and guesses letters after them ("G").
-    private fun modelWords(before: String, prefix: String, previous: Int): List<String> {
-        val words = next?.words(NextWords.context(before), prefix)
-        if (next != null && words == null) awaitingModel = true
-        return words?.filter {
+    private fun modelWords(before: String, prefix: String, previous: Int) =
+        next?.words(NextWords.context(before), prefix)?.filter {
             (it.length > 1 || it in oneLetterWords) && model.index(it) >= 0 && !model.neverSuggest.blocks(it, suggestSwearWords, previous)
         }.orEmpty()
-    }
     /** Starts a word after `before`. The word a space just finished stays revisable only when
      * `before` is still the text it left; an empty `before` keeps it for the next call. */
     fun reset(before: String = "") {
@@ -82,6 +80,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         touched = if (grid != null && token.isNotEmpty() && !literalOnly && touches.size == token.length) Touched(token, ArrayList(touches), grid) else null
         ended = token.takeIf { it.isNotEmpty() && !literalOnly }?.lowercase()
         token = ""; taps.clear(); touches.clear(); decision = null; literalOnly = false; restoredWord = false
+        undone = false; handEdited = false
         this.before = before
         previousText = previousWord(before).takeIf { it.isNotEmpty() }
         previous = model.context(previousText.orEmpty())
@@ -92,9 +91,11 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         finished = pending?.takeIf { sameText(before, it.anchor) }
         pending = null
     }
-    /** A word put back whole, by delete reaching it or undoing its autocorrection: with no taps, space keeps it
-     * as it stands. A letter typed onto it makes it a word being typed again ([retap]). */
-    fun restored(text: String, before: String) { reset(before); explicit(text); restoredWord = true }
+    /** A word put back whole, by delete reaching it or undoing its autocorrection ([undone]): with no taps, space
+     * keeps it as it stands. A letter typed onto it makes it a word being typed again ([retap]). */
+    fun restored(text: String, before: String, undone: Boolean = false) {
+        reset(before); explicit(text); restoredWord = true; this.undone = undone
+    }
     /** A word already in the text, read for the strip: unlike [restored] it may be fixed, by its letters alone,
      * read as each key tapped at its centre, so a slip or swapped letters still find the word ("wrods" ->
      * "words"). A letter off the QWERTY keys (ø) leaves it untapped: fixed by the tables alone. */
@@ -113,7 +114,6 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * `before` is the text before the cursor; a bare word counts as one just finished. Capitalised
      * as shift would be, by default at a sentence's start. */
     fun predictions(before: String, capitalize: Boolean? = null): List<String> {
-        awaitingModel = false
         val text = if (before.lastOrNull()?.let { it.isLetter() || it == '\'' } == true) "$before " else before
         val words = when {
             startsSentence(text) -> modelWords(text, "", -1) + sentenceStarters[model.language].orEmpty()
@@ -183,13 +183,13 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
      * candidate, then the runner-up. An unfinished word that space leaves alone (no word yet, "th")
      * gets three candidates instead. Candidates: your shortcut's phrase ("addr"), which only a tap puts
      * in, as on Gboard; your spelling of a word you typed another way ("nhi" for "nahi",
-     * [SpatialDecoder.preferred]); a suggest-only English contraction ("ill" -> "I'll"), the likeliest
-     * completions of a 1–3 letter word after the words before (the next-word model's, then the word
-     * pairs'), then, for a word of three letters or more, the decoder's other readings of the taps before completions by frequency (after two
-     * letters the word is usually unfinished: completions first). Each in the spelling you write.
-     * Never what was typed again. [autocorrect] off: no fix and no readings, completions only. */
+     * [SpatialDecoder.preferred]); a suggest-only English contraction ("ill" -> "I'll"), then the likeliest
+     * longer word, beside the fix too ("alw" offers "always" beside "law"): for a 1–3 letter word the
+     * next-word model's, else [longerWords]' first. Then, for a word of three letters or more, the decoder's
+     * other readings of the taps, then the rest of the longer words (after two letters the word is usually
+     * unfinished: those first). Each in the spelling you write. Never what was typed again. [autocorrect]
+     * off: no fix and no readings, completions only. */
     fun strip(autocorrect: Boolean = true): List<Suggestion> {
-        awaitingModel = false
         if (token.length !in 1..MAX_LENGTH) return emptyList()
         val typed = Suggestion(token, Suggestion.Kind.Typed)
         val shortcut = decoder.personal?.shortcut(token)
@@ -211,34 +211,98 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (autocorrect && fix == null && model.spelling == "en") suggestOnly[lower]?.let { add(matchCase(token, it)) }
         // Your own word, completed once two letters match, before the dictionary's: a word you added is
         // likelier what you mean than a reading's runner-up ("zor" offers "Zorbex" beside the fix "or").
-        if (token.length >= 2) decoder.personal?.completions(token)?.firstOrNull()?.let { add(yours(it)) }
+        // One you only wrote waits for [longerWords], which weighs how often you write it.
+        if (token.length >= 2) decoder.personal?.added(token)?.firstOrNull()?.let { add(yours(it)) }
         // A word already in this message, completed once two letters match: names and topic words come again.
         if (token.length >= FIELD_COMPLETES) decoder.fieldWords?.completion(token)?.let { add(if (it.any(Char::isUpperCase)) yours(it) else shown(it)) }
         // The word you write after these two, completed from its first letter (your own phrases).
         val one = previousText
-        if (beforePreviousText != null && one != null) decoder.learned?.next(beforePreviousText, one, lower)?.forEach {
-            add(if (it.any(Char::isUpperCase)) yours(it) else shown(it))
-        }
-        // A 1–3 letter word's likeliest completions: the next-word model's for the text before, then the word pairs'.
-        val short = if (token.length <= 3) {
-            val modelled = if (lower.all { it in 'a'..'z' }) modelWords(before, lower, previous).filter { it.length in lower.length + 1..lower.length + 8 } else emptyList()
-            (modelled + model.completionsAfter(lower, previous, suggestSwearWords).map { model.text(it) }).distinct().map(::shown)
-        } else emptyList()
-        if (fix == null) short.firstOrNull { s -> pool.none { it.equals(s, ignoreCase = true) } }?.let(::add)
+        if (beforePreviousText != null && one != null) decoder.learned?.next(beforePreviousText, one, lower)?.forEach { add(learnedShown(it)) }
+        // A 1–3 letter word's likeliest completions start with the next-word model's for the text before.
+        val modelled = if (token.length <= 3 && lower.all { it in 'a'..'z' })
+            modelWords(before, lower, previous).filter { it.length in lower.length + 1..lower.length + 8 }.map(::shown) else emptyList()
+        val longer = modelled + longerWords(lower)
+        // The likeliest longer word gets a slot before the taps' other readings, beside a fix too: a word being
+        // typed is more often unfinished than mistyped ("climbi" keeps "climbing" beside "climb").
+        longer.firstOrNull { s -> pool.none { it.equals(s, ignoreCase = true) } }?.let(::add)
         val readings = autocorrect && spatial && token.length >= 2 && !protected()
         fun reading(text: String) = if (decoder.personal?.owns(text) == true) yours(text) else shown(text)
         if (readings && token.length >= 3) for (r in decision().readings) add(reading(r.text))
-        for (s in short) add(s)
+        if (token.length <= 3) for (w in longer) add(w)
         // Your own words before the rest of the dictionary's (iOS lists UILexicon terms with them).
-        decoder.personal?.completions(token)?.let { for (w in it) { if (pool.size >= size) break; add(yours(w)) } }
-        // Then the words you write most, as Gboard completes from what it learned.
-        decoder.learned?.completions(token)?.let { for (w in it) { if (pool.size >= size) break; add(if (w.any(Char::isUpperCase)) yours(w) else shown(w)) } }
-        for (w in model.completions(lower, suggestSwearWords, previous)) add(shown(model.text(w)))
+        decoder.personal?.added(token)?.let { for (w in it) { if (pool.size >= size) break; add(yours(w)) } }
+        for (w in longer) add(w)
         if (readings && token.length < 3) for (r in decision().readings) add(reading(r.text))
         if (pool.isEmpty()) return listOf(typed)
         val first = if (fix != null) Suggestion(fix, Suggestion.Kind.Fix) else Suggestion(pool[0], Suggestion.Kind.Word)
         val words = listOf(first) + pool.drop(1).map { Suggestion(it, Suggestion.Kind.Word) }
         return if (showTyped) listOf(typed) + words else words
+    }
+
+    /** The words longer than [lower] that start with it, likeliest first, as the strip shows them: the dictionary's
+     * commonest, and for 1–3 letters the likeliest after the word before by the word pairs, then the words you
+     * write ([LearnedWords.completions]), all ranked by one cost with what you write mixed in
+     * ([LearnedWords.mixed]), so a word you write often comes first ("tum" offers your "tumko"). A word you wrote
+     * that the dictionary lacks counts by your use alone, and only from [LearnedWords.PREFERRED_USES] uses: one
+     * kept once against a fix ("Wiht") or a slip you let stand ("donr") waits behind the common words until you
+     * really write it, and one slip from a dictionary word on the list goes after that word unless you write it
+     * far more. */
+    private fun longerWords(lower: String): List<String> {
+        val learned = decoder.learned
+        fun cost(index: Int, text: String): Double {
+            val base = if (index >= 0) model.languageCost(previous, index) else Double.POSITIVE_INFINITY
+            return learned?.mixed(base, text, previousText, beforePreviousText) ?: base
+        }
+        class Ranked(val shown: String, val lower: String, val cost: Double, val known: Boolean)
+        val ranked = ArrayList<Ranked>(8)
+        val dictionary = model.completions(lower, suggestSwearWords, previous) +
+            if (lower.length <= 3) model.completionsAfter(lower, previous, suggestSwearWords) else IntArray(0)
+        for (w in dictionary) {
+            val text = model.text(w)
+            if (text.length > lower.length && ranked.none { it.lower == text }) ranked.add(Ranked(spelledYourWay(text), text, cost(w, text), true))
+        }
+        learned?.completions(token)?.forEach { w ->
+            val l = w.lowercase(); val index = model.index(l)
+            // Fewer uses than your spelling needs to take a word's place is too little to beat the dictionary's.
+            val evidence = index >= 0 || learned.uses(l) >= LearnedWords.PREFERRED_USES
+            val c = if (evidence) cost(index, w) else Double.POSITIVE_INFINITY
+            if (ranked.none { it.lower == l }) ranked.add(Ranked(learnedShown(w), l, c, index >= 0))
+        }
+        ranked.sortBy { it.cost }
+        if (learned != null) for (slip in ranked.filter { !it.known }) {
+            val below = ranked.subList(ranked.indexOf(slip) + 1, ranked.size)
+            val word = below.firstOrNull { it.known && EmojiWords.oneSlip(slip.lower, it.lower) } ?: continue
+            // It keeps its place on the evidence your spelling of a word needs to take that word's ([LearnedWords.preferred]).
+            val written = learned.uses(slip.lower)
+            if (written >= LearnedWords.PREFERRED_USES && written >= LearnedWords.PREFERRED_SHARE * learned.uses(word.lower)) continue
+            ranked.remove(slip)
+            ranked.add(ranked.indexOf(word) + 1, slip)
+        }
+        return ranked.map { it.shown }
+    }
+    // A dictionary word as the strip shows it, in the capitals you give it ("hex" you write "Hex").
+    private fun spelledYourWay(word: String) = learnedSpelling(word)?.takeUnless(::oddCapitals)?.let(::yours) ?: shown(word)
+    // A word you write, as the strip shows it: a dictionary word you once wrote in capitals ("HAPPY", "alO")
+    // in its own form, as the dictionary writes it.
+    private fun learnedShown(word: String) = when {
+        !word.any(Char::isUpperCase) -> shown(word)
+        oddCapitals(word) && model.index(word.lowercase()) >= 0 -> shown(word.lowercase())
+        else -> yours(word)
+    }
+    // Capitals past the first letter that aren't a name's or a brand's ("GitHub", "iPhone"): all capitals, or one
+    // with no lowercase letter after it.
+    private fun oddCapitals(word: String) =
+        word.indices.any { i -> i > 0 && word[i].isUpperCase() && word.getOrNull(i + 1)?.isLowerCase() != true }
+
+    /** Whether the letters typed are likelier the whole word than the start of a longer one: no word of the
+     * model's is longer and starts with them, or they spell one at least as common as the commonest that is.
+     * Only then may emoji join the strip for them ([EmojiWords]), so they never take a slot from a word still
+     * being typed: "fire" offers 🔥, but "tha" no 🙏 for "thanks". */
+    fun spellsWhole(): Boolean {
+        val lower = token.lowercase()
+        val longer = model.completions(lower, suggestSwearWords, previous).firstOrNull { model.length(it) > lower.length } ?: return true
+        val own = model.index(lower)
+        return own >= 0 && model.frequencyCost(own) <= model.frequencyCost(longer)
     }
 
     // The spelling you write of a candidate, cased as it is; the candidate itself while it completes what
@@ -272,6 +336,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // you go on typing can be fixed; their touches stay unknown, so [TouchOffsets] learns nothing from them.
     private fun retap() {
         restoredWord = false
+        handEdited = undone
         if (!spatial || token.length >= MAX_LENGTH) return
         val centres = token.map { QWERTY.centres[it.lowercaseChar()] ?: QWERTY.centres[base(it)] ?: return }
         literalOnly = false; taps.clear(); touches.clear()
@@ -285,16 +350,18 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     private val glider by lazy { GlideDecoder(model) }
     /** The words a glide spells after `before` (the text before the cursor), likeliest first, spelled as
      * the strip shows them: a name with its capital, your own word your way, and the spelling you write
-     * of a word written several ways ("nhi" for "nahi"). */
+     * of a word written several ways ("nhi" for "nahi"). A dictionary word you once wrote in capitals
+     * glides in its own form ("can", not "CAN"). */
     fun glide(path: List<KeyPoint>, grid: KeyGrid, before: String): List<String> =
         glider.decode(path, grid, model.context(previousWord(before).lowercase()), suggestSwearWords, decoder.personal, decoder.learned,
             beforePrevious = LearnedWords.wordBeforeGap(before)?.let { LearnedWords.wordBeforeGap(it.second) }?.first?.lowercase(),
             fieldWords = decoder.fieldWords)
             .map { c ->
                 val yours = decoder.preferred(c.text)?.takeUnless(::blocked)
-                if (yours != null) learnedSpelling(yours) ?: displayed(yours)
-                else if (c.personal) c.text else learnedSpelling(c.text) ?: displayed(c.text)
+                if (yours != null) glidedSpelling(yours)
+                else if (c.personal) c.text else glidedSpelling(c.text)
             }.distinct()
+    private fun glidedSpelling(word: String) = learnedSpelling(word)?.takeUnless(::oddCapitals) ?: displayed(word)
     // How you write a model word when you give it capitals it doesn't have ("hex" -> "Hex").
     private fun learnedSpelling(word: String) = decoder.learned?.spelling(word)?.takeIf { it != word && it.lowercase() == word }
     private fun decision() = decision ?: decoder.decide(token.lowercase().replace('\u2019', '\''), taps, previous, suggestSwearWords, beforePreviousText).also { decision = it }
@@ -375,9 +442,81 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // A capitalised word of yours that is also an ordinary lowercase word ("Will", "Bill") stays
     // lowercase when typed so, as iOS's withoutStrayCapital.
     private fun ordinary(word: String) = word.lowercase().let { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 95 }
-    private fun yours(word: String): String =
-        if (token.firstOrNull()?.isUpperCase() != true && word.drop(1).none { it.isUpperCase() } && ordinary(word)) word.lowercase()
-        else matchCase(token, word)
+    // Typed without capitals, a word of yours takes only capitals that are how it is spelled: inside it
+    // ("GitHub"), or a name your dictionary or contacts give. A dictionary word in capitals ("COMPANY", from
+    // a contact) is never shouted, and a first capital that is only how you last wrote it ("Opencode") isn't
+    // a habit: you write it as you type it.
+    private fun yours(word: String): String {
+        val lower = word.lowercase()
+        if (token.drop(1).none { it.isUpperCase() } && word.length >= 2 && word.none { it.isLowerCase() } && model.index(lower) >= 0)
+            return matchCase(token, lower)
+        if (token.firstOrNull()?.isUpperCase() != true && word.drop(1).none { it.isUpperCase() } &&
+            (ordinary(word) || decoder.learned?.spelling(lower) == word)) return lower
+        return matchCase(token, word)
+    }
+    // A word you've written that the dictionary lacks, one key off a far commoner word ("likr" for "like",
+    // "wiht" for "with"): a slip you let stand twice, not a word of yours, so space fixes it. A word your
+    // dictionary or contacts give ([LearnedWords] never saw it) is left alone.
+    private fun commonerSlip(): String? {
+        val lower = token.lowercase()
+        if (!spatial || lower.length < 4 || token.drop(1).any { it.isUpperCase() } || model.index(lower) >= 0 || model.known(lower) ||
+            decoder.learned?.spelling(lower) == null) return null
+        var best: String? = null
+        var bestCost = COMMON_SLIP + 1
+        fun consider(candidate: String) {
+            val i = model.index(candidate)
+            if (i < 0 || model.frequencyCost(i) >= bestCost || model.neverSuggest.blocks(candidate, suggestSwearWords, previous)) return
+            best = candidate; bestCost = model.frequencyCost(i)
+        }
+        val letters = lower.toCharArray()
+        for (i in letters.indices) {
+            val at = QWERTY.centres[letters[i]] ?: return null
+            for ((c, p) in QWERTY.centres) if (c != letters[i] && kotlin.math.hypot(p.x - at.x, p.y - at.y) <= NEIGHBOUR) {
+                letters[i] = c; consider(String(letters)); letters[i] = lower[i]
+            }
+            if (i + 1 < letters.size && letters[i] != letters[i + 1]) {
+                letters[i] = lower[i + 1]; letters[i + 1] = lower[i]; consider(String(letters))
+                letters[i] = lower[i]; letters[i + 1] = lower[i + 1]
+            }
+        }
+        return best
+    }
+    // A word stretched for feeling, its last letter held ("Thankss", "Yayyy", "Whyy", "Cooll"): it stands
+    // when the word under the stretch is one. Only doubling the end of a two-letter word ("nee" over "ne")
+    // is likelier a slip.
+    private fun stretched(lower: String): Boolean {
+        val last = lower.last()
+        if (lower.length < 3 || lower[lower.length - 2] != last || !last.isLetter()) return false
+        val stem = lower.trimEnd(last)
+        val held = lower.length - stem.length
+        return knows(stem + last) && (held >= 3 || stem.length >= 2) || knows(stem + last + last)
+    }
+    // A fix the decoder found that space still doesn't make: a word typed in lowercase into a name that
+    // starts with another letter ("typa" -> "Gupta"); a dictionary word into a rarer one ("aadha" -> "aacha");
+    // in Hinglish, a short word ending in a vowel, as its words do, that no list has, into one two or more
+    // letters off that isn't its completion ("kuru" -> "jury", "jaysa" -> "jyada"; "becau" -> "because" goes in); in Hinglish, a key read as a missed space when no
+    // part is four letters or more, since its short words split nearly anything ("konse" -> "ko se",
+    // "gyantoh" -> "gya toh"); and a word edited by hand after its autocorrection was undone, unless the fix
+    // is one slip off.
+    private fun holdsBack(lower: String, fix: String): Boolean {
+        val target = fix.lowercase()
+        val hinglish = model.language == "hien"
+        if (' ' in target) {
+            if (handEdited) return true
+            val lostKey = target.replace(" ", "") != lower.replace("'", "")
+            return hinglish && lostKey && target.split(' ').none { it.length >= 4 }
+        }
+        if (token.first().isLowerCase() && target.first() != lower.first() &&
+            (fix.first().isUpperCase() || capitalisedName(target) != null)) return true
+        // English and Hinglish only: elsewhere an accent's word may be the rarer one and still meant ("ou" -> "où").
+        val literal = model.index(lower)
+        val other = model.index(target)
+        if (model.spelling == "en" && literal >= 0 && other >= 0 && model.frequencyCost(other) > model.frequencyCost(literal)) return true
+        val distance = TypoMemory.distance(lower, target)
+        if (hinglish && lower.length in 3..5 && lower.last() in "aeiou" && distance >= 2 && !knows(lower) &&
+            !target.startsWith(lower) && decoder.english?.index(lower)?.let { it >= 0 } != true) return true
+        return handEdited && distance > 1
+    }
     fun literalChip(suggestions: List<String>) = token.takeIf { it.isNotEmpty() && (suggestions.isEmpty() || blocked(it)) }
     private fun protected() = token.drop(1).any { it.isUpperCase() } ||
         (model.spelling == "en" && token.lowercase() in shorthand)
@@ -394,7 +533,10 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         // Your shortcut stays as typed: its phrase is the strip's to offer.
         if (personal?.shortcut(token) != null) return null
         // Your own word: never corrected into another, and spelled your way ("github" -> "GitHub").
-        personal?.index(token)?.takeIf { it >= 0 }?.let { return yours(personal.text(it)).takeIf { s -> s != token } }
+        personal?.index(token)?.takeIf { it >= 0 }?.let { i ->
+            if (!literalOnly) commonerSlip()?.let { return cased(it) }
+            return yours(personal.text(i)).takeIf { s -> s != token }
+        }
         if (literalOnly || blocked(token)) return null
         // A short part after a hyphen is seldom a slip: "hi-fi", "anti-vax" and "bf-gf" stay ("hi-if" otherwise).
         if (before.lastOrNull() == '-' && token.length < HYPHEN_PART_FIXED) return null
@@ -402,6 +544,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         val allCaps = token.length >= 2 && token.all { it.isUpperCase() }
         if (token.drop(1).any { it.isUpperCase() } && !allCaps) return null
         if (model.spelling == "en" && lower in shorthand) return null
+        if (!knows(lower) && stretched(lower)) return null
         // A word the same letters spell with an apostrophe or an accent, or one that sounds alike,
         // chosen by the word before when it says so clearly ("yes id" -> "yes I'd", "the id" stays).
         if (!allCaps && '\'' !in token) ContextWords.choice(model, token, previousText, null, sentenceStart)
@@ -414,11 +557,12 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (allCaps || !spatial) return null
         // A name, day or place typed in lowercase takes its capital ("mary" -> "Mary"), and so does a
         // German noun ("haus" -> "Haus"), as the capitals list beside the model says.
+        val found = decision().replace ?: return capitalised(token)
         // In the spelling you write, which may be what you typed ("nhi" when you write it, not "nahi").
-        val replace = decision().replace?.let { r ->
-            if (' ' in r || decoder.personal?.owns(r) == true) r else decoder.preferred(r)?.takeUnless(::blocked) ?: r
-        }
-        if (replace == null || replace.equals(token, ignoreCase = true)) return capitalised(token)
+        // Whether to hold back is the decoder's word's question: "nahu" is one slip from "nahi", not two from "nhi".
+        val replace = if (' ' in found || decoder.personal?.owns(found) == true) found
+            else decoder.preferred(found)?.takeUnless(::blocked) ?: found
+        if (replace.equals(token, ignoreCase = true) || holdsBack(lower, found)) return capitalised(token)
         val fix = if (decoder.personal?.owns(replace) == true) yours(replace) else cased(replace)
         // A missed space after English "i" ("iwant") gives "I want", as "i" alone does.
         if (model.spelling == "en" && ' ' in fix) return fix.split(' ').joinToString(" ") { if (it == "i") "I" else it }
@@ -519,6 +663,11 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         const val MAX_LENGTH = 32
         /** The fewest letters a part after a hyphen needs before space corrects it ("well-knwn"). */
         private const val HYPHEN_PART_FIXED = 4
+        // How common a word must be ([TypingModel.frequencyCost], lower is commoner: "like" is 56) for a word
+        // of yours one key off it to read as a slip of it ([commonerSlip]).
+        private const val COMMON_SLIP = 60
+        // Keys whose centres are this close on [QWERTY]'s reference keys (dp) are neighbours: beside, or above and below.
+        private const val NEIGHBOUR = 60.0
         private const val FIELD_COMPLETES = 2
         /** The longest phrase the strip's wide slot shows without cutting it. */
         const val MAX_PHRASE_CHARS = 24

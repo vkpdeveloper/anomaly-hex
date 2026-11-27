@@ -217,7 +217,24 @@ internal class TypingModel private constructor(private val data: ByteBuffer, val
         }
         return cached.takeIf { it !== NONE }
     }
-    private fun range(prefix: String): Long {
+    /** The [count] commonest words in [lo] until [hi] (a prefix's range, [child]) longer than [longerThan]
+     * letters that [blocked] lets through, commonest first, ties by their order. One pass over the range's
+     * frequency bytes; [blocked] is asked only of a word that would make the list. */
+    fun commonest(lo: Int, hi: Int, longerThan: Int, count: Int, blocked: (Int) -> Boolean): IntArray {
+        val best = IntArray(count); var found = 0
+        for (word in lo until hi) {
+            val f = u8(uni + word)
+            if (found == count && f >= u8(uni + best[count - 1])) continue
+            if (length(word) <= longerThan || blocked(word)) continue
+            var at = minOf(found, count - 1)
+            while (at > 0 && u8(uni + best[at - 1]) > f) { best[at] = best[at - 1]; at-- }
+            best[at] = word
+            if (found < count) found++
+        }
+        return best.copyOf(found)
+    }
+    /** The range of words that start with [prefix], as [child] gives it, or 0 when none does. */
+    fun range(prefix: String): Long {
         var a = 0; var b = words
         for (i in prefix.indices) {
             val c = code(prefix[i]); if (c == 0) return 0

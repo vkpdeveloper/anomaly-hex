@@ -178,6 +178,9 @@ internal class LearnedWords(private val now: () -> Long = System::currentTimeMil
         return if (models.size < Int.SIZE_BITS) { models.add(model); models.lastIndex } else -1
     }
 
+    /** How often you've written [word], however long ago. */
+    @Synchronized fun uses(word: String) = words[word.lowercase()]?.count ?: 0
+
     /** Your spelling of a word you've used, or null. */
     @Synchronized fun spelling(word: String): String? = words[word.lowercase()]?.spelling
 
