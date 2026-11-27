@@ -8,8 +8,8 @@ internal data class RecentImage(val id: Long, val addedAt: Long, val mime: Strin
 internal object RecentImages {
     /** The toolbar's chip offers the newest one this fresh, until it is used. */
     const val CHIP_MS = 5 * 60_000L
-    /** The clipboard panel shows those from the last hour, as copies stay there an hour. */
-    const val PANEL_MS = ClipHistory.KEEP_MS
+    /** The clipboard panel shows those from the last hour. */
+    const val PANEL_MS = 60 * 60_000L
     const val PANEL_MAX = 8
     /** The most rows one query reads: the hour's newest images, before [screenshot] filters them. */
     const val QUERY_LIMIT = 40
@@ -42,11 +42,17 @@ internal sealed interface ChipOffer {
     data class Code(val code: String, override val at: Long, val message: Long) : ChipOffer
 
     /** How long until this offer is too old for the chip. */
-    fun staleIn(now: Long) = (if (this is Photo) RecentImages.CHIP_MS else COPY_FRESH_MS) - (now - at)
+    fun staleIn(now: Long) = when (this) {
+        is Photo -> RecentImages.CHIP_MS
+        is Code -> CODE_FRESH_MS
+        else -> COPY_FRESH_MS
+    } - (now - at)
 
     companion object {
-        /** A copy older than this no longer gets the chip. */
-        const val COPY_FRESH_MS = 10 * 60_000L
+        /** A copy older than this no longer gets the chip: an hour, as Android clears its own clipboard after. */
+        const val COPY_FRESH_MS = 60 * 60_000L
+        /** A one-time code goes from the chip sooner: such codes stop working within minutes. */
+        const val CODE_FRESH_MS = 10 * 60_000L
         /** [copy] while it is fresh, or [photo] (already chosen by [RecentImages.chip]) or a fresh texted
          * [code] when it is newer. An image is offered only where the editor [takes] its type, as Gboard's
          * is: a field that can't take a picture would only get it on the clipboard, where a copy already is. */
@@ -54,7 +60,7 @@ internal sealed interface ChipOffer {
             listOfNotNull(
                 copy?.takeIf { now - it.at < COPY_FRESH_MS && (it !is Image || (it.clip.content as? ClipContent.Image)?.mime?.let(takes) == true) },
                 photo?.takeIf { takes(it.mime) }?.let(::Photo),
-                code?.takeIf { now - it.at < COPY_FRESH_MS },
+                code?.takeIf { now - it.at < CODE_FRESH_MS },
             ).maxByOrNull { it.at }
     }
 }

@@ -270,6 +270,7 @@ class HexKeyboard : InputMethodService() {
     internal val clips by lazy { ClipKeeper(this, changed = { view?.clipsChanged() }, note = { view?.note(it) }) }
     private val clipsChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == ClipKeeper.RECENT_PHOTOS) clips.syncPhotos()
+        if (key == ClipKeeper.KEEP) clips.keepChanged()
     }
     private val typingChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {

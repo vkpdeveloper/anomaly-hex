@@ -1,6 +1,5 @@
 package ly.anoma.hex.keyboard
 
-import ly.anoma.hex.keyboard.ClipHistory.Companion.KEEP_MS
 import ly.anoma.hex.keyboard.ClipHistory.Companion.MAX_PINNED
 import ly.anoma.hex.keyboard.ClipHistory.Companion.MAX_RECENT
 import ly.anoma.hex.keyboard.ClipHistory.Companion.MAX_RECENT_IMAGES
@@ -15,24 +14,49 @@ class ClipHistoryTest {
     private fun text(s: String) = ClipContent.Text(s)
     private fun image(n: Int) = ClipContent.Image("%064x.png".format(n), "image/png")
     private fun ClipHistory.texts(now: Long) = list(now).map { (it.content as ClipContent.Text).text }
+    private val month = ClipKeep.Month.ms!!
 
-    @Test fun anUnpinnedClipGoesAnHourAfterItWasCopied() {
+    @Test fun anUnpinnedClipStaysThirtyDaysUnlessSettingsSaysOtherwise() {
         val h = ClipHistory()
         h.add(text("code 4821"), at = 0)
-        assertEquals(listOf("code 4821"), h.texts(KEEP_MS - 1))
-        assertEquals(emptyList<String>(), h.texts(KEEP_MS))
+        assertEquals(month, h.nextExpiry())
+        assertEquals(listOf("code 4821"), h.texts(month - 1))
+        assertEquals(emptyList<String>(), h.texts(month))
         assertNull(h.nextExpiry())
     }
 
-    @Test fun aPinnedClipStaysUntilUnpinnedAndThenGetsAFreshHour() {
+    @Test fun aShorterOrLongerKeepAppliesToClipsAlreadyKept() {
+        val h = ClipHistory()
+        h.add(text("old"), at = 0)
+        h.keep = ClipKeep.Year.ms
+        assertEquals(listOf("old"), h.texts(2 * month))
+        h.keep = ClipKeep.Hour.ms
+        assertEquals(emptyList<String>(), h.texts(2 * month))
+    }
+
+    @Test fun foreverKeepsUnpinnedClipsAndSetsNoExpiry() {
+        val h = ClipHistory()
+        h.keep = ClipKeep.Forever.ms
+        h.add(text("kept"), at = 0)
+        assertNull(h.nextExpiry())
+        assertEquals(listOf("kept"), h.texts(10 * ClipKeep.Year.ms!!))
+    }
+
+    @Test fun aKeepSavedUnderAnUnknownNameFallsBackToThirtyDays() {
+        assertEquals(ClipKeep.Month, ClipKeep.of(null))
+        assertEquals(ClipKeep.Month, ClipKeep.of("Fortnight"))
+        assertEquals(ClipKeep.Forever, ClipKeep.of("Forever"))
+    }
+
+    @Test fun aPinnedClipStaysUntilUnpinnedAndThenGetsAFreshKeep() {
         val h = ClipHistory()
         val clip = h.add(text("address"), at = 0)!!
         assertTrue(h.pin(clip.id, true, now = 0))
-        assertEquals(listOf("address"), h.texts(30 * KEEP_MS))
-        assertTrue(h.pin(clip.id, false, now = 30 * KEEP_MS))
-        assertEquals(31 * KEEP_MS, h.nextExpiry())
-        assertEquals(listOf("address"), h.texts(31 * KEEP_MS - 1))
-        assertEquals(emptyList<String>(), h.texts(31 * KEEP_MS))
+        assertEquals(listOf("address"), h.texts(30 * month))
+        assertTrue(h.pin(clip.id, false, now = 30 * month))
+        assertEquals(31 * month, h.nextExpiry())
+        assertEquals(listOf("address"), h.texts(31 * month - 1))
+        assertEquals(emptyList<String>(), h.texts(31 * month))
     }
 
     @Test fun pinnedClipsComeFirstThenTheNewest() {
@@ -113,18 +137,32 @@ class ClipHistoryTest {
         assertEquals(emptySet<String>(), h.files())
     }
 
-    @Test fun onlyPinnedClipsAreSavedAndTheyReadBackAsTheyWere() {
+    @Test fun pinnedAndOtherClipsAreSavedApartAndReadBackAsTheyWere() {
         val h = ClipHistory()
         val note = h.add(text("tab\there\nnew line, ünïcode 🙂"), at = 10)!!
         val picture = h.add(image(7), at = 20)!!
         h.add(text("not pinned"), at = 30)
         h.pin(note.id, true, now = 30); h.pin(picture.id, true, now = 30)
 
-        val back = ClipHistory().apply { read(h.write()) }
-        val clips = back.list(100 * KEEP_MS)
-        assertEquals(listOf(picture.content, note.content), clips.map { it.content })
-        assertEquals(listOf(20L, 10L), clips.map { it.at })
-        assertTrue(clips.all { it.pinned })
+        val back = ClipHistory().apply { read(h.write(pinned = true)); read(h.write(pinned = false), pinned = false) }
+        val clips = back.list(31)
+        assertEquals(listOf(picture.content, note.content, text("not pinned")), clips.map { it.content })
+        assertEquals(listOf(20L, 10L, 30L), clips.map { it.at })
+        assertEquals(listOf(true, true, false), clips.map { it.pinned })
+    }
+
+    @Test fun searchFindsTextClipsHoldingEveryWordInAnyCase() {
+        val h = ClipHistory()
+        h.add(text("Meet at 221B Baker Street"), at = 1)
+        h.add(image(1), at = 2)
+        h.add(text("baker's dozen"), at = 3)
+        h.add(text("street food"), at = 4)
+        val all = h.list(5)
+        fun found(q: String) = ClipHistory.search(all, q).map { (it.content as ClipContent.Text).text }
+        assertEquals(listOf("baker's dozen", "Meet at 221B Baker Street"), found("BAKER"))
+        assertEquals(listOf("Meet at 221B Baker Street"), found(" street  baker "))
+        assertEquals(emptyList<String>(), found("baker street london"))
+        assertEquals(3, found("").size)
     }
 
     @Test fun readingSkipsBrokenLinesAndImagesWhoseFileIsGone() {

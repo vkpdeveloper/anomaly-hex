@@ -49,9 +49,15 @@ internal class ClipKeeper(
         const val PREFS = "clipboard"
         const val RECENT_PHOTOS = "recentPhotos"
         const val ASKED_PHOTOS = "askedPhotos"
-        /** The images the keyboard keeps: one folder in its private files, pinned clips' list beside them. */
+        /** Settings › Keyboard › Keep clipboard history: a [ClipKeep]'s name. */
+        const val KEEP = "keep"
+        /** The clipboard timestamp of the last copy the chip offered and was used, so a restart doesn't offer it again. */
+        private const val USED_COPY = "usedCopyAt"
+        fun keep(context: Context) = ClipKeep.of(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEEP, null))
+        /** The images the keyboard keeps: one folder in its private files, the pinned and the other clips' lists beside them. */
         private const val DIR = "clipboard"
         private const val PINNED = "pinned.txt"
+        private const val RECENT = "recent.txt"
         /** Copies of photos made for an editor, in the cache, kept a day for an app that reads them late. */
         private const val PHOTOS = "photos"
         private const val FAVICONS = "favicons"
@@ -98,7 +104,8 @@ internal class ClipKeeper(
     private val authority = ime.packageName + ".clips"
     private val clipboard = ime.getSystemService(ClipboardManager::class.java)
     private val history = ClipHistory() // Only touched on worker.
-    private var written: String? = null // Only touched on worker.
+    private val written = HashMap<String, String>() // Each list's file as last written; only touched on worker.
+    private val prefs = ime.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** The history as last published: pinned first, newest first. */
     var clips: List<Clip> = emptyList()
@@ -136,8 +143,8 @@ internal class ClipKeeper(
     fun used(offer: ChipOffer) {
         when {
             offer is ChipOffer.Photo -> usedPhotos += offer.photo.id
-            offer is ChipOffer.Code -> { if (offer == copy) copy = null; codes.used(offer) }
-            else -> copy = null
+            offer is ChipOffer.Code -> { if (offer == copy) { copy = null; prefs.edit().putLong(USED_COPY, offer.at).apply() }; codes.used(offer) }
+            else -> { copy = null; prefs.edit().putLong(USED_COPY, offer.at).apply() }
         }
         changed()
     }
@@ -166,8 +173,11 @@ internal class ClipKeeper(
     fun start() {
         clipboard.addPrimaryClipChangedListener(clipChanged)
         worker.execute {
-            val saved = runCatching { File(dir, PINNED).takeIf { it.isFile }?.readText() }.getOrNull()
-            if (saved != null) { history.read(saved) { File(dir, it).isFile }; written = saved }
+            for ((name, pinned) in listOf(PINNED to true, RECENT to false)) {
+                val saved = runCatching { File(dir, name).takeIf { it.isFile }?.readText() }.getOrNull() ?: continue
+                history.read(saved, pinned) { File(dir, it).isFile }
+                written[name] = saved
+            }
             prunePhotos()
             publish()
         }
@@ -176,6 +186,8 @@ internal class ClipKeeper(
     }
     /** The keyboard came up: a copy made while it was away, expiry, new photos and texted codes. */
     fun shown() { read(); worker.execute(::publish); syncPhotos(); codes.sync() }
+    /** Keep clipboard history changed: older clips go now, and the next expiry follows the new time. */
+    fun keepChanged() = worker.execute(::publish)
     fun close() {
         clipboard.removePrimaryClipChangedListener(clipChanged)
         if (observing) ime.contentResolver.unregisterContentObserver(photosChanged)
@@ -195,6 +207,8 @@ internal class ClipKeeper(
         if (at == copyAt) return
         copyAt = at
         copy = null
+        // Used before the keyboard last restarted: it stays in the history, off the chip.
+        val fresh = at != prefs.getLong(USED_COPY, 0L)
         // The extra predates Android 13's constant; password managers set it on older versions too.
         val sensitive = description.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
         val keep = !sensitive && !(ime.engine.secure && ime.isInputViewShown)
@@ -202,7 +216,7 @@ internal class ClipKeeper(
         val image = item?.uri?.takeIf { description.hasMimeType("image/*") }
         if (image != null) {
             // An image the keyboard itself copied (see [insert]) joins the history but isn't offered again.
-            val offered = image.authority != authority
+            val offered = fresh && image.authority != authority
             val described = description.filterMimeTypes("image/*")?.firstOrNull()
             if (keep) worker.execute { keepImage(image, described, at, offered) }
         } else {
@@ -212,8 +226,8 @@ internal class ClipKeeper(
                 // Only a copy just made: one read again when the keyboard starts would come back as new.
                 if (!sensitive && System.currentTimeMillis() - at < REWRITE_WITHIN_MS && rewrite(text, description.label, at)) return
                 // A texted code copied from its message is offered as that code, and never kept.
-                if (codes.isCode(text)) { copy = ChipOffer.Code(text.filter(Char::isDigit), at, -1); changed(); return }
-                copy = ChipOffer.Text(text, sensitive, at)
+                if (codes.isCode(text)) { if (fresh) copy = ChipOffer.Code(text.filter(Char::isDigit), at, -1); changed(); return }
+                if (fresh) copy = ChipOffer.Text(text, sensitive, at)
                 worker.execute {
                     if (history.add(ClipContent.Text(text), at, secret = !keep) != null) publish()
                     // A secret is only ever shown masked, so it isn't read for pieces.
@@ -297,22 +311,24 @@ internal class ClipKeeper(
     private fun extension(mime: String) =
         MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.lowercase()?.takeIf(EXTENSION::matches) ?: "img"
 
-    /** On worker: expiry, the pinned list saved when it changed, unnamed images deleted, and the result
+    /** On worker: expiry, the lists saved when they changed, unnamed images deleted, and the result
      * handed to the main thread with the next expiry scheduled. */
     private fun publish() {
+        history.keep = keep(ime).ms
         val list = history.list(System.currentTimeMillis())
-        val pinned = history.write()
-        if (pinned != written) {
-            val file = File(dir, PINNED)
-            if (pinned.isEmpty()) file.delete() else {
+        for ((name, pinned) in listOf(PINNED to true, RECENT to false)) {
+            val text = history.write(pinned)
+            if (text == written[name].orEmpty()) continue
+            val file = File(dir, name)
+            if (text.isEmpty()) file.delete() else {
                 dir.mkdirs()
-                val partial = File(dir, "$PINNED.partial")
-                runCatching { partial.writeText(pinned); partial.renameTo(file) }
+                val partial = File(dir, "$name.partial")
+                runCatching { partial.writeText(text); partial.renameTo(file) }
             }
-            written = pinned
+            written[name] = text
         }
         val names = history.files()
-        dir.listFiles()?.forEach { if (it.name != PINNED && it.name !in names) it.delete() }
+        dir.listFiles()?.forEach { if (it.name != PINNED && it.name != RECENT && it.name !in names) it.delete() }
         val next = history.nextExpiry()
         main.post {
             clips = list

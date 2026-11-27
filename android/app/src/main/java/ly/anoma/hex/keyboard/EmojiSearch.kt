@@ -59,9 +59,10 @@ internal class EmojiTones(private val prefs: SharedPreferences) {
     }
 }
 
-/** The emoji search's bar while the keys type into it: back to the panel, what was typed with a
- * cursor after it, and clear. Its outline and cursor show the keys type here, not in the app. */
-internal class EmojiSearchBar(context: Context, back: () -> Unit, clear: () -> Unit) : LinearLayout(context) {
+/** The emoji or clipboard search's bar while the keys type into it: back to the panel, what was typed with a
+ * cursor after it ([hint] before anything is), and clear. Its outline and cursor show the keys type here, not in the app. */
+internal class EmojiSearchBar(context: Context, back: () -> Unit, clear: () -> Unit,
+                              private val hint: Int = R.string.keyboard_emoji_search) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
     private fun px(value: Float) = (value * density).roundToInt()
     private fun color(id: Int) = context.getColor(id)
@@ -103,7 +104,7 @@ internal class EmojiSearchBar(context: Context, back: () -> Unit, clear: () -> U
 
     fun show(text: String) {
         empty = text.isEmpty()
-        query.text = text.ifEmpty { context.getString(R.string.keyboard_emoji_search) }
+        query.text = text.ifEmpty { context.getString(hint) }
         query.setTextColor(color(if (empty) R.color.kb_hint else R.color.kb_ink))
         clearButton.visibility = if (empty) INVISIBLE else VISIBLE
         query.invalidate()

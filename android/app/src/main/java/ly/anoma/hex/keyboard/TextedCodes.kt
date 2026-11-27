@@ -53,7 +53,7 @@ internal object OneTimeCode {
  * used, once it is too old, or when a newer copy takes the chip. It never joins the clipboard history. */
 internal class TextedCodes(private val context: Context, private val changed: () -> Unit) {
     companion object {
-        const val FRESH_MS = ChipOffer.COPY_FRESH_MS
+        const val FRESH_MS = ChipOffer.CODE_FRESH_MS
         /** A text arriving writes the inbox a few times; it is read once. */
         private const val QUERY_DELAY_MS = 500L
         /** Texts read at most, newest first. */
