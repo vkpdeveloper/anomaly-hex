@@ -59,14 +59,15 @@ class TypoLearningTest {
         assertEquals(1, again.size())
     }
 
-    @Test fun anUndoneAutocorrectionBlocksThatSwapOnce() {
+    // An undo blocks that swap, and for a while any change to the word put back.
+    @Test fun anUndoneAutocorrectionBlocksThatWord() {
         val k = Keyboard()
         k.word("teh"); k.engine.space()
         assertEquals("the ", k.field.text)
         k.engine.delete()
         assertEquals("teh", k.field.text)
         assertTrue(k.prefs.blocked("en", "teh", "the"))
-        assertFalse(k.prefs.blocked("en", "teh", "them"))
+        assertTrue(k.prefs.blocked("en", "teh", "them"))
         // The word the swap made is not banned: another slip of it is still corrected.
         k.engine.space(); k.word("thw"); k.engine.space()
         assertEquals("teh the ", k.field.text)

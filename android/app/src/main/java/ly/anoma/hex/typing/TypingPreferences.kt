@@ -4,7 +4,7 @@ import android.content.Context
 import java.security.MessageDigest
 import ly.anoma.hex.speech.Spoken
 
-internal class TypingPreferences(context: Context) {
+internal class TypingPreferences(context: Context, private val now: () -> Long = System::currentTimeMillis) {
     private val prefs = context.getSharedPreferences("typing", Context.MODE_PRIVATE)
     var layout: Spoken?
         get() = Spoken.matching(prefs.getString("layout", null))
@@ -114,18 +114,28 @@ internal class TypingPreferences(context: Context) {
         prefs.edit().putLong(FORGET_LEARNED, System.currentTimeMillis()).putLong("historyWordsAt", 0).apply()
     }
 
-    // Remember only explicit rejection of this exact pair in this language; never save typed text.
-    private fun pair(language: String, original: String, replacement: String): String {
-        val bytes = (language + "\u0000" + original.lowercase() + "\u0000" + replacement.lowercase()).toByteArray()
-        return java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes))
-    }
-    /** Whether the keyboard has been told once that [original] shouldn't become [replacement]: only that swap is off. */
+    // Remember only explicit rejection in this language, hashed; never save typed text.
+    private fun hash(text: String) =
+        java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(text.toByteArray()))
+    private fun pair(language: String, original: String, replacement: String) =
+        hash(language + "\u0000" + original.lowercase() + "\u0000" + replacement.lowercase())
+    private fun word(language: String, original: String) = UNDONE + hash(language + "\u0000" + original.lowercase())
+    /** Whether the keyboard has been told that [original] shouldn't become [replacement]: that swap is off for
+     * good, and for [UNDONE_MS] after the undo [original] isn't changed into anything else either. */
     fun blocked(language: String, original: String, replacement: String) =
-        prefs.getInt(pair(language, original, replacement), 0) >= 1
+        prefs.getInt(pair(language, original, replacement), 0) >= 1 ||
+            prefs.getLong(word(language, original), -1).let { it >= 0 && now() - it < UNDONE_MS }
+    /** [original] was put back in place of [replacement]: see [blocked]. Word stamps past [UNDONE_MS] go. */
     fun undo(language: String, original: String, replacement: String) {
-        prefs.edit().putInt(pair(language, original, replacement), 1).apply()
+        val at = now()
+        val edit = prefs.edit()
+        for ((key, value) in prefs.all) if (key.startsWith(UNDONE) && value is Long && at - value >= UNDONE_MS) edit.remove(key)
+        edit.putInt(pair(language, original, replacement), 1).putLong(word(language, original), at).apply()
     }
     companion object {
+        /** How long after an undo the word put back isn't autocorrected at all (a week); used twice by then, it is yours. */
+        const val UNDONE_MS = 7L * 24 * 60 * 60 * 1000
+        private const val UNDONE = "undone:"
         const val SUGGEST_SWEAR_WORDS = "suggestSwearWords"
         const val LEARN_FROM_HISTORY = "learnFromHistory"
         const val LEARN_FROM_CORRECTIONS = "learnFromCorrections"

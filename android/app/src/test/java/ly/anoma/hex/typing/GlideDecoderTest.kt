@@ -54,6 +54,70 @@ class GlideDecoderTest {
         assertTrue("first $first/$total", first >= total * .85)
         assertTrue("in the strip $shown/$total", shown >= total * .97)
     }
+
+    // A finger turns before a far key: the a of "happening" missed by more than a key. The word is
+    // still read, after the word before or alone, rather than a rare one the path happened to cross.
+    @Test fun aKeyTheFingerTurnedShortOfStillReads() {
+        val g = Glides.grid()
+        for ((previous, word, moved) in listOf(
+            Triple("is", "happening", 'a' to (1.2 to 0.0)),
+            Triple("", "happening", 'a' to (1.2 to 0.0)),
+            Triple("you", "have", 'a' to (1.2 to 0.0)),
+            Triple("want", "another", 'a' to (1.2 to 0.0)),
+            Triple("", "people", 'p' to (-1.2 to 0.0)),
+            Triple("", "would", 'w' to (1.15 to 0.0)),
+        )) {
+            val path = Glides.path(word, Glides.moved(g, moved), smooth = .5 * g.pitchX)
+            val found = glide.decode(path, g, model.context(previous), false, null).map { it.text }
+            assertEquals("'$previous' $word: $found", word, found.firstOrNull())
+        }
+    }
+
+    // Hurried glides, as a thumb draws them: the commonest words should still nearly all be offered.
+    @Test fun hurriedGlidesStillOfferTheWord() {
+        val g = Glides.grid()
+        val words = (0 until model.size).filter { w -> model.length(w) >= 2 && model.text(w).all { it in 'a'..'z' } }
+            .sortedBy { model.frequencyCost(it) }.take(300).map { model.text(it) }
+        var first = 0; var shown = 0; var total = 0
+        for (word in words) for (seed in 1L..3L) {
+            val found = glide.decode(Glides.hurried(word, g, seed), g, -1, false, null).map { it.text }
+            total++
+            if (found.firstOrNull() == word) first++
+            if (word in found) shown++
+        }
+        println("hurried glides: first $first/$total, in the strip $shown/$total")
+        assertTrue("first $first/$total", first >= total * .67)
+        assertTrue("in the strip $shown/$total", shown >= total * .85)
+    }
+
+    // A rare word is offered beside a common one only when the path fits it about as well: glided
+    // cleanly, "world" has no "withhold" beside it, yet "withhold" glided cleanly is read.
+    @Test fun rareWordsAreOfferedOnlyWhenThePathFitsThem() {
+        val g = Glides.grid()
+        for (word in listOf("world", "hello", "thanks", "another")) {
+            val found = glide.decode(Glides.path(word, g), g, -1, false, null).map { it.text }
+            assertEquals("$word: $found", word, found.firstOrNull())
+            for (other in found.drop(1)) assertTrue("$word: $found", model.frequencyCost(model.index(other)) < RARE)
+        }
+        for (word in listOf("withhold", "erotic", "adjudge", "bestirring"))
+            for ((name, path) in Glides.variants(word, g))
+                assertEquals("$word ($name)", word, glide.decode(path, g, -1, false, null).firstOrNull()?.text)
+        // The commonest words glided four ways: few glides offer a rare word beside them.
+        val words = (0 until model.size).filter { w -> model.length(w) >= 2 && model.text(w).all { it in 'a'..'z' } }
+            .sortedBy { model.frequencyCost(it) }.take(300).map { model.text(it) }
+        var total = 0; var rare = 0
+        for (word in words) for ((_, path) in Glides.variants(word, g)) {
+            total++
+            if (glide.decode(path, g, -1, false, null).drop(1).any { model.frequencyCost(model.index(it.text)) >= RARE }) rare++
+        }
+        println("glides of the commonest words offering a rare word: $rare/$total")
+        assertTrue("rare $rare/$total", rare <= total * .1)
+    }
+
+    private companion object {
+        /** About the 15,000th commonest word and rarer. */
+        const val RARE = 100
+    }
 }
 
 /** Synthetic glides over the letter keys as Hex lays them out on the OnePlus Nord (1272 px across at
@@ -115,6 +179,23 @@ internal object Glides {
             val from = i - span; val to = i + span
             KeyPoint((from..to).sumOf { dense[it].x } / (to - from + 1), (from..to).sumOf { dense[it].y } / (to - from + 1))
         }
+    }
+
+    /** [g] with some keys moved by (across, down) keys: a path drawn on it misses those keys on [g] as a
+     * finger that turns short of them does. */
+    fun moved(g: KeyGrid, vararg moves: Pair<Char, Pair<Double, Double>>): KeyGrid {
+        val centres = LinkedHashMap(g.centres)
+        for ((c, by) in moves) centres[c] = centres.getValue(c).let { KeyPoint(it.x + by.first * g.pitchX, it.y + by.second * g.pitchY) }
+        return KeyGrid(centres, g.pitchX, g.pitchY, g.space)
+    }
+
+    /** A hurried glide as a thumb draws one: corners rounded over a key and a half, each key's point
+     * well off it, the whole path a little off the keys and a little past its end. */
+    fun hurried(word: String, g: KeyGrid, seed: Long): List<KeyPoint> {
+        val random = Random(seed * 31 + word.hashCode())
+        val dx = random.nextGaussian() * .18 * g.pitchX; val dy = random.nextGaussian() * .18 * g.pitchY
+        return path(word, g, smooth = 1.5 * g.pitchX, jitter = .42, overshoot = random.nextDouble() * .3, seed = seed + word.hashCode())
+            .map { KeyPoint(it.x + dx, it.y + dy) }
     }
 
     /** The same word glided cleanly, with rounded corners, a little off its keys, and past its end. */

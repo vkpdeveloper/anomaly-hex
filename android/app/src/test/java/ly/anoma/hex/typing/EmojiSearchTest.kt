@@ -29,7 +29,7 @@ class EmojiSearchTest {
 
     @Test fun oneLetterFindsInTheSearchButNotOnTheStrip() {
         assertTrue("👍" in find("k"))
-        assertNull(EmojiWords(listOf(lists("slang"))).find(listOf("k"), EmojiWords.Picks()))
+        assertNull(EmojiWords(listOf(lists("slang"))).find("k", EmojiWords.Picks()))
     }
 
     @Test fun aWordStillBeingTypedFindsByItsStart() {

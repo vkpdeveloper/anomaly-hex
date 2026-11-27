@@ -66,16 +66,30 @@ class CorrectionAfterEditTest {
         assertEquals(next, k.strip)
     }
 
-    // Return ends a word as typed. Taken back up by delete and ended again, it counts once, as a space's
-    // word does, so a slip doesn't become one of your words, never corrected again.
-    @Test fun aSlipEndedByReturnThenTakenBackCountsOnce() {
+    // A word Return ends as typed, taken back up by delete and ended again, counts once, as a space's word
+    // does, so it doesn't become one of your words.
+    @Test fun aWordEndedByReturnThenTakenBackCountsOnce() {
         val k = Keyboard()
-        k.tap("see you tomorow"); k.engine.enter(); k.engine.delete()
+        k.tap("see you zorbly"); k.engine.enter()
+        assertEquals("see you zorbly\n", k.field.text)
+        k.engine.delete()
+        assertEquals("see you zorbly", k.field.text)
+        k.engine.space()
+        assertFalse("zorbly" in k.learned.words())
+    }
+
+    // Return makes the fix space would, then breaks the line; delete right after puts the typed word back.
+    @Test fun returnFixesASlipAndDeleteTakesItBack() {
+        val k = Keyboard()
+        k.tap("see you tomorow"); k.engine.enter()
+        assertEquals("see you tomorrow\n", k.field.text)
+        k.engine.delete()
         assertEquals("see you tomorow", k.field.text)
         k.engine.space()
         assertFalse("tomorow" in k.learned.words())
+        // Undone, it isn't changed again for a while.
         k.tap("tomorow ")
-        assertEquals("see you tomorow tomorrow ", k.field.text)
+        assertEquals("see you tomorow tomorow ", k.field.text)
     }
 
     // The same for a glided word: it counted when the next letter put its space in.

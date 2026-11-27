@@ -13,7 +13,7 @@ import kotlin.math.sqrt
  * explains ("te" read from t, h, e) is dear. The likeliest words then add the language model's cost
  * after the previous word, mixed with how often you write it ([LearnedWords]). Your own words are walked
  * the same way, scored as a moderately common word or likelier when you write them often, as the tap
- * decoder scores them. */
+ * decoder scores them. Only readings nearly as likely as the first are offered beside it. */
 internal class GlideDecoder(private val model: TypingModel) {
     /** [text] is the model's lowercase spelling, or yours ([personal]) as you wrote it. */
     data class Candidate(val text: String, val cost: Double, val personal: Boolean)
@@ -54,7 +54,11 @@ internal class GlideDecoder(private val model: TypingModel) {
             val lm = minOf(USER_WORD_COST, learned?.mixed(Double.POSITIVE_INFINITY, text, before, beforePrevious) ?: USER_WORD_COST)
             offer(text, spatial + LM_WEIGHT * (lm - (fieldWords?.bonus(text) ?: 0.0)), true)
         }
-        return found.values.sortedWith(compareBy<Candidate> { it.cost }.thenBy { it.text }).take(limit)
+        val ranked = found.values.sortedWith(compareBy<Candidate> { it.cost }.thenBy { it.text })
+        val best = ranked.firstOrNull()?.cost ?: return ranked
+        // Another reading is offered only when it is nearly as likely as the first: a rare word whose
+        // path is no better than the first's ("withhold" beside "world") is no alternative.
+        return ranked.filter { it.cost <= best + ALTERNATIVE_MARGIN }.take(limit)
     }
 
     /** Every word of [lexicon] the path can spell, with its spatial cost. */
@@ -75,6 +79,11 @@ internal class GlideDecoder(private val model: TypingModel) {
         while (layer.isNotEmpty() && depth < TypingWord.MAX_LENGTH) {
             // The same stable order sortBy gives, without boxing a cost for every comparison.
             if (layer.size > BEAM) { layer.sortWith { a, b -> java.lang.Double.compare(a.cost, b.cost) }; layer.subList(BEAM, layer.size).clear() }
+            // A spelling far dearer than the best so far has missed its keys by too much to catch up;
+            // with keys in reach a key and a half away, most of the beam is such spellings.
+            var low = Double.POSITIVE_INFINITY
+            for (s in layer) if (s.cost < low) low = s.cost
+            layer.removeAll { it.cost > low + PRUNE }
             val next = HashMap<Long, State>()
             fun push(child: Long, j: Int, key: Int, cost: Double) {
                 if (child == 0L) return
@@ -264,10 +273,13 @@ internal class GlideDecoder(private val model: TypingModel) {
         const val MAX_POINTS = 160
         /** A path shorter than this, in keys, is no glide. */
         const val MIN_LENGTH = .3
-        /** How far, in keys, the path may pass a letter's key, start from the first or end from the last. */
-        const val PASS_RADIUS = 1.0f
-        const val START_RADIUS = 1.0f
-        const val END_RADIUS = 1.0f
+        /** How far, in keys, the path may pass a letter's key, start from the first or end from the last.
+         * A finger turns short of a far key ("happening" turning a key before the a), so a common word
+         * whose letter it missed by more than a key must still be in reach, its miss paid in [letterCost];
+         * within one key only, a rare word the path happened to cross won instead. */
+        const val PASS_RADIUS = 1.5f
+        const val START_RADIUS = 1.5f
+        const val END_RADIUS = 1.5f
         val REACHES = floatArrayOf(1f, 2f)
         const val HYSTERESIS = .12f
         /** A letter's pass in its key's centre costs nothing; SIGMA keys away it costs half a nat. */
@@ -281,8 +293,12 @@ internal class GlideDecoder(private val model: TypingModel) {
         /** How many passes of a key after the last letter's are tried for the next letter. */
         const val PASS_FANOUT = 2
         const val BEAM = 400
+        /** How much dearer than the best, in nats, a spelling being walked may be and still be kept. */
+        const val PRUNE = 20.0
         const val ACCENT_COST = 1.0
         const val LM_WEIGHT = 1.0
+        /** How much costlier than the first reading, in nats, another may be and still be offered. */
+        const val ALTERNATIVE_MARGIN = 7.0
         /** One of your own words scores as a moderately common one, as `SpatialDecoder` scores it. */
         const val USER_WORD_COST = 11.0
         /** The first and last letters are where the finger went down and lifted: held to their keys more tightly. */

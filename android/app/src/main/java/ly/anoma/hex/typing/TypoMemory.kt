@@ -95,8 +95,8 @@ internal class TypoMemory {
             return distance(typed, word) <= limit
         }
 
-        // Optimal string alignment: insert, delete, substitute, or swap two neighbours, each one edit.
-        private fun distance(a: String, b: String): Int {
+        /** Optimal string alignment: insert, delete, substitute, or swap two neighbours, each one edit. */
+        fun distance(a: String, b: String): Int {
             var older = IntArray(b.length + 1)
             var last = IntArray(b.length + 1) { it }
             for (i in 1..a.length) {

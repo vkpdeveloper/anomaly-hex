@@ -18,11 +18,22 @@ import org.junit.Test
 class EmojiSuggestionsTest {
     private val grid = Glides.grid()
 
-    @Test fun aWordBeingTypedFindsEmojiThroughItsSuggestions() {
+    @Test fun aWordBeingTypedGetsEmojiOnlyOnceItSpellsAWholeWord() {
         val k = Keyboard()
+        // Unfinished: emoji for "thanks" or a guess would cost a word its slot.
+        k.tap("tha")
+        assertTrue(k.emoji.toString(), k.emoji.isEmpty())
+        assertEquals(k.strip.toString(), 3, k.strip.size)
+        k.engine.space()
+        k.tap("matl")
+        assertTrue(k.emoji.toString(), k.emoji.isEmpty())
+        k.engine.space()
+        // A slip's emoji wait for the space that puts the word right.
         k.tap("medicin")
+        assertTrue(k.emoji.toString(), k.emoji.isEmpty())
+        k.engine.space()
+        assertTrue(k.field.text, k.field.text.endsWith("medicine "))
         assertEquals(listOf("💊", "💉"), k.emoji)
-        assertTrue(k.strip.count { it.kind != Suggestion.Kind.Emoji } >= 2)
     }
 
     @Test fun afterASpaceTheWordBeforeItGetsEmoji() {

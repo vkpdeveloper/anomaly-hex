@@ -3069,7 +3069,7 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   on a Pixel emulator with a local test calendar)
 ├── A field that turns off suggestions -> the strip still shows; only autocorrect on space
 │   stops (seen on a Pixel emulator in Contacts search)
-├── Type a word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
+├── Type a whole word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
 │   third slot ("medicine" 💊 💉, "chai" ☕ 🫖); a tap ends the word and types the emoji
 │   ├── The emoji you pick for a word come first next time; a panel pick shows once picked twice
 │   ├── Password and no-learning fields -> no emoji, nothing learned; Forget learned words clears
@@ -3118,6 +3118,17 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 ├── Keyboard > Recent screenshots (off) -> ask for photos; screenshots only, never camera photos
 │   (ClipHistoryTest, RecentImagesTest; unit tests only, no device run)
 ├── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Type a word -> its fix in the strip's middle slot as you type, a completion beside it;
+│   space or return applies exactly that fix (StripTimingTest, StripRankingTest)
+│   ├── English and Hinglish: a word cut short completes ("peop" -> "people"); "wor" stays
+│   │   "work"; stretched words and known Hinglish words stand (SlippedPrefixTest,
+│   │   AutocorrectRestraintTest)
+│   ├── Undo a correction, or delete it and retype -> that change off for good, the word left
+│   │   as typed for a week; a hand-edited word is fixed only one letter off
+│   │   (AutocorrectRejectionTest, UndoneWordTest)
+│   └── Proof limits: unit tests; a few words spot-checked on a Pixel emulator, not a phone
+├── Keyboard > Keep a typing log (off) -> keys, strips, picks, corrections, undos, pastes,
+│   dictations and app changes to a file in Download/Hex (TypingLogEventsTest)
 ├── Write one spelling of a word far more ("nhi", "colour") -> the strip, autocorrect,
 │   predictions and glides give yours; distinct words never merge ("main", "mein");
 │   Hindi spellings only once English's model has loaded (SpellingsTest,
