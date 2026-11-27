@@ -452,6 +452,10 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
 
     fun fixOffer(shown: Boolean) { fixOffered = shown; update() }
 
+    /** Typing, a pick or a dictation passes over the chip, shown or waiting behind a note: it isn't offered
+     * again, and the clipboard and its history keep the copy. */
+    fun typed() { ime.clips.offer?.let(ime.clips::used) }
+
     fun actions(list: List<StripAction>) {
         if (list == actions) { update(); return }
         actions = list
@@ -517,10 +521,8 @@ internal class Toolbar(context: Context, private val ime: HexKeyboard, openMenu:
         val filling = idle && !finding && !noting && !undoing && !acting && !typingWord &&
             (autofillRest.childCount > 0 || autofillPinned.childCount > 0)
         autofill.visibility = if (filling) VISIBLE else GONE
-        // A fresh copy or photo takes the place of next-word guesses, as Gboard's does; a word being
-        // typed keeps its suggestions.
-        // Typing a word passes over the chip: it isn't offered again, and the clipboard keeps it.
-        if (idle && !guessing) chipOffer?.let { passed -> chipOffer = null; ime.clips.used(passed) }
+        // A fresh copy or photo takes the place of next-word guesses, as Gboard's does; a word at the caret
+        // keeps its suggestions, and the chip comes back once it goes. Only typing passes over it ([typed]).
         val offer = if (idle && !finding && !noting && !undoing && !acting && !filling && guessing) ime.clips.offer else null
         // Unused, it goes once it is too old, while the keyboard stays up.
         removeCallbacks(expire)

@@ -33,7 +33,9 @@
     <string name="keyboard_action_send">发送</string>
     <string name="keyboard_clipboard">剪贴板</string>
     <string name="keyboard_clear">清除</string>
-    <string name="keyboard_clipboard_empty">复制的文字和图片会在这里保留一小时。按住一项即可固定。</string>
+    <string name="keyboard_clipboard_empty">复制的文字和图片会显示在这里。按住一项即可固定。</string>
+    <string name="keyboard_clipboard_search">搜索剪贴板</string>
+    <string name="keyboard_clipboard_none">没有找到复制的文字</string>
     <string name="keyboard_recent_photos">最近的截图</string>
     <string name="keyboard_pinned">已固定</string>
     <string name="keyboard_recent">最近</string>

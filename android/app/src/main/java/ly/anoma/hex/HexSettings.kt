@@ -41,6 +41,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.speech.*
 import ly.anoma.hex.button.ButtonPreferences
 import ly.anoma.hex.fix.TinyfixFiles
+import ly.anoma.hex.keyboard.ClipKeep
+import ly.anoma.hex.keyboard.ClipKeeper
 import ly.anoma.hex.keyboard.FreeTimes
 import ly.anoma.hex.keyboard.Snippet
 import ly.anoma.hex.keyboard.Snippets
@@ -51,9 +53,9 @@ import ly.anoma.hex.typing.TypingStats
 
 private enum class Page(val title: String) {
     Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"),
-    Layout("Keyboard layout"), Shortcuts("Text shortcuts"), Shortcut("Text shortcut"), Policy("Privacy policy"), Licences("Open-source licences"), Licence("Open-source licences");
+    Layout("Keyboard layout"), ClipboardKeep("Keep clipboard history"), Shortcuts("Text shortcuts"), Shortcut("Text shortcut"), Policy("Privacy policy"), Licences("Open-source licences"), Licence("Open-source licences");
     val parent get() = when (this) {
-        Layout, Shortcuts -> Keyboard
+        Layout, ClipboardKeep, Shortcuts -> Keyboard
         Shortcut -> Shortcuts
         Policy, Licences -> Privacy
         Licence -> Licences
@@ -77,7 +79,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     // Observe them even while trying the keyboard inside this page.
     var revision by remember { mutableIntStateOf(0) }
     DisposableEffect(context) {
-        val stores = listOf("typing", "button").map { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
+        val stores = listOf("typing", "button", ClipKeeper.PREFS).map { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
         val changed = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> revision++ }
         stores.forEach { it.registerOnSharedPreferenceChangeListener(changed) }
         onDispose { stores.forEach { it.unregisterOnSharedPreferenceChangeListener(changed) } }
@@ -99,6 +101,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
     val typingLog = remember(revision) { typing.typingLog }
     val cleanLinks = remember(revision) { typing.cleanLinks }
     val expandLinks = remember(revision) { typing.expandLinks }
+    val clipKeep = remember(revision) { ClipKeeper.keep(context) }
     val snippets = remember(revision) { Snippets.read(typing.snippets) }
     // The shortcut being edited: its place in the list, or -1 for a new one.
     var editing by rememberSaveable { mutableIntStateOf(-1) }
@@ -248,6 +251,7 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                             Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }
                             Rule(); Toggle("Show gesture trail", if (glide) "A line follows your finger" else "Turn on Glide typing",
                                 glideTrail, enabled = glide) { typing.glideTrail = it }
+                            Rule(); Entry("Keep clipboard history", value = clipKeep.label, action = { open(Page.ClipboardKeep) })
                             Rule(); Toggle("Recent screenshots", if (photos.partial) "Only the photos you chose" else "Offer a screenshot you just took",
                                 photos.on) { photos.change(it) }
                             Rule(); Toggle("Codes from texts",
@@ -310,6 +314,15 @@ internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
                         Card {
                             Entry("Privacy policy", action = { open(Page.Policy) })
                             Rule(); Entry("Open-source licences", action = { open(Page.Licences) })
+                        }
+                    }
+                    Page.ClipboardKeep -> Card {
+                        ClipKeep.entries.forEachIndexed { i, it ->
+                            if (i != 0) Rule()
+                            Entry(it.label, value = if (it == clipKeep) "✓" else "", action = {
+                                context.getSharedPreferences(ClipKeeper.PREFS, Context.MODE_PRIVATE).edit().putString(ClipKeeper.KEEP, it.name).apply()
+                                open(page.parent)
+                            })
                         }
                     }
                     Page.Layout -> Card {
@@ -445,4 +458,15 @@ private fun openSpellCheckers(context: Context) {
             Spacer(Modifier.size(17.dp).background(colorResource(if (on) R.color.page else R.color.key), RoundedCornerShape(50)))
         }
     }
+}
+
+/** How long Keep clipboard history keeps a clip, as Settings names it. */
+private val ClipKeep.label get() = when (this) {
+    ClipKeep.Hour -> "1 hour"
+    ClipKeep.Day -> "1 day"
+    ClipKeep.Week -> "1 week"
+    ClipKeep.Month -> "30 days"
+    ClipKeep.Quarter -> "90 days"
+    ClipKeep.Year -> "1 year"
+    ClipKeep.Forever -> "Until you delete them"
 }

@@ -18,7 +18,12 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     private val emoji = EmojiPanel(context, ime, ::closeEmoji, ::openSearch)
     private val search = EmojiSearchBar(context, back = ::openEmoji, clear = { ime.engine.stopSearch(); ime.engine.startSearch() })
     private val results = EmojiResults(context, ime)
-    private val clipboard = ClipboardPanel(context, ime, ::closeClipboard)
+    private val clipboard = ClipboardPanel(context, ime, ::closeClipboard, ::openClipboardSearch)
+    private val clipSearch = EmojiSearchBar(context, back = ::openClipboard,
+        clear = { ime.engine.stopSearch(); ime.engine.startSearch(clips = true) }, hint = R.string.keyboard_clipboard_search)
+    private val clipResults = ClipResults(context) { text ->
+        ime.engine.stopSearch(); ime.engine.configureTyping(keepWord = true); ime.engine.paste(text)
+    }
     private val menu = MenuPanel(context, ime, ::closeMenu, ::openClipboard)
     private var phase = DictationPhase.Idle
 
@@ -39,6 +44,10 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         addView(search, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
         results.visibility = GONE
         addView(results, LayoutParams(LayoutParams.MATCH_PARENT, results.wanted))
+        clipSearch.visibility = GONE
+        addView(clipSearch, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
+        clipResults.visibility = GONE
+        addView(clipResults, LayoutParams(LayoutParams.MATCH_PARENT, clipResults.wanted))
         addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, toolbar.toolbarHeight))
         addView(keys, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         emoji.visibility = GONE
@@ -59,6 +68,7 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
     override fun undo(offer: UndoOffer?) = toolbar.undo(offer)
     override fun actions(list: List<StripAction>) = toolbar.actions(list)
     override fun fixOffer(shown: Boolean) = toolbar.fixOffer(shown)
+    override fun typed() = toolbar.typed()
     override fun emojiRow(emoji: List<String>) = toolbar.found(emoji)
     /** The emoji search takes the toolbar's place: its bar, then what it found, over the keys. */
     override fun emojiSearch(query: String?, found: List<String>) {
@@ -69,6 +79,18 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         }
         search.show(query); results.show(found)
         search.visibility = VISIBLE; results.visibility = VISIBLE; toolbar.visibility = GONE
+    }
+
+    /** The clipboard's search takes the toolbar's place as the emoji search does: its bar, then the clips it
+     * found, over the keys. */
+    override fun clipboardSearch(query: String?) {
+        if (query == null) {
+            clipSearch.visibility = GONE; clipResults.visibility = GONE
+            if (keys.visibility == VISIBLE) toolbar.visibility = VISIBLE
+            return
+        }
+        clipSearch.show(query); clipResults.show(ClipHistory.search(ime.clips.clips, query))
+        clipSearch.visibility = VISIBLE; clipResults.visibility = VISIBLE; toolbar.visibility = GONE
     }
 
     fun openEmoji() {
@@ -103,11 +125,19 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         menu.visibility = GONE; toolbar.visibility = VISIBLE; keys.visibility = VISIBLE
         ime.engine.configureTyping(keepWord = true)
     }
-    /** The clipboard, from the menu, in its place at the same height. */
+    /** The clipboard, from the menu or back from its search, at the toolbar's and the keys' height. */
     private fun openClipboard() {
-        clipboard.layoutParams = clipboard.layoutParams.apply { height = menu.height }
-        menu.visibility = GONE; clipboard.visibility = VISIBLE
+        ime.engine.stopSearch()
+        keys.cancelGestures(); ime.engine.pause()
+        clipboard.layoutParams = clipboard.layoutParams.apply { height = toolbar.toolbarHeight + keys.height }
+        menu.visibility = GONE; toolbar.visibility = GONE; keys.visibility = GONE; clipboard.visibility = VISIBLE
         clipboard.open()
+    }
+    /** The clipboard's search, from its panel: its bar and the clips it found over the keys, which type into it. */
+    private fun openClipboardSearch() {
+        clipboard.visibility = GONE; keys.visibility = VISIBLE
+        ime.engine.configureTyping(keepWord = true)
+        ime.engine.startSearch(clips = true)
     }
     fun closeClipboard() {
         if (clipboard.visibility != VISIBLE) return
@@ -115,7 +145,11 @@ internal class KeyboardView(context: Context, private val ime: HexKeyboard) : Li
         ime.engine.configureTyping(keepWord = true)
     }
     /** The clips, the photos or the chip's offer changed ([ClipKeeper]). */
-    fun clipsChanged() { toolbar.update(); if (clipboard.visibility == VISIBLE) clipboard.show() }
+    fun clipsChanged() {
+        toolbar.update()
+        if (clipboard.visibility == VISIBLE) clipboard.show()
+        if (clipSearch.visibility == VISIBLE) ime.engine.refreshSearch()
+    }
     fun dictation(phase: DictationPhase) {
         cue(this.phase, phase); this.phase = phase
         if (phase != DictationPhase.Idle) { ime.engine.stopSearch(); closeEmoji(); closeMenu(); closeClipboard() }

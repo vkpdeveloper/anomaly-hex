@@ -19,10 +19,11 @@ import ly.anoma.hex.R
 import ly.anoma.hex.useSans
 import kotlin.math.roundToInt
 
-/** Gboard's clipboard, in place of the toolbar and the keys at their height: back, the title and Clear
- * on top, then new photos in a row and the clips in two columns, pinned first. A tap puts a clip in and
+/** Gboard's clipboard, in place of the toolbar and the keys at their height: back, the title, search and
+ * Clear on top, then new photos in a row and the clips in two columns, pinned first. A tap puts a clip in and
  * goes back to the keys; touch and hold shows Pin and Delete on the clip. */
-internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, private val close: () -> Unit) : LinearLayout(context) {
+internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, private val close: () -> Unit,
+                              search: () -> Unit) : LinearLayout(context) {
     private companion object {
         const val CARD = 80f
         const val PHOTO = 72f
@@ -59,6 +60,8 @@ internal class ClipboardPanel(context: Context, private val ime: HexKeyboard, pr
             accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
         }
         top.addView(title, LayoutParams(0, -2, 1f))
+        top.addView(round(R.drawable.ic_search, context.getString(R.string.keyboard_clipboard_search), android.graphics.Color.TRANSPARENT, search),
+            LayoutParams(px(34f), px(34f)))
         clear.apply {
             text(this, KeyboardMetrics.LABEL); useSans(500); setTextColor(color(R.color.kb_ink)); setText(R.string.keyboard_clear)
             gravity = Gravity.CENTER; setPadding(px(14f), 0, px(14f), 0); isFocusable = true

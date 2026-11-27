@@ -42,12 +42,16 @@ internal interface KeyboardSurface {
     fun emojiRow(emoji: List<String>) {}
     /** The emoji panel's search is open with [query] typed and the emoji it [found], or closed (null). */
     fun emojiSearch(query: String?, found: List<String>) {}
+    /** The clipboard's search is open with [query] typed, or closed (null). */
+    fun clipboardSearch(query: String?) {}
     /** Offer an undo, or stop offering it. */
     fun undo(offer: UndoOffer?)
     /** Chips for the selection or what was just typed, in the suggestions' place; none clears them. */
     fun actions(list: List<StripAction>) {}
     /** The fix button's chip shows on the strip while [shown]: the field has fixes to make. */
     fun fixOffer(shown: Boolean) {}
+    /** The person typed, picked, deleted or dictated into the field: the copy chip's offer is passed over. */
+    fun typed() {}
 }
 
 /** Works out the fixes for a field's text off the main thread and calls [done] with them on the main
@@ -876,7 +880,7 @@ internal class KeyboardEngine(
      * space waits, as a picked word's does; it's learned for its word. */
     fun pickEmoji(emoji: String) {
         if (!target.connected) return
-        edited(); typedHere = true
+        input(); typedHere = true
         val learnFor = emojiWord
         val w = word
         val b = before()
@@ -904,27 +908,32 @@ internal class KeyboardEngine(
         showPredictions(after); inputDone()
     }
 
-    // The colon search the row's emoji are for (":fire" is "fire"), and the emoji panel's search, which
-    // takes the keys' letters, space and delete while it is open.
+    // The colon search the row's emoji are for (":fire" is "fire"), and the emoji panel's or the clipboard's
+    // search, which takes the keys' letters, space and delete while it is open. Nothing typed there reaches
+    // the field or is learned.
     private var colonQuery: String? = null
     private var search: StringBuilder? = null
+    private var searchingClips = false
 
-    /** The emoji panel's search opens: the keys type into it until [stopSearch]. */
-    fun startSearch() {
+    /** The emoji panel's search opens, or the clipboard's with [clips]: the keys type into it until [stopSearch]. */
+    fun startSearch(clips: Boolean = false) {
         resetTyping(); clearSpaces(); clearStrip()
-        search = StringBuilder(); colonQuery = null
+        search = StringBuilder(); colonQuery = null; searchingClips = clips
         surface?.emojiRow(emptyList())
         showSearch()
     }
-    /** The emoji panel's search closes; the strip comes back. */
+    /** The search closes; the strip comes back. */
     fun stopSearch() {
         if (search == null) return
         search = null
-        surface?.emojiSearch(null, emptyList())
+        if (searchingClips) surface?.clipboardSearch(null) else surface?.emojiSearch(null, emptyList())
     }
     val searching get() = search != null
+    /** What the search looks through changed (a clip came or went): it shows again. */
+    fun refreshSearch() = showSearch()
     private fun showSearch() {
         val q = search?.toString() ?: return
+        if (searchingClips) { surface?.clipboardSearch(q); return }
         surface?.emojiSearch(q, if (q.isBlank()) emojiRecent() else emojiLists(layoutLanguage().layoutCode)?.search(q, emojiPicks).orEmpty())
     }
     /** A key while the emoji panel's search is open edits the search instead of the text: true when it did. */
@@ -947,7 +956,7 @@ internal class KeyboardEngine(
             search = s
         } else {
             if (!endsWith(":$query")) { strip(emptyList()); return }
-            edited(); typedHere = true
+            input(); typedHere = true
             resetTyping(); clearSpaces()
             if (!replace(":$query", emojiTone(emoji))) return
             colonQuery = null
@@ -996,7 +1005,7 @@ internal class KeyboardEngine(
     }
     private fun doLetter(text: String, x: Double, y: Double, grid: KeyGrid, explicit: Boolean = false) {
         if (!target.connected) return
-        edited(); typedHere = true
+        input(); typedHere = true
         periodFix?.let { p ->
             periodFix = null
             // What the period's word counted when it went in is taken back with it.
@@ -1067,7 +1076,7 @@ internal class KeyboardEngine(
         log("pick", "text" to text, "slot" to slot, "kind" to shown.getOrNull(slot)?.kind?.name?.lowercase())
     }
     private fun doPickSuggestion(text: String) {
-        edited()
+        input()
         addressOffer?.takeIf { text in it.addresses }?.let { pickAddress(it.typed, text); return }
         tapped?.let { pickForTapped(it, text); return }
         glided?.takeIf { it.anchor == before() }?.let { pickForGlided(it, text); return }
@@ -1153,7 +1162,7 @@ internal class KeyboardEngine(
         }
     }
     private fun typeSpace(point: KeyPoint?, grid: KeyGrid?) {
-        edited()
+        input()
         if (learnHere) stats.keys++
         val now = clock()
         val b = before()
@@ -1207,13 +1216,14 @@ internal class KeyboardEngine(
 
     fun type(value: String) = traced("hex:key:type") {
         val typed = searched {
-            if (value.isBlank()) addSpace() else if (value.all { it.isLetterOrDigit() || it == '\'' || it == '’' }) append(value.lowercase())
+            if (value.isBlank()) addSpace()
+            else if (searchingClips || value.all { it.isLetterOrDigit() || it == '\'' || it == '’' }) append(value.lowercase())
         }
         if (!typed) { doType(value); log("type", "key" to value) }
     }
     private fun doType(value: String) {
         if (!target.connected) return
-        edited(); typedHere = true
+        input(); typedHere = true
         if (value == " ") { doSpace(); return }
         if (learnHere) stats.keys++
         if (symbols && !numpad) symbolTyped = true
@@ -1268,7 +1278,7 @@ internal class KeyboardEngine(
     fun delete() = traced("hex:key:delete") { if (!searched { if (isNotEmpty()) setLength(length - 1) }) { doDelete(); log("delete") } }
     private fun doDelete() {
         if (!target.connected) return
-        edited()
+        input()
         if (learnHere) stats.backspaces++
         // Right after a glide, delete takes the whole word back; the space before it stays, the one it put after goes.
         glided?.takeIf { it.anchor == before() }?.let { g ->
@@ -1382,7 +1392,7 @@ internal class KeyboardEngine(
     }
     fun enter() = traced("hex:key:enter") { if (!searched {}) { log("enter"); doEnter() } }
     private fun doEnter() {
-        edited()
+        input()
         val fix = enterFix()
         // A pick was learned as it went in.
         if (heldAnchor != before()) learn(before(), 0)
@@ -1433,7 +1443,7 @@ internal class KeyboardEngine(
     private fun doGlide(path: List<KeyPoint>, grid: KeyGrid) {
         val w = word
         if (w == null || !glides) return
-        edited()
+        input()
         val caret = if (expectedCaret >= 0) expectedCaret else minOf(selStart, selEnd)
         resetTyping()
         val read = before()
@@ -1613,6 +1623,7 @@ internal class KeyboardEngine(
             else SpokenText.continuing(text, before, language) { model.index(it) >= 0 && (model.capitals?.percent(it) ?: -1) < 50 }
         val result = insertion(shaped, before?.lastOrNull(), target.after(1)?.firstOrNull())
         if (result.isEmpty() || !target.commit(result)) return false
+        surface?.typed()
         log("dictation", "chars" to result.length)
         if (offer && !secure) offerUndo(Dictated(result, target.after(16).orEmpty()))
         if (offer) beginWatch(result)
@@ -1771,4 +1782,7 @@ internal class KeyboardEngine(
     }
     /** Any edit through the keys ends the undo offer. */
     private fun edited() { if (offer != null) offerUndo(null) }
+    /** An edit the person made from the keys or the strip, not one the field or Hex made: the copy chip's
+     * offer is passed over ([KeyboardSurface.typed]). */
+    private fun input() { edited(); surface?.typed() }
 }
