@@ -3123,6 +3123,12 @@ Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hingl
 │   ├── English and Hinglish: a word cut short completes ("peop" -> "people"); "wor" stays
 │   │   "work"; stretched words and known Hinglish words stand (SlippedPrefixTest,
 │   │   AutocorrectRestraintTest)
+│   ├── English and Hinglish: letters that start a likelier word keep a worse fix out: one
+│   │   dropping the last letter ("aac" stays, not "aa") or far behind ("inte" stays, not
+│   │   "itne"); the strip offers both (SlippedPrefixTest)
+│   ├── Three letters with the last key slipped -> the next-word model's word for the first
+│   │   two, offered and put in when the taps read it nearly as well as the fix ("they come
+│   │   here evr" -> "every", not "ever") (NextWordsTest)
 │   ├── Undo a correction, or delete it and retype -> that change off for good, the word left
 │   │   as typed for a week; a hand-edited word is fixed only one letter off
 │   │   (AutocorrectRejectionTest, UndoneWordTest)

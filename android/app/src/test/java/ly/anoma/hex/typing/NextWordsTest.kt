@@ -36,6 +36,25 @@ class NextWordsTest {
         assertTrue(hindi.toString(), "shaadi" in hindi || "shaam" in hindi)
     }
 
+    // A three-letter word's last key slipped: the model's word for its first two letters, worked out while they were
+    // typed, is offered and goes in where the taps read it nearly as well as the fix ("evr" is "every" here, not
+    // "ever"); the strip asking after each letter is what works it out. Words typed right stay as they are.
+    @Test fun aSlipInAThreeLetterWordTakesTheWordTheTextExpects() {
+        fun typing(model: TypingModel, before: String, text: String, next: NextWords?) = writing(model, next).apply {
+            reset(before)
+            for (c in text) { grid.centres.getValue(c).let { letter(c.toString(), it.x, it.y, grid) }; strip() }
+        }
+        for (model in listOf(english, hinglish)) {
+            for ((before, letters, word) in listOf(Triple("they come here ", "evr", "every"), Triple("remember to bring ", "yoy", "your"))) {
+                val w = typing(model, before, letters, now())
+                assertEquals("${model.language} $letters", word, w.replacement())
+                assertEquals("${model.language} $letters", word, w.strip().single { it.kind == Suggestion.Kind.Fix }.text)
+            }
+            assertEquals("ever", typing(model, "they come here ", "evr", null).replacement())
+            for ((before, letters) in listOf("I said " to "the", "how are " to "you", "they " to "are")) assertNull(typing(model, before, letters, now()).replacement())
+        }
+    }
+
     // A worker that hasn't answered yet leaves the strip to the word pairs; once it answers, [NextWords.ready]
     // fires and the same question gets the model's words.
     @Test fun theStripNeverWaitsForTheModel() {

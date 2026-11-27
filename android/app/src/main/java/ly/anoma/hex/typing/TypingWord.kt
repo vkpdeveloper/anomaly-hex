@@ -68,11 +68,23 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
     // The model's words after `before` that start with `prefix` and this layout knows and may suggest after
     // `previous`; while they are worked out, those in for a shorter prefix ([NextWords.words]), which
     // [NextWords.ready] then follows.
-    // A letter alone only when it is a word: the model reads "e.g." and "Dr." as words and guesses letters after them ("G").
     private fun modelWords(before: String, prefix: String, previous: Int) =
-        next?.words(NextWords.context(before), prefix)?.filter {
-            (it.length > 1 || it in oneLetterWords) && model.index(it) >= 0 && !model.neverSuggest.blocks(it, suggestSwearWords, previous)
-        }.orEmpty()
+        next?.words(NextWords.context(before), prefix)?.filter { suggestable(it, previous) }.orEmpty()
+    // A letter alone only when it is a word: the model reads "e.g." and "Dr." as words and guesses letters after them ("G").
+    private fun suggestable(word: String, previous: Int) =
+        (word.length > 1 || word in oneLetterWords) && model.index(word) >= 0 && !model.neverSuggest.blocks(word, suggestSwearWords, previous)
+    /** A three-letter word whose last key slipped ("evr" with "every" meant): the next-word model's first word for the
+     * first two letters, as it already worked them out while they were typed, when the letters as typed don't start it
+     * and the taps read it better than they read those letters. The strip offers it before the letters' completions,
+     * and space puts it in where the taps read it nearly as well as the fix ([EXPECTED_MARGIN]; "they come here evr"
+     * -> "every", not "ever"), unless space would hold it back ([holdsBack]): then the fix goes in as before. */
+    private fun expected(): SpatialDecoder.Reading? {
+        val lower = token.lowercase()
+        if (lower.length != 3 || !spatial || literalOnly || !lower.all { it in 'a'..'z' }) return null
+        val first = next?.known(NextWords.context(before), lower.take(2))?.firstOrNull { suggestable(it, previous) } ?: return null
+        if (first.startsWith(lower)) return null
+        return decision().considered.firstOrNull { it.text == first }
+    }
     /** Starts a word after `before`. The word a space just finished stays revisable only when
      * `before` is still the text it left; an empty `before` keeps it for the next call. */
     fun reset(before: String = "") {
@@ -222,6 +234,7 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         val modelled = if (token.length <= 3 && lower.all { it in 'a'..'z' })
             modelWords(before, lower, previous).filter { it.length in lower.length + 1..lower.length + 8 }.map(::shown) else emptyList()
         val longer = modelled + longerWords(lower)
+        if (autocorrect && !protected()) expected()?.let { add(shown(it.text)) }
         // The likeliest longer word gets a slot before the taps' other readings, beside a fix too: a word being
         // typed is more often unfinished than mistyped ("climbi" keeps "climbing" beside "climb").
         longer.firstOrNull { s -> pool.none { it.equals(s, ignoreCase = true) } }?.let(::add)
@@ -557,7 +570,8 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (allCaps || !spatial) return null
         // A name, day or place typed in lowercase takes its capital ("mary" -> "Mary"), and so does a
         // German noun ("haus" -> "Haus"), as the capitals list beside the model says.
-        val found = decision().replace ?: return capitalised(token)
+        val decided = decision()
+        val found = expectedFix(decided)?.takeUnless { holdsBack(lower, it) } ?: decided.replace ?: return capitalised(token)
         // In the spelling you write, which may be what you typed ("nhi" when you write it, not "nahi").
         // Whether to hold back is the decoder's word's question: "nahu" is one slip from "nahi", not two from "nhi".
         val replace = if (' ' in found || decoder.personal?.owns(found) == true) found
@@ -568,6 +582,14 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         if (model.spelling == "en" && ' ' in fix) return fix.split(' ').joinToString(" ") { if (it == "i") "I" else it }
         // German's model is lowercase: a noun it corrects to takes its capital ("hsus" -> "Haus").
         return if (model.language == "de" && ' ' !in fix) capitalised(fix) ?: fix else fix
+    }
+
+    // The word [expected] when the taps read it nearly as well as the decoder's one-word fix ([EXPECTED_MARGIN]).
+    private fun expectedFix(decided: SpatialDecoder.Decision): String? {
+        val fix = decided.replace?.takeIf { ' ' !in it } ?: return null
+        val word = expected()?.takeIf { !it.text.equals(fix, ignoreCase = true) } ?: return null
+        val fixCost = decided.considered.firstOrNull { it.text.equals(fix, ignoreCase = true) }?.cost ?: return null
+        return word.text.takeIf { word.cost <= fixCost + EXPECTED_MARGIN }
     }
 
     private fun capitalisedName(word: String): String? {
@@ -669,6 +691,10 @@ internal class TypingWord(val decoder: SpatialDecoder, val spatial: Boolean) {
         // Keys whose centres are this close on [QWERTY]'s reference keys (dp) are neighbours: beside, or above and below.
         private const val NEIGHBOUR = 60.0
         private const val FIELD_COMPLETES = 2
+        // How much worse the taps may read the next-word model's word than the decoder's fix, in the decoder's cost,
+        // for space to put it in ([expected]): the model reads the sentence, the fix only the word before ("remember to
+        // bring yoy" -> "your", "could you seb" -> "send"). Twice this and "evr" alone goes to "everything".
+        private const val EXPECTED_MARGIN = 1.0
         /** The longest phrase the strip's wide slot shows without cutting it. */
         const val MAX_PHRASE_CHARS = 24
         // R1's reference keys, for a word read without its taps ([reread]).

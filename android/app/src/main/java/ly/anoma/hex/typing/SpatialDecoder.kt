@@ -69,7 +69,9 @@ internal class SpatialDecoder(val model: TypingModel) {
     class Tap(val cost: DoubleArray, val choices: IntArray, val belowLetters: Boolean, val missedSpaceCost: Double,
               val spaceCost: Double = Double.POSITIVE_INFINITY)
     data class Reading(val text: String, val cost: Double, val frequency: Int)
-    data class Decision(val replace: String?, val readings: List<Reading>)
+    /** [considered]: every one-word reading of the taps better than the letters as typed, finished or one they
+     * start ([completions]), at its cheapest, cheapest first; none when your own habit decides ([TypoMemory]). */
+    data class Decision(val replace: String?, val readings: List<Reading>, val considered: List<Reading> = emptyList())
     // Google Books English has richer word pairs; these are the shared iOS R1 weights. Hinglish keeps
     // English's pairs and reads noisy taps of both languages' words best with its weight too.
     private val lmWeight = if (model.spelling == "en") 1.5 else 1.25
@@ -378,20 +380,29 @@ internal class SpatialDecoder(val model: TypingModel) {
         // In English and Hinglish, a word cut short is likelier unfinished than mistyped: space completes it ("peop" ->
         // "people", not "prop") when the likeliest word the taps start beats the fix, or the letters as typed, by
         // [COMPLETE_MARGIN] and no other comes within [COMPLETE_GAP] ("wor" stays "work", not "world"). One behind a
-        // slip as well only when common ("somth" -> "something", never "isba" -> "disbanded"). Elsewhere a short
-        // unknown word is as often a name ("vi a tom ayer").
+        // slip as well only when common and four letters or more are typed ("somth" -> "something", never "isba" ->
+        // "disbanded" or "aac" -> "academic"). Elsewhere a short unknown word is as often a name ("vi a tom ayer").
         val likeliest = completions?.likeliest
         val against = shown.firstOrNull { it.text.equals(replace, ignoreCase = true) }?.cost ?: cost
-        if (model.spelling == "en" && !knownLiteral && habit == null && likeliest != null && likeliest.cost + COMPLETE_MARGIN <= against &&
+        val english = model.spelling == "en" && !knownLiteral && habit == null
+        if (english && likeliest != null && likeliest.cost + COMPLETE_MARGIN <= against &&
             completions.runnerUp - likeliest.cost >= COMPLETE_GAP &&
-            (likeliest !in completions.slipped || likeliest.frequency <= COMMON_COMPLETION)) {
+            (likeliest !in completions.slipped || likeliest.frequency <= COMMON_COMPLETION && typed.length >= 4)) {
             replace = likeliest.text
             shown.removeAll { it.text.equals(likeliest.text, ignoreCase = true) }
             shown.add(likeliest)
+        } else if (english && replace != null && ' ' !in replace && !replace.startsWith(typed) && unfinished < against) {
+            // Nor does a fix go in that a word the letters start is likelier than, when it drops the last letter typed (not
+            // a doubled one: "aac" is on its way to "aacha", not "aa"), or by [COMPLETE_MARGIN] ("inte" starts
+            // "international" and "interest", each far likelier than "itne"). Space leaves the letters; the strip offers both.
+            val dropsLast = replace == typed.dropLast(1) && typed.last() != typed[typed.length - 2]
+            if (dropsLast || typed.length >= 4 && unfinished + COMPLETE_MARGIN <= against) replace = null
         }
         shown.sortWith(compareBy<Reading> { !it.text.equals(replace, ignoreCase = true) }.thenBy { it.cost }.thenBy { it.text })
-        if (replace == null && shown.isEmpty()) return none
-        return Decision(replace, shown.take(3))
+        val considered = if (habit != null) emptyList() else (shown + completions?.all.orEmpty())
+            .filter { it.cost < cost && ' ' !in it.text }.sortedBy { it.cost }.distinctBy { it.text.lowercase() }
+        if (replace == null && shown.isEmpty() && considered.isEmpty()) return none
+        return Decision(replace, shown.take(3), considered)
     }
 
     /** [unfinished]: what the likeliest word the typed letters start, two letters or more longer, costs, or
@@ -399,8 +410,10 @@ internal class SpatialDecoder(val model: TypingModel) {
      * ("handjob" stays "hand job", not "handjobs" to come), and a slip's words don't count: "iam" is "I am",
      * not "ima" on the way to "image".
      * [slipped]: words a spelling one slip from the typed letters starts, where they beat the typed letters' own.
-     * [likeliest]: the cheapest word of all these, and [runnerUp] what the next one costs. */
-    private class Completions(val unfinished: Double, val slipped: List<Reading>, val likeliest: Reading?, val runnerUp: Double)
+     * [likeliest]: the cheapest word of all these, and [runnerUp] what the next one costs.
+     * [all]: the typed letters' own and every slip's words, whatever they cost. */
+    private class Completions(val unfinished: Double, val slipped: List<Reading>, val likeliest: Reading?, val runnerUp: Double,
+                              val all: List<Reading>)
 
     // The words the taps may be the start of: the commonest after the word before of each range [search]
     // read the taps as. The typed letters' own completions are the strip's (TypingModel.completions);
@@ -413,6 +426,7 @@ internal class SpatialDecoder(val model: TypingModel) {
         var unfinished = Double.POSITIVE_INFINITY
         var likeliest: Reading? = null
         var runnerUp = Double.POSITIVE_INFINITY
+        val all = ArrayList<Reading>()
         fun rank(r: Reading) {
             val top = likeliest
             if (top == null || r.cost < top.cost) { runnerUp = top?.cost ?: Double.POSITIVE_INFINITY; likeliest = r }
@@ -422,7 +436,7 @@ internal class SpatialDecoder(val model: TypingModel) {
             val c = cost(typedSpatial, w)
             own = minOf(own, c)
             if (model.length(w) >= typed.length + 2) unfinished = minOf(unfinished, c)
-            rank(Reading(model.text(w), c, model.frequencyCost(w)))
+            rank(Reading(model.text(w), c, model.frequencyCost(w)).also(all::add))
         }
         val range = model.range(typed)
         val lo = (range ushr 32).toInt(); val hi = range.toInt()
@@ -437,7 +451,8 @@ internal class SpatialDecoder(val model: TypingModel) {
         val slipped = found.entries.filter { it.value < own - SLIP_MARGIN }
             .map { Reading(model.text(it.key), it.value, model.frequencyCost(it.key)) }
         slipped.forEach(::rank)
-        return Completions(unfinished, slipped, likeliest, runnerUp)
+        for ((w, c) in found) all.add(Reading(model.text(w), c, model.frequencyCost(w)))
+        return Completions(unfinished, slipped, likeliest, runnerUp, all)
     }
 
     // Whether a word typed with an apostrophe may be corrected: English's one inside the word ("ler's"),
