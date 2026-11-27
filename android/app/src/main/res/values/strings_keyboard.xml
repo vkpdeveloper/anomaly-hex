@@ -1,85 +1,75 @@
-<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
-    <!-- The keyboard's own strings, apart from the app's so each can change without the other. Translated into
-         Simplified Chinese (values-zh-rCN); see strings.xml for the other languages. -->
-    <string name="keyboard_hint_hold">Hold Hex to talk</string>
-    <string name="keyboard_hint_password">Dictation off in password fields</string>
+<resources>
+    <!-- The keyboard's own strings, apart from the app's so each can change without the other. -->
+    <!-- A spell checker language's name in Settings: the language alone. -->
+    <string name="spell_checker_subtype" translatable="false">%s</string>
+    <string name="keyboard_hint_password">Dictation is off in password fields</string>
     <string name="keyboard_hint_microphone">Allow the microphone in Hex</string>
-    <!-- Dictation's notes, the same sentences MicCapture sends (HexKeyboard.speechNote). -->
-    <string name="keyboard_note_microphone">Microphone unavailable. Try again.</string>
-    <string name="keyboard_note_transcribe">Couldn’t transcribe. Try again.</string>
-    <string name="keyboard_note_no_speech">No speech heard</string>
-    <string name="keyboard_note_model">Speech model unavailable</string>
+    <string name="keyboard_hint_no_speech">No speech</string>
+    <string name="keyboard_dictation">Dictation</string>
+    <string name="keyboard_dictation_copied">The text box changed, so your dictation was copied</string>
+    <string name="keyboard_hint_mic_busy">Microphone is busy</string>
+    <string name="keyboard_dictate">Voice typing</string>
     <string name="keyboard_cancel_dictation">Cancel dictation</string>
     <string name="keyboard_finish_dictation">Finish dictation</string>
     <string name="keyboard_undo_dictation">Undo dictation</string>
+    <string name="keyboard_fix">Fix mistakes</string>
+    <string name="keyboard_fix_chip">Fix</string>
+    <string name="keyboard_undo_fixes">Undo fixes</string>
+    <string name="keyboard_nothing_to_fix">Nothing to fix</string>
+    <string name="keyboard_cut">Cut</string>
+    <string name="keyboard_copy">Copy</string>
     <string name="keyboard_pane">Hex keyboard, %1$s</string>
-    <string name="keyboard_shift_on">Shift enabled</string>
-    <string name="keyboard_caps_lock_on">Caps lock enabled</string>
     <string name="keyboard_more_characters">Show more characters</string>
-    <string name="keyboard_type_held">Type %1$s</string>
-    <string name="keyboard_space_language_action">Dictation language, %1$s</string>
     <string name="keyboard_transcribing">Transcribing</string>
     <string name="keyboard_recording">Recording</string>
-    <string name="keyboard_literal" translatable="false">“%1$s”</string>
+    <string name="keyboard_menu">Menu</string>
+    <string name="keyboard_close">Close</string>
+    <string name="keyboard_settings">Settings</string>
+    <string name="keyboard_paste_clip">Paste %1$s</string>
+    <string name="keyboard_paste_code">Paste code %1$s</string>
     <string name="keyboard_keep">Keep %1$s</string>
+    <string name="keyboard_forget">Forget %1$s</string>
     <string name="keyboard_suggest">Suggest %1$s</string>
-    <string name="keyboard_menu">Hex menu</string>
-    <string name="keyboard_menu_open">"Hex menu  ›"</string>
-    <string name="keyboard_menu_done">Done</string>
-    <string name="keyboard_menu_more" translatable="false">⋯</string>
+    <string name="keyboard_correction">Correction %1$s</string>
     <string name="keyboard_numbers_label" translatable="false">\?123</string>
     <string name="keyboard_numbers">Numbers and symbols</string>
     <string name="keyboard_letters_label" translatable="false">ABC</string>
     <string name="keyboard_letters">Letters</string>
+    <string name="keyboard_numpad">Number pad</string>
     <string name="keyboard_emoji">Emoji</string>
-    <string name="keyboard_next">Next keyboard</string>
-    <string name="keyboard_hex">Hex dictation</string>
     <string name="keyboard_space">Space</string>
-    <string name="keyboard_space_translate" translatable="false">%1$s → English</string>
     <string name="keyboard_period">Period</string>
     <string name="keyboard_comma">Comma</string>
     <string name="keyboard_at">At sign</string>
     <string name="keyboard_slash">Slash</string>
-    <string name="keyboard_correction">Correction %1$s</string>
     <string name="keyboard_return">Return</string>
-    <string name="keyboard_page_numbers" translatable="false">123</string>
     <string name="keyboard_page_symbols" translatable="false">=\\&lt;</string>
     <string name="keyboard_more_symbols">More symbols</string>
-    <string name="keyboard_pad_symbols" translatable="false">!?#</string>
-    <string name="keyboard_pad">Number pad</string>
-    <string name="keyboard_pad_label" translatable="false">12\n34</string>
-    <string name="keyboard_phone_symbols">Phone symbols</string>
-    <string name="keyboard_phone_keypad">Phone keypad</string>
-    <string name="keyboard_symbols">Symbols</string>
-    <string name="keyboard_pause">Pause</string>
-    <string name="keyboard_wait">Wait</string>
     <string name="keyboard_caps_lock">Caps lock</string>
     <string name="keyboard_shift">Shift</string>
     <string name="keyboard_delete">Delete</string>
     <string name="keyboard_action_done">Done</string>
     <string name="keyboard_action_go">Go</string>
     <string name="keyboard_action_next">Next</string>
-    <string name="keyboard_action_previous">Previous</string>
     <string name="keyboard_action_search">Search</string>
     <string name="keyboard_action_send">Send</string>
-    <string name="keyboard_menu_style">Style</string>
-    <string name="keyboard_menu_language">Language</string>
-    <string name="keyboard_menu_next_dictation">Next dictation</string>
-    <string name="keyboard_menu_feedback">Typing feedback</string>
-    <string name="keyboard_menu_accents">More characters</string>
-    <string name="keyboard_menu_automatic">Automatic</string>
-    <string name="keyboard_paste_english">Paste in English</string>
-    <string name="keyboard_paste_spoken">Paste as spoken</string>
-    <string name="keyboard_menu_clean">Clean up what I say</string>
-    <string name="keyboard_menu_translate">Translate what I say</string>
-    <string name="keyboard_menu_popups">Key pop-ups</string>
-    <string name="keyboard_menu_haptics">Key haptics</string>
-    <string name="keyboard_on">On</string>
-    <string name="keyboard_off">Off</string>
-    <string name="keyboard_menu_chosen" translatable="false">✓</string>
-    <string name="keyboard_menu_arrow" translatable="false">›</string>
-    <string name="keyboard_menu_more_value" translatable="false">"%1$s  ›"</string>
-    <!-- Hex's settings › Keyboard. -->
-    <string name="settings_auto_capitalisation">Auto-capitalisation</string>
-    <string name="settings_auto_capitalisation_detail">Capitalises the start of sentences</string>
+    <string name="keyboard_back">Back</string>
+    <string name="keyboard_emoticons">Emoticons</string>
+    <string name="keyboard_emoji_recent">Recent emoji</string>
+    <string name="keyboard_emoji_search">Search emoji</string>
+    <string name="keyboard_emoji_none">No emoji found</string>
+    <string name="keyboard_clipboard">Clipboard</string>
+    <string name="keyboard_clear">Clear</string>
+    <string name="keyboard_clipboard_empty">Copied text and images stay here for an hour. Touch and hold one to pin it.</string>
+    <string name="keyboard_recent_photos">Recent screenshots</string>
+    <string name="keyboard_pinned">Pinned</string>
+    <string name="keyboard_recent">Recent</string>
+    <string name="keyboard_pin">Pin</string>
+    <string name="keyboard_unpin">Unpin</string>
+    <string name="keyboard_delete_clip">Delete</string>
+    <string name="keyboard_pinned_full">Up to %1$d pinned clips</string>
+    <string name="keyboard_image">Image</string>
+    <string name="keyboard_paste_image">Paste image</string>
+    <string name="keyboard_add_photo">Add photo</string>
+    <string name="keyboard_image_copied">Image copied. This field can\'t take images</string>
 </resources>

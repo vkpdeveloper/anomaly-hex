@@ -1,13 +1,16 @@
-Whisper model weights by OpenAI; Q5_1 conversion distributed by Georgi Gerganov. MIT.
-whisper.cpp and ggml by Georgi Gerganov and contributors. MIT.
-Kotlin and AndroidX: Apache License 2.0. LLVM libc++: Apache 2.0 with LLVM exceptions.
-The keyboard's emoji panel: the AndroidX emoji picker and Guava, by Google. Apache License 2.0.
-Inter by Rasmus Andersson and the Inter Project Authors. SIL Open Font License 1.1.
-Unmodified InterVariable.ttf from https://github.com/rsms/inter/releases/tag/v4.1
+Kotlin, kotlinx.coroutines and AndroidX: Apache License 2.0.
+Google Sans by the Google Sans Project Authors. SIL Open Font License 1.1 (google-sans-ofl.txt).
+Unmodified variable font from https://github.com/google/fonts/tree/main/ofl/googlesans
+Material Symbols icons by Google. Apache License 2.0.
+Emoji list from Unicode's emoji-test.txt, © Unicode, Inc., Unicode License v3.
+Emoji keywords (typing/en.emoji) from Unicode CLDR 46 annotations (en), © Unicode, Inc., Unicode License v3,
+with Hex's own picks for chat words; Hinglish and slang emoji words (typing/hien.emoji, typing/slang.emoji)
+are Hex's own. Emoji search names (typing/emoji.names) from Unicode CLDR 46 annotations (en, hi_Latn),
+© Unicode, Inc., Unicode License v3.
 
 Keyboard suggestion filter: List of Dirty, Naughty, Obscene, and Otherwise Bad Words
 (LDNOOBW), © 2012–2020 Shutterstock, Inc., and contributors. English, Spanish, German,
-Norwegian, French and Italian lists. Source: https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/tree/5faf2ba42d7b1c0977169ec3611df25a3c08eb13
+Norwegian, French, Italian and Hindi lists (Hindi's for Hinglish). Source: https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/tree/5faf2ba42d7b1c0977169ec3611df25a3c08eb13
 Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/
 Full licence: cc-by-4.0.txt. Hex lowercased and classified the entries, omitted ordinary,
 medical and search-only terms, and added common slurs, inflections and spelling variants.
@@ -35,6 +38,29 @@ used under Mozilla Public License 1.1. The frequency model filters by these spel
 the original dictionaries are unmodified. See mpl-1.1.txt, rla-LICENSE.md and rla-README_hunspell_es.txt.
 Source files: https://github.com/LibreOffice/dictionaries/tree/762abe74008b94b2ff06db6f4024b59a8254c467/es
 
+Hinglish keyboard language model (hien.hextm): the English model above, mixed with word and
+word-pair counts from PHINC: A Parallel Hinglish Social Media Code-Mixed Corpus for Machine
+Translation, Vivek Srivastava and Mayank Singh, 2020. https://doi.org/10.5281/zenodo.3605597
+Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/
+Full licence: cc-by-4.0.txt. Changes: lowercased and counted the Hinglish posts' words and word
+pairs (no text is kept), mixed them half and half with the English model's probabilities,
+selected informative pairs and quantized probabilities into HXTM v3. The Hinglish capitalization
+list (hien.capitals) is the English list without Hindi words English writes as names, plus the
+names PHINC's posts nearly always write with a capital.
+The English and Hinglish chat words (abbreviations such as "tbh" and "nhi") are Hex's own list.
+
+English and Hinglish next-word model (next.hexnn): a small language model Hex trained from scratch on
+- SODA: Million-scale Dialogue Distillation with Social Commonsense Contextualization, Hyunwoo Kim
+  et al., 2022, https://arxiv.org/abs/2212.10465, https://huggingface.co/datasets/allenai/soda
+  Creative Commons Attribution 4.0 International (cc-by-4.0.txt).
+- WildChat-1M: WildChat: 1M ChatGPT Interaction Logs in the Wild, Wenting Zhao, Xiang Ren, Jack Hessel,
+  Claire Cardie, Yejin Choi and Yuntian Deng, ICLR 2024, https://huggingface.co/datasets/allenai/WildChat-1M
+  Open Data Commons Attribution License 1.0 (odc-by-1.0.txt).
+- PHINC, as above, CC BY 4.0.
+- English and Hinglish chats Hex wrote with a language model.
+Changes: lowercased the text, removed links, handles and tags, split it into word pieces, trained the
+model on it and stored its weights as 8-bit numbers. No sentence from the data is in the app.
+
 Norwegian Bokmål keyboard language model: N-grammer fra Nasjonalbiblioteket 2026,
 National Library of Norway (Nasjonalbiblioteket). Book unigrams and bigrams ("digibok"),
 language nob, 1980–2019. CC0 1.0 Universal: https://creativecommons.org/publicdomain/zero/1.0/
@@ -47,3 +73,7 @@ Changes: normalized and lowercased word forms, filtered the book counts to attes
 Bokmål spellings, selected informative pairs and quantized probabilities into HXTM v3.
 The Bokmål validity list (nb.valid) is the Norsk ordbank standard full forms outside the model
 that the same book counts use at least 1,000 times, with each word's count quantized to a cost.
+
+Fix button: a Kotlin port of tinyfix by Caleb Fahlgren (https://github.com/cfahlgren1/tinyfix),
+MIT License (tinyfix-mit.txt). Its model and word lists (https://huggingface.co/paperweight/tinyfix,
+MIT) are not in the app: they download only when you turn on the fix button.

@@ -95,9 +95,9 @@ actor AppleSpeechTranscriber: LocalTranscribing {
         var errorDescription: String? {
             switch self {
             case .emptyTranscript:
-                String(localized: "Apple Speech did not detect any speech.")
+                String(localized: "No speech heard.")
             case .unavailable:
-                String(localized: "Apple Speech can't transcribe this language on this iPhone.")
+                String(localized: "Apple's speech recognition can't dictate this language on this iPhone.")
             }
         }
     }
@@ -200,6 +200,22 @@ actor AppleSpeechTranscriber: LocalTranscribing {
     func transcribe(_ audioURL: URL, vocabulary: [String]) async throws -> String {
         guard isPrepared else {
             throw TranscriberError.unavailable
+        }
+
+        // Experiments › Two-language dictation: the same recording read by a second installed
+        // language too, merged word by word. Off, or without a usable second language, the
+        // single-language path below runs exactly as before.
+        let twoLanguage = TwoLanguageDictationSettings()
+        if twoLanguage.isEnabled,
+           let pair = await AppleSpeechTwoLanguage.usablePair(for: language),
+           let merged = await AppleSpeechTwoLanguage.transcribe(
+               audioURL,
+               pair: pair,
+               vocabulary: vocabulary,
+               lingeringModels: true
+           ) {
+            guard !merged.text.isEmpty else { throw TranscriberError.emptyTranscript }
+            return merged.text
         }
 
         let speech: AppleSpeechModule

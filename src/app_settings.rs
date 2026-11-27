@@ -829,6 +829,7 @@ impl AppSettings {
             Ordering::Release,
         );
         crate::labs::apply(&self.labs);
+        crate::local_api::phone::apply(self);
         screenshots::apply_screenshots(self);
         #[cfg(hex_capture)]
         {

@@ -107,7 +107,7 @@ All four HXTM v3 assets are uncompressed and memory-mapped from the APK; Gradle 
 
 | Language | Words | Word pairs | Source of counts | Source of spelling |
 |---|---:|---:|---|---|
-| English | 86,133 | 417,480 | Google Books v3, 24 unigram / 589 bigram shards | SCOWL 2020.12.07 |
+| English | 86,888 | 417,480 | Google Books v3, 24 unigram / 589 bigram shards, plus 755 chat words and swears | SCOWL 2020.12.07 |
 | Spanish | 110,000 | 326,366 | Google Books v3, 3 / 73 shards; existing model unchanged | RLA-ES Hunspell |
 | German | 95,000 | 368,534 | Google Books v3, all 8 / 181 German shards | German alphabetic corpus spellings |
 | Bokmål | 95,000 | 370,560 | NB N-gram 2026 book unigrams and bigrams, language `nob` | Norsk ordbank, Bokmål full forms |
@@ -120,10 +120,15 @@ The [shared iOS builder](build-typing-model.py), SHA-256 `cba009fe227632d9f8d176
 
 - [Google Books Ngram v3 (2020-02-17)](https://storage.googleapis.com/books/ngrams/books/datasetsv3.html): **CC BY 3.0**. English and Spanish keep the original shared builds. German uses no second dictionary.
 - [NB N-gram 2026](https://data.norge.no/nb/datasets/f2eebe8b-bd83-34e4-bcf3-c0c5e37a77f8/n-grammer-fra-nasjonalbiblioteket-2026): the National Library of Norway’s counts are **CC0 1.0**. The [Norsk ordbank – Bokmål 2005, February 2022](https://data.norge.no/en/datasets/f0db926d-a154-3a12-82b8-6573b57f6dbb/norsk-ordbank-norwegian-bokmal-2005) spelling filter is separately **CC BY 4.0**.
-- [SCOWL](https://wordlist.aspell.net/) permits commercial redistribution subject to its [included notices](../../app/src/main/assets/licenses/scowl.txt). The English literal-validity list contains 45,303 unique spellings absent from the frequency model (440,142 bytes). It is built from the same public SCOWL archive, not from benchmark outputs or personal data. It cannot supply scored candidates or word probabilities.
+- [SCOWL](https://wordlist.aspell.net/) permits commercial redistribution subject to its [included notices](../../app/src/main/assets/licenses/scowl.txt). The English literal-validity list contains 45,347 unique spellings absent from the frequency model (440,514 bytes), among them 44 common SCOWL words written with an accent (sizes through 40) without it, as people type them ("cafe", "cliche", "fiance"). Left out are the four a letter short of a common word ("nee" for "need", "passe" for "passed", "precis", "attache"), since that is how people mistype the common word. It is built from the same public SCOWL archive, not from benchmark outputs or personal data. It cannot supply scored candidates or word probabilities.
+- [PHINC](https://doi.org/10.5281/zenodo.3605597) (Srivastava and Singh, 2020), 13,738 code-mixed Hinglish social media posts: **CC BY 4.0**. Hinglish takes only its word and word-pair counts.
 - [RLA-ES es_ES/es_MX sources](https://github.com/LibreOffice/dictionaries/tree/762abe74008b94b2ff06db6f4024b59a8254c467/es) use their **MPL 1.1** option. [APK credits, source links and modification notices](../../app/src/main/assets/licenses/credits.txt) · [full licence texts](../../app/src/main/assets/licenses/).
 
 **Capitals lists** (`en.capitals`, `es.capitals`, `de.capitals`) record how often the books write a word with a capital first letter, from the same Google Books v3 1-grams (1980–2019) as each model. A word typed in lowercase takes its capital when the books nearly always write it so (95%), as iOS does where its dictionary knows a word only capitalised: "mary" → "Mary", "monday" → "Monday", German "haus" → "Haus". A word that is also an ordinary lowercase word is held below that (English: one SCOWL spells in lowercase, such as "united" or "china"; Spanish: a model word under 98%). The English and Spanish lists also hold names outside the model, three letters or more, capitalised 90% of the time and used at least once per million words ("tom" in Spanish, "sami" in English): typed as they are, they count as real words, as iOS's spelling dictionary takes them, instead of being corrected into "toma" or "swami". Two model words run together whose pair is ten times as common ("iwant", "apartir") are left out. German's list is iOS's `de.capitals` (#2169), byte for byte; [build-capitals.py](build-capitals.py) builds the other two (en: 10,984 words, 121 KB; es: 7,586 words, 85 KB).
+
+**Hinglish** (`hien.hextm`, `hien.capitals`) is English's model with Hindi written in Latin letters added, for the Hinglish layout. [build-hinglish-model.py](build-hinglish-model.py) counts PHINC's words and word pairs, keeps every spelling used at least twice that English lacks ("nahi", "nahin", "nai" and "nhi" are each a word), and mixes the counts half and half with en.hextm's probabilities; a pair is kept when it says more than the mixed backoff. It then adds chat-words.tsv's Hinglish words PHINC still lacks (below). The result has 92,241 words (4,838 of them Hinglish) and 427,665 pairs in 3.74 MB. Its capitals are English's without Hindi words English writes as names ("maine", "hume"), plus names PHINC's posts write with a capital 90% of the time. Its decoder and spelling rules are English's (`TypingModel.spelling`). Glided, the commonest 1,000 English words are first 3,924 times of 4,000 against English's 3,954.
+
+**Chat words** ([chat-words.tsv](chat-words.tsv): 671 English and 545 Hinglish abbreviations, slang, Gen Z words, interjections and fillers, with other spellings) fill what the books and PHINC leave out, so “tbh”, “ngl”, “rizz”, “delulu” and “bindaas” are suggested and never corrected away. The list was written with a language model and checked by hand; it holds no swear words, which never-suggest.tsv lists. [add-chat-words.py](add-chat-words.py) adds the missing ones to en.hextm, and build-hinglish-model.py the Hinglish ones to hien.hextm. A word has no count, so its cost comes from its kind: an abbreviation, Gen Z word, interjection or filler costs what the books' 7,000th word does, other slang the 12,000th's, another spelling the 15,000th's. Words a model already has keep their costs. Left out: spellings with anything but letters, stretched ones (“awww”), never-suggest words, and English without its apostrophe (“dont”, “im”), which the keyboard corrects. never-suggest.tsv's swears for the language (“stfu”, “bhenchod”) are added at other slang's cost, so the keyboard suggests them while Suggest swear words is on, its default; slurs, porn site names and words about children are not. That file's last section is Hex's own list of chat swears and slurs, written with a language model and checked by hand: a spelling the models already have is listed only when it is nearly always a swear or slur (“bc”, “scumbag”), so “kutta”, “pagal”, “veg” and “bhaiya” stay ordinary words. Against the models before, with swears off then and on now, the learning bench (English email) is unchanged: savings +0.08 points, word accuracy +0.02, autocorrect broke a word +0.00.
 
 **Validity lists** (`<lang>.valid`) are what Android has for iOS's spelling dictionary: spellings outside the model that are still real words. English's is SCOWL (above). Spanish, German, French and Italian take every spelling the same Google Books v3 1-grams (1980–2019) use at least a cut-off number of times, in lowercase or with a capital; Bokmål takes Norsk ordbank's standard full forms that the NB N-gram 2026 books use at least that often. Left out: two model words run together whose pair is ten times as common ("apartir"), a French or Italian elision without its apostrophe ("cest"), and a model word with an accent changed or left out ("volvere", "brulant"), which books misspell as typists do. Each line carries the word's cost from its count, in eighths of a nat, as the model stores its own words'. The decoder reads a listed word at that cost instead of the 22 nats of a spelling nobody knows: a one-word fix still needs only the 2-nat margin, but splitting it into words needs a known word's 7, and the missed-space fallback leaves it alone. A list without costs (English) keeps the flat known-word reading (15 nats, 7-nat margin). [build-valid-words.py](build-valid-words.py) builds all six.
 
@@ -154,6 +159,43 @@ adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOB
 - Apply each language's list to its own layout, plus unambiguous shared loanwords.
   Spanish *negro* (black), German *dick* (thick), and Bokmål *fag* (subject) remain
   available. An unscored listed spelling is protected when typed just like a model word.
+
+## Next-word model
+
+English and Hinglish next words come from a small neural model, `next.hexnn` (7.6 MB, uncompressed in the APK and pinned in SHA256SUMS). The word-pair models still do autocorrect, glides and every other layout. It is a GPT trained from scratch: 4 layers, width 256, 4 heads, 48 word pieces of context, a 16,000-piece SentencePiece unigram vocabulary shared by both languages, 7.26 M parameters. [NextWordModel](../../app/src/main/java/ly/anoma/hex/typing/NextWordModel.kt) runs it in plain Kotlin on one thread, with int8 weights (one scale per row) and a cache of the words already read. It searches 4 beams 2 pieces deep for whole words and takes the three likeliest ones that fit what is typed. [NextWords](../../app/src/main/java/ly/anoma/hex/typing/NextWords.kt) works the answer out off the main thread, so the strip shows the word pairs' guess first and changes when the answer arrives. Between words, and for a word of one to three letters, the model's words come before the word pairs'. Learned words and phrases still come first. On the emulator a warm prediction takes about 25 ms, and the first after the keyboard loads takes 100 to 700 ms.
+
+Training text: [SODA](https://huggingface.co/datasets/allenai/soda) (CC BY 4.0, a quarter of its dialogues), the user turns of [WildChat-1M](https://huggingface.co/datasets/allenai/WildChat-1M) (ODC-BY 1.0, only those not marked toxic, under 400 characters and with no code), PHINC (CC BY 4.0), and 2,501 synthetic chat threads in English and Hinglish, chat and formal, written by [generate.py](neural/generate.py) with DeepSeek V4.1 Flash through OpenCode Go. All of it is normalized as the keyboard reads text ([text.py](neural/text.py)): lowercase words and `. , ? !`, with links, handles and tags removed. The small Hinglish and chat sources are repeated (PHINC 10 times, synthetic Hinglish 6, synthetic English 3, Hinglish WildChat 8), for 57.7 M words or 73.7 M pieces. Training ran 12,000 steps of 256 × 48 pieces (two passes) in about 13 minutes on an RTX 4060.
+
+Held out from training: SODA's last 5,000 dialogues, a tenth of PHINC and of the synthetic files, chat threads from an earlier generator run, and the learning bench's Enron authors. [evaluate.py](neural/evaluate.py) scores 300 words per set. At each word, both predictors see the words before it and offer 3 words, with nothing of the word typed and with its first letter typed. A hit means the word is among the 3. The word-pair model is scored as the keyboard scores it. These are the int8 model's results with the phone's search:
+
+| Held-out set | Model, nothing typed | Word pairs, nothing typed | Model, first letter | Word pairs, first letter |
+|---|---:|---:|---:|---:|
+| English chat | 24.0% | 11.3% | 58.0% | 36.0% |
+| English email (Enron) | 34.3% | 22.7% | 66.0% | 56.0% |
+| English formal | 33.0% | 21.7% | 61.7% | 45.7% |
+| Synthetic English chat | 27.0% | 11.3% | 62.0% | 36.0% |
+| Synthetic English formal | 29.3% | 21.3% | 64.7% | 49.0% |
+| Hinglish chat | 27.7% | 9.7% | 54.3% | 26.3% |
+| Hinglish formal | 29.3% | 12.0% | 52.7% | 32.3% |
+| Synthetic Hinglish chat | 22.3% | 9.7% | 50.3% | 27.7% |
+| Synthetic Hinglish formal | 34.3% | 13.0% | 60.3% | 36.0% |
+| PHINC | 22.7% | 19.7% | 41.3% | 37.0% |
+
+SODA's own held-out dialogues (65.3% against 17.0%) are left out of the table because they are too close to the training text. The float model with a 12-beam, 5-piece search scores within 1.5 points of these numbers on every set, at ten times the work. 6 beams 4 pieces deep scored about the same as 4 beams 2 pieces deep, and 3 beams 3 pieces deep did clearly worse. `HEX_LEARN_BENCH_NEXT=1` runs the learning bench with the model.
+
+To rebuild it, put the data under one root: `data/soda/train.parquet` and `data/wildchat/*.parquet` (the datasets' Hugging Face parquet files), `data/phinc.csv`, `data/threads.tsv` (held-out threads: `thread, turn, who, lang, register, text`), `data/authors/*.txt` ([learn-corpus.py](../../scripts/learn-corpus.py)) and `gen/` (generate.py's output). Then, in a Python venv with `torch`, `sentencepiece`, `pyarrow` and `numpy`:
+
+```sh
+N=benchmark/typing/neural
+python3 $N/generate.py ROOT/gen 2500 8         # needs the opencode CLI signed in to OpenCode Go
+python3 $N/prepare.py ROOT                     # writes ROOT/corpus/
+python3 $N/train.py ROOT v2 12000 256 4 4 16000
+HEX_BEAM=4 HEX_DEPTH=2 HEX_APOSTROPHES=1 python3 $N/evaluate.py ROOT v2 300   # writes ROOT/runs/v2/eval.json
+HEX_BEAM=4 HEX_DEPTH=2 HEX_APOSTROPHES=1 python3 $N/export.py ROOT v2 \
+  app/src/main/assets/typing/next.hexnn app/src/test/resources/next-fixture.tsv
+```
+
+Then update `next.hexnn`'s line in SHA256SUMS. `NextWordModelTest` checks the Kotlin model against the fixture's tokenizer cases and predictions.
 
 ## Reproduce on the Studio
 
@@ -199,4 +241,15 @@ adapted from Shutterstock's [LDNOOBW revision 5faf2ba](https://github.com/LDNOOB
    for lang in es fr it; do
      python3 benchmark/typing/build-capitals.py $lang app/src/main/assets/typing/$lang.hextm "$T/capitals/$lang" "$T/models/$lang.capitals"
    done
+   # Adds chat-words.tsv's English words to en.hextm in place; run once on the Google Books file (no-op after).
+   python3 benchmark/typing/add-chat-words.py en app/src/main/assets/typing/en.hextm
+   # Reads en.hextm, en.capitals, never-suggest.tsv and chat-words.tsv; writes hien.hextm and hien.capitals beside them.
+   python3 benchmark/typing/build-hinglish-model.py app/src/main/assets/typing "$T/source/hinglish"
    ```
+
+## Biased thumb (touch personalization)
+
+`TOUCH_BIAS=0.3,0.3` shifts every replayed tap by that many key pitches (right, down), as a thumb that lands off its keys.
+Adding `TOUCH_LEARN=1` lets the replay learn the per-key offsets from the words it finishes (`TouchOffsets`), as the keyboard
+does, and aim the keys at them. Compare `wer` with and without `TOUCH_LEARN` at the same bias; with neither variable set the
+replay is the unpersonalised baseline. `TouchOffsetsTest` runs the same experiment on the JVM with a synthetic thumb.

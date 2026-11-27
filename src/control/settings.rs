@@ -449,6 +449,15 @@ pub fn apply(
             candidate.clear_record_shortcut_sharing_capture();
         }
         "labs.standalone_special_keys" => candidate.repair_special_keys(),
+        "labs.phone_dictation_port"
+            if (1..crate::local_api::phone::MIN_PORT)
+                .contains(&candidate.labs.phone_dictation_port) =>
+        {
+            return Err(invalid(
+                name,
+                "use 0 to pick one automatically, or a port from 1024 to 65535",
+            ));
+        }
         "labs.section_key_alone" => candidate.repair_section_key(),
         "labs.microphone_key" => candidate.repair_microphone_key(),
         "labs.parakeet_ultra" if !candidate.labs.parakeet_ultra => {
@@ -973,6 +982,49 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_is_trimmed_and_must_be_one_line() {
+        let change = apply(&AppSettings::default(), "labs.signature", "on", &rules()).unwrap();
+        assert!(change.settings.labs.signature);
+        assert_eq!(
+            change.settings.labs.signature_text,
+            crate::dictation::signature::DEFAULT_TEXT
+        );
+        let change = apply(
+            &change.settings,
+            "labs.signature_text",
+            "  Dax, from Hex ",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.signature_text, "Dax, from Hex",
+            "a saved signature is trimmed"
+        );
+        let error = apply(
+            &change.settings,
+            "labs.signature_text",
+            "two\nlines",
+            &rules(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid-value");
+        assert!(error.message.contains("one line"), "{}", error.message);
+        assert_eq!(
+            change.settings.labs.signature_text, "Dax, from Hex",
+            "a refused draft leaves the saved signature"
+        );
+        let change = apply(&change.settings, "labs.signature_text", "", &rules()).unwrap();
+        assert!(
+            change.settings.labs.signature_text.is_empty(),
+            "empty is allowed and appends nothing"
+        );
+        assert_eq!(
+            get(&change.settings, "labs.signature_text").unwrap()[0].value,
+            Value::String(String::new())
+        );
+    }
+
+    #[test]
     fn settings_name_real_capabilities_and_keys() {
         let capabilities = crate::rune_ui::capabilities();
         for (prefix, capability) in NEEDS {
@@ -1186,6 +1238,39 @@ mod tests {
         assert_eq!(
             get(&change.settings, "labs.appearance_theme").unwrap()[0].value,
             Value::String("dark".into())
+        );
+        let change = apply(&settings, "labs.dictation_style", "on", &rules()).unwrap();
+        assert!(change.settings.labs.dictation_style);
+        assert_eq!(
+            change.settings.labs.dictation_style_choice,
+            crate::app_settings::DictationStyle::Polished,
+            "polished is the default"
+        );
+        let change = apply(
+            &change.settings,
+            "labs.dictation_style_choice",
+            "notes",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.dictation_style_choice,
+            crate::app_settings::DictationStyle::Notes
+        );
+        assert_eq!(
+            get(&change.settings, "labs.dictation_style_choice").unwrap()[0].value,
+            Value::String("notes".into())
+        );
+        assert_eq!(
+            apply(
+                &change.settings,
+                "labs.dictation_style_choice",
+                "song",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
         );
         let change = apply(&settings, "ui_language", "none", &rules()).unwrap();
         assert_eq!(change.settings.ui_language, None);

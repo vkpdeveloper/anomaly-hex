@@ -18,6 +18,7 @@ mod dictation;
 mod discovery;
 mod http;
 mod meeting_events;
+pub mod phone;
 pub(crate) mod processing;
 mod streams;
 pub(crate) mod timestamps;
@@ -832,16 +833,7 @@ fn transcription_action(
             return RequestAction::Respond(HttpResponse::code(400, code));
         }
     };
-    let model = crate::transcription::models::definition(selection.model);
-    let prepared = match model.runtime {
-        crate::transcription::models::ModelRuntime::Gguf(_) => {
-            crate::transcription::models::is_verified(model)
-        }
-        crate::transcription::models::ModelRuntime::AppleSpeech => {
-            crate::transcription::models::is_installed(model, &selection.language)
-        }
-    };
-    if !prepared {
+    if !model_ready(&selection) {
         return RequestAction::Respond(HttpResponse::code(409, "model-not-ready"));
     }
     let Some(admission) = transcription.admit_audio() else {
@@ -854,6 +846,19 @@ fn transcription_action(
         admission,
         processing: guard,
         timestamps: requested,
+    }
+}
+
+/// Whether `selection`'s model is on disk and verified, so a clip can run.
+fn model_ready(selection: &crate::transcription::models::TranscriptionSelection) -> bool {
+    let model = crate::transcription::models::definition(selection.model);
+    match model.runtime {
+        crate::transcription::models::ModelRuntime::Gguf(_) => {
+            crate::transcription::models::is_verified(model)
+        }
+        crate::transcription::models::ModelRuntime::AppleSpeech => {
+            crate::transcription::models::is_installed(model, &selection.language)
+        }
     }
 }
 

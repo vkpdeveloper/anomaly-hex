@@ -9,6 +9,7 @@
 mod group;
 #[cfg(all(target_os = "macos", hex_capture))]
 pub(super) mod screenshots;
+mod signature;
 mod stop_phrase;
 mod store;
 mod voice_prompt;
@@ -21,8 +22,8 @@ use rune::{El, Icon, TextEdit, Tx, row, text};
 pub(super) use self::store::{page, search_field, tabs};
 use super::controls::{self, Paint};
 use super::icons::{
-    BOOK, CALENDAR, CAMERA, CLOCK, FOLDER, GLOBE, KEYBOARD, MOUSE, PANEL, SPARKLES, TERMINAL,
-    TIMER, WAVE,
+    BOOK, CALENDAR, CAMERA, CLOCK, FOLDER, GLOBE, KEYBOARD, MOUSE, PANEL, PHONE, SPARKLES,
+    TERMINAL, TIMER, WAVE,
 };
 use super::sidebar::{NAV_ROW_GAP, NAV_ROW_HEIGHT, VOICE_FILTER_ICON};
 use super::{Pane, Ui};
@@ -225,6 +226,11 @@ pub(super) struct Store {
     pub(super) stop_phrase: TextEdit,
     /// Whether `stop_phrase` started from the saved phrase.
     pub(super) stop_phrase_synced: bool,
+    /// Labs › Signature's line while it's on: a draft, so invalid text stays
+    /// in its field instead of replacing the saved signature.
+    pub(super) signature: TextEdit,
+    /// Whether `signature` started from the saved line.
+    pub(super) signature_synced: bool,
     /// The lab a `hex://labs/<feature>` link named and when, so its card
     /// shows a focus border for [`FLASH`].
     pub(super) flash: Option<(&'static str, std::time::Instant)>,
@@ -304,6 +310,85 @@ impl Store {
         let draft = self.stop_phrase.text.trim();
         !draft.is_empty() && draft != settings.labs.stop_phrase_text
     }
+
+    /// Starts Signature's field at `saved` when Labs opens or its lab turns
+    /// on.
+    pub(super) fn sync_signature(&mut self, saved: &str) {
+        self.signature = TextEdit::new(saved.to_owned());
+        self.signature_synced = true;
+    }
+
+    /// Adopts a signature another writer saved, unless the field holds an
+    /// unsaved draft.
+    pub(super) fn rebase_signature(&mut self, before: &str, after: &str) {
+        if !self.signature_synced || self.signature.text.trim() == before {
+            self.sync_signature(after);
+        }
+    }
+
+    /// The signature `settings` should hold: the draft when it passes
+    /// validation. An invalid draft never replaces the saved line, and an
+    /// empty one saves and appends nothing.
+    pub(super) fn project_signature(&self, settings: &mut crate::app_settings::AppSettings) {
+        // Until the field starts from the saved line, it holds no draft.
+        if !self.signature_synced {
+            return;
+        }
+        let draft = self.signature.text.trim();
+        if crate::dictation::signature::text_problem(draft).is_none() {
+            settings.labs.signature_text = draft.to_owned();
+        }
+    }
+
+    /// Whether Signature's field holds typing the saved settings don't have.
+    /// A lab that's off, or a field that never started from the saved line,
+    /// has no draft to keep.
+    pub(super) fn signature_dirty(&self, settings: &crate::app_settings::AppSettings) -> bool {
+        if !self.signature_synced || !settings.labs.signature {
+            return false;
+        }
+        let draft = self.signature.text.trim();
+        draft != settings.labs.signature_text
+    }
+
+    /// Adopts the lab fields another write saved: a lab toggled elsewhere
+    /// resyncs its field, and a saved text change rebases one with no draft.
+    /// `drafts` is (phrase, stop phrase, signature).
+    pub(super) fn follow_saved(
+        &mut self,
+        before: &crate::app_settings::LabsSettings,
+        after: &crate::app_settings::LabsSettings,
+        drafts: (bool, bool, bool),
+    ) {
+        let (phrase, stop_phrase, signature) = drafts;
+        if after.voice_prompt != before.voice_prompt {
+            self.sync_phrase(&after.voice_prompt_phrase);
+        } else if !phrase && after.voice_prompt_phrase != before.voice_prompt_phrase {
+            self.rebase_phrase(&before.voice_prompt_phrase, &after.voice_prompt_phrase);
+        }
+        if after.stop_phrase != before.stop_phrase {
+            self.sync_stop_phrase(&after.stop_phrase_text);
+        } else if !stop_phrase && after.stop_phrase_text != before.stop_phrase_text {
+            self.rebase_stop_phrase(&before.stop_phrase_text, &after.stop_phrase_text);
+        }
+        if after.signature != before.signature {
+            self.sync_signature(&after.signature_text);
+        } else if !signature && after.signature_text != before.signature_text {
+            self.rebase_signature(&before.signature_text, &after.signature_text);
+        }
+    }
+
+    /// Adopts the lab texts a save committed, each unless its field holds a
+    /// draft.
+    pub(super) fn rebase_labs(
+        &mut self,
+        before: &crate::app_settings::LabsSettings,
+        after: &crate::app_settings::LabsSettings,
+    ) {
+        self.rebase_phrase(&before.voice_prompt_phrase, &after.voice_prompt_phrase);
+        self.rebase_stop_phrase(&before.stop_phrase_text, &after.stop_phrase_text);
+        self.rebase_signature(&before.signature_text, &after.signature_text);
+    }
 }
 
 /// What a `hex://labs` link asks the store to show.
@@ -372,6 +457,8 @@ fn open(ui: &mut Ui, tx: &mut Tx) {
         .sync_phrase(&ui.settings.labs.voice_prompt_phrase);
     ui.lab_store
         .sync_stop_phrase(&ui.settings.labs.stop_phrase_text);
+    ui.lab_store
+        .sync_signature(&ui.settings.labs.signature_text);
     tx.settle();
 }
 
@@ -542,6 +629,9 @@ fn rows(ui: &Ui) -> Vec<Row> {
     // Every OS's paster can leave a dictation on the clipboard; only macOS's
     // and Windows' can skip the paste.
     rows.push(row(Feature::KeepOnClipboard, None));
+    // Every OS's output stage signs a normal dictation at the one point its
+    // paste, History, and Paste Last read.
+    rows.push(row(Feature::Signature, None));
     // Every OS's paster can press Return after its paste.
     rows.push(row(Feature::YoloMode, None));
     if matches!(
@@ -630,6 +720,10 @@ fn rows(ui: &Ui) -> Vec<Row> {
     rows.push(row(Feature::SpokenFormatting, None));
     rows.push(row(Feature::SpokenSymbols, None));
     rows.push(row(Feature::FillerWords, None));
+    rows.push(row(Feature::Hinglish, None));
+    // Every OS writes each dictation in the chosen style after its
+    // corrections and before its transformations.
+    rows.push(row(Feature::DictationStyle, None));
     // macOS reads the pass through Apple Intelligence: a managed lock keeps
     // the row it built (off, disabled, saying why), else the card says why.
     if caps.os == super::platform::Os::Macos {
@@ -716,6 +810,7 @@ fn rows(ui: &Ui) -> Vec<Row> {
             ..ultra
         }
     });
+    rows.push(row(Feature::PhoneDictation, Some(&PHONE)));
     if caps.share_shortcut {
         rows.push(row(Feature::ShareShortcut, Some(&KEYBOARD)));
     }
@@ -912,6 +1007,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::AnnotatePointerScreen => "lab-annotate-pointer-screen",
         Feature::Screenshots => "lab-screenshots",
         Feature::AnnotateReplay => "lab-annotate-replay",
+        Feature::PhoneDictation => "lab-phone-dictation",
         Feature::CopyCaptureZip => "lab-copy-capture-zip",
         Feature::AnnotateAgentTools => "lab-annotate-agent-tools",
         Feature::AnnotateAgentInstall => "lab-annotate-agent-install",
@@ -925,10 +1021,13 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::VoicePrompt => "lab-voice-prompt",
         Feature::CursorContext => "lab-cursor-context",
         Feature::StopPhrase => "lab-stop-phrase",
+        Feature::Signature => "lab-signature",
         Feature::HoldThroughKeys => "lab-hold-through-keys",
         Feature::ModesEditor => "lab-modes-editor",
         Feature::DropTranscribe => "lab-drop-transcribe",
         Feature::VocabularyFiles => "lab-vocabulary-files",
+        Feature::Hinglish => "lab-hinglish",
+        Feature::DictationStyle => "lab-dictation-style",
     }
 }
 
@@ -980,6 +1079,12 @@ fn flip(ui: &mut Ui, lab: Lab) {
             let saved = ui.settings.labs.stop_phrase_text.clone();
             ui.lab_store.sync_stop_phrase(&saved);
         }
+        // Its line field starts at the saved signature, and an invalid draft
+        // leaves with its lab.
+        Feature::Signature => {
+            let saved = ui.settings.labs.signature_text.clone();
+            ui.lab_store.sync_signature(&saved);
+        }
         // A notice already on screen leaves with its lab.
         Feature::FailureNotices if !on => crate::rune_ui::live_text::dismiss_failure(),
         // Hex hears the browser through System Audio Recording.
@@ -991,7 +1096,8 @@ fn flip(ui: &mut Ui, lab: Lab) {
 }
 
 /// A lab's own settings, on its card while it's on: how long the model sits
-/// unused before it unloads, or the screenshot shortcut and folder.
+/// unused before it unloads, the screenshot shortcut and folder, or where a
+/// phone reaches this computer.
 fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
     if !entry.on {
         return None;
@@ -1056,6 +1162,21 @@ fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
         ),
         Lab::Feature(Feature::VoicePrompt) => Some(voice_prompt::body(ui, p)),
         Lab::Feature(Feature::StopPhrase) => Some(stop_phrase::body(ui, p)),
+        Lab::Feature(Feature::Signature) => Some(signature::body(ui, p)),
+        Lab::Feature(Feature::DictationStyle) => Some(
+            row()
+                .key("dictation-style-row")
+                .gap(8.0)
+                .center_y()
+                .flex_wrap()
+                .child(
+                    text(tr("Style"))
+                        .key("label")
+                        .font(controls::DESCRIPTION)
+                        .color(p.muted()),
+                )
+                .child(dictation_style_choice(ui, p, layer)),
+        ),
         // Wayland reports no file drags, so its card offers the file dialog.
         Lab::Feature(Feature::DropTranscribe) => Some(super::drop_transcribe::card(p)),
         #[cfg(all(target_os = "macos", hex_capture))]
@@ -1064,6 +1185,7 @@ fn extras(ui: &Ui, p: Paint, entry: &Row, layer: &mut Vec<El>) -> Option<El> {
             p,
             crate::screenshots::system_takes_shortcut(),
         )),
+        Lab::Feature(Feature::PhoneDictation) => Some(super::phone_dictation::body(ui, p)),
         _ => None,
     }
 }
@@ -1083,6 +1205,35 @@ fn caps_lock_light(ui: &Ui, p: Paint) -> El {
         let light = CapsLockLight::ALL[index];
         ui.update(|settings| settings.labs.caps_lock_light = light);
     })
+}
+
+/// Which of the four styles every dictation is written as. Four labels no
+/// longer fit a segmented control on a half-width card in every language,
+/// so the choice opens in a menu.
+fn dictation_style_choice(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
+    use crate::app_settings::DictationStyle;
+    let labels: Vec<String> = DictationStyle::ALL
+        .iter()
+        .map(|style| tr(style.name()).to_owned())
+        .collect();
+    let selected = DictationStyle::ALL
+        .iter()
+        .position(|style| *style == ui.settings.labs.dictation_style_choice)
+        .unwrap_or(0);
+    super::general::quiet_select(
+        ui,
+        p,
+        super::Menu::Pick("dictation-style"),
+        "dictation-style-choice".to_owned(),
+        tr("Style"),
+        labels,
+        selected,
+        |ui, index| {
+            let style = DictationStyle::ALL[index];
+            ui.update(|settings| settings.labs.dictation_style_choice = style);
+        },
+        layer,
+    )
 }
 
 /// Which appearance the main window shows instead of the system's.

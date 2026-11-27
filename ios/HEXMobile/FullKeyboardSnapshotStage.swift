@@ -5,9 +5,9 @@ import UIKit
 /// `--snap-state full-keyboard-<state>[-dark|-dark-field]` is passed on Simulator.
 /// `-dark` is a dark app; `-dark-field` is a light app whose field asks for a dark keyboard.
 /// The layout follows `--dictation-language` (Automatic, English, without it), or
-/// `--keyboard-layout nb|es|de|it|fr|fr-CA|fr-CH|pt|pl|cs|ro|ru|uk|el|sr-Latn|en` pins it; drafts are in the layout's language.
+/// `--keyboard-layout nb|es|de|it|fr|fr-CA|fr-CH|pt|pl|cs|hu|ro|ru|uk|el|sr-Latn|ko|en` pins it; drafts are in the layout's language.
 /// `--keyboard-letters qwerty|qwertz|azerty|dvorak|own` arranges its letters (its own without it).
-/// `--accent-key ø` (or Cyrillic `е`, `ь`, `ʼ`, Greek `α`, `σ`, or `t` on Romanian) picks the key the `accents` state holds; `--emoji-query kiss` what `emoji-search` types.
+/// `--accent-key ø` (or Cyrillic `е`, `ь`, `ʼ`, Greek `α`, `σ`, `t` on Romanian, or `o` on Hungarian) picks the key the `accents` state holds; `--emoji-query kiss` what `emoji-search` types.
 /// Emoji states (`emoji`, `emoji-search`, `emoji-tones`, `emoji-food`, `emoji-strip`) turn
 /// Settings › Keyboard › Emoji on with a seeded history; `emoji-probe` prints the panel's
 /// footprint and latency (`EMOJI_PROBE` lines) for `simctl launch --console`.
@@ -137,6 +137,15 @@ struct FullKeyboardSnapshotStage: View {
             case "accents": Self.accentKey == "r" ? "P" : "Ka"
             default: "Přijdu o deset minut později, "
             }
+        case .hungarian:
+            return switch state {
+            case "inserted": "Köszönöm szépen, találkozunk holnap!"
+            case "numbers": "Találkozunk 19:3"
+            case "shift": "Köszönöm szépen, találkozunk holnap. "
+            case "typing": "Köszönöm szépen, találkozunk holn"
+            case "accents": Self.accentKey == "e" ? "Káv" : "Köszön"
+            default: "Köszönöm szépen, találkozunk "
+            }
         case .romanian:
             return switch state {
             case "inserted": "Întârzii zece minute, ajung acasă la 19:30. Începeți fără mine."
@@ -182,6 +191,15 @@ struct FullKeyboardSnapshotStage: View {
             case "accents": Self.accentKey == "s" ? "Po" : "Laku no"
             default: "Kasnim deset minuta, "
             }
+        case .korean:
+            return switch state {
+            case "inserted": "10분 늦어요. 7시 30분까지 집에 갈게요. 먼저 시작하세요."
+            case "numbers": "10분 늦어요. 7시 3"
+            case "shift": "10분 늦어요. "
+            case "typing": "10분 늦어"
+            case "accents": "한"
+            default: "10분 늦어요. "
+            }
         case .english:
             break
         }
@@ -219,7 +237,7 @@ struct FullKeyboardSnapshotStage: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 10)
             FullKeyboardFixture(state: state, draft: draft, darkKeyboard: darkApp || darkField)
-                .frame(height: KeyboardLayout.height(for: .portrait)
+                .frame(height: KeyboardLayout.height(for: .portrait, numberRow: FullKeyboardSettings().numberRow)
                     + (state == "emoji-search" ? KeyboardMetrics.portrait.stripHeight : 0))
                 .background(Color(uiColor: backdrop).ignoresSafeArea(edges: .bottom))
         }
@@ -324,6 +342,7 @@ private struct FullKeyboardFixture: UIViewRepresentable {
                 case .polish: ["e": "ę", "a": "ą", "c": "ć", "l": "ł", "n": "ń", "o": "ó", "s": "ś", "z": "ż"]
                 case .romanian: ["a": "ă", "i": "î", "s": "ș", "t": "ț"]
                 case .czech: ["e": "ě", "r": "ř", "u": "ů", "a": "á", "c": "č", "s": "š", "z": "ž", "y": "ý", "n": "ň"]
+                case .hungarian: ["a": "á", "e": "é", "i": "í", "o": "ő", "u": "ű"]
                 case .greek: ["ε": "έ", "α": "ά", "ο": "ό", "η": "ή", "ι": "ί", "υ": "ύ", "ω": "ώ", "σ": "ς", "κ": "ϗ"]
                 default: [:]
                 }
@@ -586,7 +605,10 @@ class FixtureTextTarget: KeyboardTextTarget {
     var enablesReturnKeyAutomatically: Bool? = false
     var smartQuotesType: UITextSmartQuotesType?
     var smartDashesType: UITextSmartDashesType?
+    var selectedText: String?
     var documentIdentifier: UUID?
+    /// Simulates a host whose window reports no text after the cursor.
+    var hidesAfterText = false
 
     init(text: String = "", appearance: UIKeyboardAppearance? = nil) {
         self.text = text
@@ -601,7 +623,7 @@ class FixtureTextTarget: KeyboardTextTarget {
     }
 
     var documentContextAfterInput: String? {
-        String(text.dropFirst(max(0, min(text.count, cursorIndex))))
+        hidesAfterText ? nil : String(text.dropFirst(max(0, min(text.count, cursorIndex))))
     }
 
     var hasText: Bool { !text.isEmpty }

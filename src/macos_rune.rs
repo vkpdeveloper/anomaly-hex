@@ -354,6 +354,9 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig, hidden: bool
             ..Default::default()
         },
     )?;
+    let phone_dictation = crate::local_api::phone::PhoneDictation::start(
+        crate::local_api::processing::profiles_processor(transformations.clone()),
+    );
     let (controller_events_sender, controller_events) = mpsc::sync_channel(32);
     let (controller_commands, controller_command_receiver) = mpsc::sync_channel(8);
     let (meeting_requests, meeting_request_receiver) = mpsc::sync_channel(8);
@@ -587,6 +590,7 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig, hidden: bool
             tracing::error!("meeting controller worker panicked during shutdown");
         }
         drop(requests);
+        drop(phone_dictation);
         local_api.shutdown();
         // The listener owns the transcription engine; joining it frees the
         // model after its last use.

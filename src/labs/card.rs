@@ -52,6 +52,7 @@ impl Feature {
             Self::PickerDownloaded => "Downloaded models only",
             Self::SectionKeyAlone => "§ key alone",
             Self::MicrophoneKeyAlone => "Microphone key alone",
+            Self::PhoneDictation => "Phone dictation",
             Self::KeepRecordings => "Keep recordings",
             Self::Appearance => "Appearance",
             Self::HideMenuBarIcon => "Hide menu bar icon",
@@ -84,8 +85,11 @@ impl Feature {
             Self::DropTranscribe => "Transcribe dropped audio",
             Self::PasteLastPicker => "Paste Last picker",
             Self::VocabularyFiles => "Vocabulary files",
+            Self::Hinglish => "Hindi in Latin letters",
             Self::AnnotateAgentTools => "Agent tools for captures",
             Self::AnnotateAgentInstall => "Install agent skill from Annotate",
+            Self::Signature => "Signature",
+            Self::DictationStyle => "Dictation style",
         }
     }
 
@@ -211,6 +215,9 @@ impl Feature {
             Self::MicrophoneKeyAlone => {
                 "Use the mic key in F5's spot on Mac laptops as a shortcut; once set, only Hex gets it"
             }
+            Self::PhoneDictation => {
+                "Dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi"
+            }
             Self::KeepRecordings => {
                 "Keep the audio of your dictations in History, so you can turn them into text again with another speech model"
             }
@@ -308,11 +315,18 @@ impl Feature {
             Self::VocabularyFiles => {
                 "Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one"
             }
+            Self::Hinglish => {
+                "Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi."
+            }
             Self::AnnotateAgentTools => {
                 "Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely"
             }
             Self::AnnotateAgentInstall => {
                 "Adds an Agents section to the Annotate pane that writes the hex-annotate skill into Claude Code, Codex, OpenCode, or Pi, and on macOS links hex onto PATH"
+            }
+            Self::Signature => "Add a line to the end of each dictation, such as \"Sent from Hex\"",
+            Self::DictationStyle => {
+                "Format every dictation as Polished, Casual, Notes, or Verbatim, like the iPhone app, without an AI model"
             }
         }
     }

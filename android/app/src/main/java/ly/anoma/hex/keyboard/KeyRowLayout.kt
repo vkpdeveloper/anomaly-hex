@@ -13,29 +13,41 @@ internal class KeyRowLayout(context: Context, private val cells: Float, private 
                             private val gap: Float, private val insetTop: Int, private val insetBottom: Int) : ViewGroup(context) {
     private class Span(val start: Float, val width: Float) : LayoutParams(MATCH_PARENT, MATCH_PARENT)
 
-    fun add(view: View, start: Float, width: Float) = addView(view, Span(start, width))
+    fun add(view: View, start: Float, width: Float) { addView(view, Span(start, width)); edgesWidth = -1 }
 
-    private fun capLeft(i: Int, cell: Float): Int = (getChildAt(i).layoutParams as Span).let { (side + it.start * cell + gap / 2).roundToInt() }
-    private fun capRight(i: Int, cell: Float): Int = (getChildAt(i).layoutParams as Span).let { (side + (it.start + it.width) * cell - gap / 2).roundToInt() }
-    private fun hitLeft(i: Int, cell: Float) = if (i == 0) 0 else (capRight(i - 1, cell) + capLeft(i, cell)) / 2
-    private fun hitRight(i: Int, cell: Float, width: Int) = if (i == childCount - 1) width else (capRight(i, cell) + capLeft(i + 1, cell)) / 2
-    private fun cell(width: Int) = (width - 2 * side) / cells
+    // Each key's touch target and keycap edges, worked out once per width and used by measuring and
+    // laying out alike, not again for every pass of both.
+    private var edgesWidth = -1
+    private var hitLeft = IntArray(0)
+    private var hitRight = IntArray(0)
+
+    private fun edges(width: Int) {
+        if (width == edgesWidth && hitLeft.size == childCount) return
+        edgesWidth = width
+        val cell = (width - 2 * side) / cells
+        val n = childCount
+        val capLeft = IntArray(n); val capRight = IntArray(n)
+        for (i in 0 until n) {
+            val span = getChildAt(i).layoutParams as Span
+            capLeft[i] = (side + span.start * cell + gap / 2).roundToInt()
+            capRight[i] = (side + (span.start + span.width) * cell - gap / 2).roundToInt()
+        }
+        hitLeft = IntArray(n) { if (it == 0) 0 else (capRight[it - 1] + capLeft[it]) / 2 }
+        hitRight = IntArray(n) { if (it == n - 1) width else (capRight[it] + capLeft[it + 1]) / 2 }
+        for (i in 0 until n) getChildAt(i).setPadding(capLeft[i] - hitLeft[i], insetTop, hitRight[i] - capRight[i], insetBottom)
+    }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(width, height)
-        val cell = cell(width)
-        for (i in 0 until childCount) {
-            val child = getChildAt(i)
-            val left = hitLeft(i, cell); val right = hitRight(i, cell, width)
-            child.setPadding(capLeft(i, cell) - left, insetTop, right - capRight(i, cell), insetBottom)
-            child.measure(MeasureSpec.makeMeasureSpec(right - left, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
-        }
+        edges(width)
+        for (i in 0 until childCount) getChildAt(i).measure(
+            MeasureSpec.makeMeasureSpec(hitRight[i] - hitLeft[i], MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
-        val cell = cell(r - l)
-        for (i in 0 until childCount) getChildAt(i).layout(hitLeft(i, cell), 0, hitRight(i, cell, r - l), b - t)
+        edges(r - l)
+        for (i in 0 until childCount) getChildAt(i).layout(hitLeft[i], 0, hitRight[i], b - t)
     }
 }

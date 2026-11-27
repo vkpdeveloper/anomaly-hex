@@ -1043,7 +1043,7 @@ General                                  // settings
 │   │   microphone instead of Bluetooth")
 │   ├── Output -> Paste last shortcut, While dictating, Dictation HUD, Terminal paste (Linux)
 │   │   (Dictate without processing sits in the Output pane; see dictation.md)
-│   └── Application -> Enable on launch, Show Dock icon, Sound volume, Sounds,
+│   └── Application -> Enable on launch, Show Dock icon, Sounds,
 │       Interface language (System first, then alphabetical by displayed name),
 │       Update channel (self-updating installs)
 │       // Interface language System: macOS's first preferred language (zh-Hans -> 简体中文,
@@ -1095,10 +1095,10 @@ General                                  // settings
 │       ├── Turning it on without System Audio Recording -> ask now, never while dictating
 │       ├── On -> Screen & System Audio Recording row: Allow / waiting / Allowed
 │       └── Dictation -> browser_media sequence below
-├── Sound volume -> slider 0-100%; release saves and previews start unless Off; only Sounds sheet auditions play while Off
-│   └── A saved zero displays Off; enabling sounds through the CLI restores the default level
+├── Sounds -> one row ("Classic · 50%" or Off) opening a sheet: Sound volume slider in 5% steps, then each set to hear and pick
+│   ├── Slider release saves and previews start unless Off; only the sheet's previews play while Off
+│   ├── A saved zero displays Off; enabling sounds through the CLI restores the default level
 │   └── Default output changes or disappears (macOS) -> next tone reopens on the current default
-├── Sounds -> Sheet: hear each set on Hex's real HUD, pick one
 └── Linux / Windows -> listener card and desktop commands below the basics
 
 Pause media + Also pause the browser     // browser_media
@@ -1397,6 +1397,7 @@ Selected mode                            // replaces Global's rewrite and transf
   -> Labs > Rewrite by voice's phrase          // Labs off, or no phrase, processes as before
      -> one spoken instruction replaces the rewrite, with the mode's model and deadline (labs.md)
   -> OpenCode transformation             // optional provider-backed rewrite; an unset model is Hex's ranked pick, shown Automatic
+  -> Dictation style                     // Labs › Dictation style on: Polished, Casual, Notes, or Verbatim, after the rewrite and before transformations (labs.md)
   -> Transformations                     // ordered text chain
   -> Paste or Send
 
@@ -2402,9 +2403,14 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 │   Speech engine work as on Linux (#856)
 │   ├── A run that fails out of memory -> CPU for this process, said in
 │   │   Speech engine until Hex restarts (#1984; not run on Windows)
-│   └── A launch that crashed starting the GPU (gpu-start.pending left in the
-│       data folder, same version) -> CPU only, warned in process.log, until
-│       Hex updates or the file is deleted (#662; not run on Windows)
+│   ├── A launch that crashed starting the GPU (gpu-start.pending, a version
+│   │   and crashed attempts) -> the next launch retries once; a second crash
+│   │   keeps the CPU, warned in process.log, and Settings › Speech engine
+│   │   says "Choose Auto or GPU", which clears the marker and turns the GPU
+│   │   on at restart; an update deletes a marker from another build
+│   │   (#662; not run on Windows)
+│   └── hex status -> Speech names the loaded device ("Vulkan — …"), or "CPU
+│       (GPU start crashed twice)" after the marker forced the CPU
 ├── Hex app -> General, tray, HUD; Enabled = shortcut works in every app
 ├── HUD display -> the monitor under the pointer (GetCursorPos) at each capture
 │   start, inside that monitor's work area, at its own DPI (#486); while
@@ -2667,12 +2673,12 @@ records an Arch/i3 client-independent ownership check, not transcription accurac
 or physical logout, Wayland, or signed cross-version update proof.
 
 ```ts
-Linux General > Sound volume              // dictate.feedback.linux; X11 + Wayland
+Linux General > Sounds > Sound volume     // dictate.feedback.linux; X11 + Wayland
 ├── Default / older settings -> 50%
 ├── Slider at 0 -> No recording tones; the last level is kept
 └── Release above 0 -> Save and apply live; preview the start sound
-Linux General > Sounds                    // dictate.sound-theme
-└── Signature / Classic -> Save and apply live; preview the start sound
+Linux General > Sounds > a set            // dictate.sound-theme
+└── Press it -> Save and apply live; play its dictation
 
 Capture                                  // hex app and hex dictate
 ├── Shortcut starts capture -> Queue start sound immediately, before audio arrives
@@ -2890,8 +2896,10 @@ Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
 └── Not yet: custom caption
 iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 ├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary,
-│   Hinglish, Adaptive touch, German spatial autocorrect, ABC under the emoji key,
-│   Two-thumb selection, Hide word suggestions, Learn each language separately
+│   Hinglish, Two-language dictation, Adaptive touch, German spatial autocorrect,
+│   Korean keyboard (두벌식), ABC under the emoji key, Two-thumb selection, Delete
+│   swiped words letter by letter, Hide word suggestions, Join the keyboard when
+│   unfolded, Learn each language separately
 ├── Full keyboard's languages (Settings › Keyboard › Languages, with Full chosen): one or
 │   more layouts, the space bar names the current one and a slide switches letters, accents
 │   and autocorrect, and the input mode reports the language typing
@@ -2900,7 +2908,33 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   a device); Italian restores unambiguous unaccented spellings on space ("perche" →
 │   "perché", "citta" → "città", `KeyboardLanguage.accentRestorations`) and offers "è" and
 │   "c'è" in the strip for "e" and "ce", which are words of their own and are never changed
-│   by space
+│   by space. Hungarian is a normal language (no experiment): its own QWERTZ rows and QWERTY,
+│   its nine accented vowels held on a e i o u (á é í ó ö ő ú ü ű), the iPhone's `hu`
+│   dictionary behind its autocorrect (a missing accent is the cheapest fix, "koszonom" →
+│   "köszönöm", while a word of its own such as "meg" keeps its spelling), English as its
+│   bilingual partner through the Latin-script rule, and no typing (spatial) model
+├── Korean keyboard (두벌식) (off by default, `experiments.koreanKeyboard`): Settings ›
+│   Experiments adds 한국어 to Settings › Keyboard › Languages, typed on the standard two-set
+│   rows (ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔ / ㅁㄴㅇㄹㅎㅗㅓㅏㅣ / ㅋㅌㅊㅍㅠㅜㅡ, shift's ㅃㅉㄸㄲㅆ and ㅒㅖ, no
+│   qwerty or azerty choice). `HangulComposer` composes each syllable in the field (한 → 하 →
+│   ㅎ → nothing on delete, ㅗ then ㅏ → ㅘ and back, 닭 then ㅗ → 달고, 한 then ㅏ → 하나) by
+│   deleting only the part of the run that changed and inserting what it became; space,
+│   return, punctuation, a page or language switch, emoji, dictation, paste, undo, a selection
+│   action, the delete-word swipe, a cursor move or the keyboard hiding commits the run. A
+│   cursor move is recognized by the text before the run (a 32-character tail, so a host that
+│   trims the front of its window still matches if the window holds at least those 32
+│   characters plus the run), the text after the cursor, the field, and a reported selection;
+│   a host that trims more than the tail or reports no selection is best-effort, and a host
+│   that reports no text before the cursor joins syllables only while jamo come within about
+│   half a second (a cursor move followed by a jamo inside that window can't be detected). A
+│   field whose text after the cursor changes while you type (inline autocomplete) commits
+│   each jamo, so syllables don't join there. Korean has no accent holds, spelling
+│   dictionary, autocorrect, word suggestions or typing model, and while the
+│   experiment is off it is not listed, Automatic never picks it, and a stored "ko" is
+│   ignored.
+│   Unit tests only (`HangulComposerTests`, `HangulKeyboardTests`,
+│   `KoreanKeyboardGatingTests`): no CI compiles the iOS targets, and no physical iPhone run
+│   checks it
 ├── German spatial autocorrect (off by default, `experiments.germanSpatialAutocorrect`):
 │   with Spatial autocorrect on too, the Deutsch layout reads taps with the German
 │   model Android ships (`ios/HEXKeyboard/TypingModel/de.hextm`, the same v3 file
@@ -2944,6 +2978,12 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   host that removes one code point per call (some Devanagari and Thai clusters) can leave
 │   fragments. Off, a second finger is ignored exactly as before.
 │   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
+├── Delete swiped words letter by letter (off by default, `experiments.swipeDeleteLetterByLetter`):
+│   right after a swipe, delete acts as anywhere else and takes one character, instead of the
+│   whole swiped word and the space the swipe added before it (#2321). The swipe's record
+│   clears with that delete, as with any delete, so what remains types like ordinary text.
+│   Off, delete takes the whole word back as before.
+│   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
 ├── Hide word suggestions (off by default, `experiments.hideWordSuggestions`): the full
 │   keyboard's strip keeps its height, the Hex key, Undo, status, notices and the Paste chip,
 │   but stops suggesting words: no typing or next-word suggestions, swipe readings, finished
@@ -2951,6 +2991,14 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   Autocorrect still corrects on space, and after Delete the chip that puts back what it
 │   replaced (`.revert`) stays. With nothing suggested above it, holding a strip word to add it
 │   to Custom vocabulary is gone. Off, the strip suggests exactly as it did.
+│   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
+├── Join the keyboard when unfolded (off by default, `experiments.joinKeyboardWhenUnfolded`):
+│   the Duo unfolded and held upright splits as Apple's does there; on, it draws one joined
+│   keyboard instead, at unfoldedWide's own 39 pt rows and 51.7 pt row pitch, 19 pt in from
+│   the keyboard's own side as unfoldedTall's keys sit from its screen's, with the iPhone's
+│   portrait bottom row (123 and the globe to z's right edge, the emoji key on x's column
+│   when the globe shows, space after them, return from m). Apple's Split Keyboard
+│   preference can't be read by a keyboard extension. Off, the split keyboard is unchanged.
 │   Unit tests only: no CI compiles the iOS targets, and no physical iPhone run checks it
 ├── Learn each language separately (off by default, `experiments.learnPerLanguage`):
 │   every typing correction and dictation fix is tagged with the language it was typed
@@ -2963,6 +3011,27 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   what Hex learned erases the shared list and every language's; off, everything is the
 │   one shared list and learning it was before. Unit tests only: no CI compiles the iOS
 │   targets, and no physical iPhone run checks it
+├── Two-language dictation (off by default, `experiments.twoLanguageDictation`, iOS 26+):
+│   while Apple Speech dictates with `SpeechTranscriber`, one recording is read twice, in
+│   the language dictation resolved and in the first other keyboard language
+│   (`LanguageSettings.keyboardLanguages`, mapped with `dictationLanguage(for:)`) whose
+│   `SpeechTranscriber` model is installed and not set aside as failing; nothing downloads
+│   for it. Each reading keeps its timed runs (characters, timing, transcription
+│   confidence), and `TwoLanguageMerger` cuts both at the earlier of two word ends within
+│   150 ms, scores a reading by its confidence-weighted seconds clipped to each segment, and
+│   chooses a reading per segment with a 0.35 s cost per language change (ties to the
+│   primary). A seam word is dropped only when its span overlaps the last kept word's by half
+│   the shorter one. A switch keeps the runs' own characters and adds a space only when
+│   neither side has whitespace; when the second language wins nothing, the primary's
+│   original text is used unchanged, so CJK and Thai spacing, punctuation and untimed runs
+│   stay as Apple gave them. The text runs through the same pipeline with the primary
+│   language. No installed second language, a failed second analyzer, or no timed words in
+│   either reading dictates as before; a primary reading that finished silent reports empty
+│   so the caller throws its no-speech error without transcribing again; off, the path is
+│   unchanged.
+│   The app, keyboard, widgets, and tests built on a macOS 26 GitHub runner with 33 tests
+│   passing (run 45005571072, the latest observed verification); nothing is measured on an
+│   iPhone.
 ├── Custom vocabulary (off by default): a local list of up to 100 terms; every
 │   engine spells matched words the listed way before cleanup and again after
 │   formatting
@@ -2970,9 +3039,137 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   Apple documents them only for DictationTranscriber, and Parakeet's batch
 │   path receives none
 └── Proof limits: unit tests only; no CI compiles the iOS targets
-Android keyboard -> English, Spanish, German and Bokmål typing assistance
+Android keyboard -> English, Spanish, German, Bokmål, French, Italian and Hinglish typing assistance
+├── Keyboard > Keyboard layout > Hinglish -> Hindi in Latin letters and English, tapped or glided
+│   (HinglishTest; unit tests only, no device run)
 ├── Keyboard > Suggest swear words (off) -> opt in to profanity; listed slurs never offered
-└── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Hold the period (letters page) -> Gboard's punctuation, `; / ( ) # ! , ?` and
+│   `& % + " - : ' @` above; slide and release types the mark through the engine, release on
+│   the period types the period (PeriodAndNumberRowTest; unit tests only, no device run)
+├── Keyboard > Number row (off) -> 1 to 0 above the letters; row 1 loses its small digits and
+│   their long press, keeps its accents; every page one row taller, letter coordinates unchanged
+│   (PeriodAndNumberRowTest; unit tests only, no device run)
+├── Strip's grid -> menu in place of the strip and keys: Clipboard, Fix mistakes (only where
+│   the Fix button works), Settings (seen on a Pixel emulator)
+├── A dictation ending "scratch that" -> taken back, or the one before when said alone
+│   (SpokenSendTest; unit tests only, no device run)
+├── Two-finger swipe left / right on the keys -> undo / redo a word, a run of deletes, or one
+│   larger edit, kept by Hex in any field; none in password fields; sending forgets them
+│   (UndoTest; seen on a Pixel emulator). An undone word's count is taken back with it,
+│   and a redo counts it again (LearningUndoReturnTest; unit tests only, no device run)
+├── A selection -> Cut and Copy on the strip; shift held while sliding on space
+│   selects (SelectionTest; Cut seen on a Pixel emulator, the shift slide unit-tested only)
+├── A sum before the caret (45*12) -> its answer as a chip that replaces it; an amount and a
+│   space (250 usd, 8 km, 30°c) -> its conversion in brackets, money at fixed rates for now
+│   (QuickMathTest; both seen on a Pixel emulator)
+├── Keyboard › Text shortcuts -> typing one (;eta, omw) offers its text; a {blank} is selected
+│   after it goes in (SnippetsTest; added in settings and used on a Pixel emulator)
+├── Keyboard › Free times (off; Calendar permission) -> "free" / "available" (with a day) and
+│   a space offer calendar gaps of 30 min or more between 9 am and 9 pm (FreeTimesTest; seen
+│   on a Pixel emulator with a local test calendar)
+├── A field that turns off suggestions -> the strip still shows; only autocorrect on space
+│   stops (seen on a Pixel emulator in Contacts search)
+├── Type a whole word, or a space after one (English, Hinglish) -> up to two emoji in the strip's
+│   third slot ("medicine" 💊 💉, "chai" ☕ 🫖); a tap ends the word and types the emoji
+│   ├── The emoji you pick for a word come first next time; a panel pick shows once picked twice
+│   ├── Password and no-learning fields -> no emoji, nothing learned; Forget learned words clears
+│   └── Proof limits: EmojiSuggestionsTest; strip, pick and learning seen on a Pixel emulator
+├── Grid menu › Clipboard -> clipboard panel: recent screenshots, then clips pinned first,
+│   newest first; tap pastes or inserts, touch and hold -> Pin or Delete, Clear -> unpinned go
+│   ├── Unpinned clips go an hour after copying (20 kept, 5 images); up to 50 pins, the
+│   │   only clips saved (owner-only private files)
+│   ├── Copies marked EXTRA_IS_SENSITIVE or made in a password field -> never kept
+│   └── Image -> commitContent through FileProvider when the editor takes it, else copied
+├── Field with saved logins or a texted code -> the autofill service's chips in the strip, in
+│   place of the clipboard chip and next-word guesses; pinned ones last, by the mic; a tap
+│   fills the field (the service's own, no SMS permission); a word being typed takes the
+│   strip back until it is done; another field or an empty response clears them
+│   ├── Nothing to turn on in Hex; a chip keeps the width its service drew, and one that
+│   │   scrolls under the mic is cut off at its edge
+│   ├── Texted codes only from a service that offers them inline (Google's does, a password
+│   │   manager such as Bitwarden doesn't)
+│   └── Proof limits: InlineChipsTest (order, late chips, when they show); chips from a test
+│       autofill service seen on a Pixel emulator; no real password manager run
+├── Strip's chip -> the last copy (10 min) or a screenshot from the last 5 min, in place of
+│   next-word guesses; typing a word or its age ends it, and the clipboard keeps it
+│   (an image only in a field that takes images)
+│   ├── A link -> shown without `https://`, with the site's icon fetched from the site itself,
+│   │   in the chip and on its Clipboard panel card
+│   ├── Phone numbers, emails, links, addresses, dates, flights in a copy -> up to two as their
+│   │   own chips with icons, found by Android's on-device classifier, and in a row on the
+│   │   copy's panel card; a tap pastes that piece; a sensitive copy is never looked at
+│   ├── Dates without a time ("tomorrow", "next Friday", "25 Nov", "22/11/2026") -> found by
+│   │   Hex too, since the classifier marks a date only with a time
+│   └── Proof limits: ClipPiecesTest; pieces and favicons seen in the strip and the panel on a
+│       Pixel emulator
+├── Keyboard > Remove tracking from links (off) -> a link copied while the keyboard runs (under
+│   5 s old) loses `utm_*`, `fbclid`, share tags (`si`, `igsh`, …) and Amazon's `ref`/`tag`, and
+│   the clean link goes back on the clipboard; pastes from the chip or panel are cleaned too
+│   (LinksTest; a cleaned copy read back by the system paste on a Pixel emulator)
+├── Keyboard > Expand short links (off) -> a copied bit.ly, amzn.to, tinyurl.com, … link becomes
+│   its target (cleaned when the above is on) on the clipboard; only the shortener is asked,
+│   over HTTPS, up to 5 hops; no answer leaves the copy (OneTimeCodeTest's short-link case; a
+│   tinyurl link expanded to Wikipedia with its icon on a Pixel emulator)
+├── Keyboard > Codes from texts (off) -> ask for SMS; a code a text brought in the last 10 min
+│   is the strip's chip; a tap types it and it goes; a copy of it is offered the same way and
+│   never kept in the clipboard history; only codes are kept, in memory
+│   └── Proof limits: OneTimeCodeTest, RecentImagesTest; emulator texts seen as the chip, typed
+│       and gone; no real phone run; a Play build couldn't ask for SMS
+├── Keyboard > Recent screenshots (off) -> ask for photos; screenshots only, never camera photos
+│   (ClipHistoryTest, RecentImagesTest; unit tests only, no device run)
+├── Type a listed word in full -> keep its spelling on space or tap its literal chip
+├── Type a word -> its fix in the strip's middle slot as you type, a completion beside it;
+│   space or return applies exactly that fix (StripTimingTest, StripRankingTest)
+│   ├── English and Hinglish: a word cut short completes ("peop" -> "people"); "wor" stays
+│   │   "work"; stretched words and known Hinglish words stand (SlippedPrefixTest,
+│   │   AutocorrectRestraintTest)
+│   ├── Undo a correction, or delete it and retype -> that change off for good, the word left
+│   │   as typed for a week; a hand-edited word is fixed only one letter off
+│   │   (AutocorrectRejectionTest, UndoneWordTest)
+│   └── Proof limits: unit tests; a few words spot-checked on a Pixel emulator, not a phone
+├── Keyboard > Keep a typing log (off) -> keys, strips, picks, corrections, undos, pastes,
+│   dictations and app changes to a file in Download/Hex (TypingLogEventsTest)
+├── Write one spelling of a word far more ("nhi", "colour") -> the strip, autocorrect,
+│   predictions and glides give yours; distinct words never merge ("main", "mein");
+│   Hindi spellings only once English's model has loaded (SpellingsTest,
+│   SpellingPreferenceTest; unit tests only, no device run)
+├── Type a personal-dictionary shortcut -> its phrase in the strip; a tap puts it in,
+│   space leaves the shortcut as typed
+├── Paired computer -> Global's one-word text replacements as shortcuts too, fetched
+│   hourly (`GET /phone/v1/replacements`); yours win; a capitals-only one becomes your
+│   word; Forget (Computer) clears them (ReplacementsTest; unit tests only, no device run)
+├── A recording that never heard a voice (room, fan, a click) -> not sent, "No speech"
+│   (VoiceHeardTest; unit tests only, no device run)
+├── Tap the mic -> records until the mic is tapped again (or a held mic is let go); a pause
+│   never ends it; only the 16 MiB upload limit (about 8.7 minutes) sends it by itself
+├── Dictate -> the app in front and the layout's language go with the recording; the
+│   computer applies the mode for that app, else Global (docs/phone-dictation.md;
+│   OriginTest, `phone::origin` tests; no device run)
+├── Keyboard > Say "send it" to send (off) -> a dictation ending "send it" or "bhej do"
+│   after a pause or a sentence's end types the rest, then presses the field's send or
+│   go action; never mid-sentence or in a password field, no undo (SpokenSendTest;
+│   unit tests only, no device run)
+├── Type an email address -> addresses that complete it in the strip: the phone's
+│   accounts, ones typed before (never learned in password or incognito fields) and,
+│   with Keyboard > Suggest contacts' emails (off) and the Contacts permission,
+│   contacts'; first in email fields, last elsewhere (AddressesAndShortcutsTest;
+│   unit tests only, no device run)
+├── Settings › Keyboard › Spell checker -> opens Android's spell checker page; choose Hex
+│   ├── A word Hex doesn't know (its words, yours and learned ones) -> underlined, no pop-up;
+│   │   addresses, handles, acronyms and camelCase are left alone
+│   ├── Put the caret in it -> its fix in the strip's middle slot, other spellings beside it
+│   ├── With the Fix button's files, on English or Hinglish -> a real word the sentence says
+│   │   is wrong ("form" for "from") gets the grammar underline; the caret in it offers the fix
+│   └── Proof limits: SpellCheckTest (tinyfix case needs HEX_TINYFIX_DIR); both underlines,
+│       no pop-up and the fixes seen on a Pixel emulator in a platform text field; Compose
+│       fields (Google Messages) ask for no checks
+└── Keyboard > Fix button (off) -> download tinyfix (3.5 MB, pinned, SHA-256 checked)
+    ├── Grid menu › Fix mistakes (English or Hinglish layout) -> fix words
+    │   within 1,000 characters of the caret
+    ├── On Hinglish -> Hindi words (in Hinglish's model, not English's) stay as typed
+    ├── Undo fixes -> restore them while the field is unchanged; skip them until restart
+    └── Proof limits: parity with the npm package on 55 sentences (unit test, needs the
+        files); fix, undo and the download seen on a Pixel emulator, not a physical phone
 Unmerged Windows / deferred features -> Not part of this map
 ```
 

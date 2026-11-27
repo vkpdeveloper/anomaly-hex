@@ -370,6 +370,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: import vocabulary terms from a CSV file in the Vocabulary sheet, and export the list as one",
     ),
     key(
+        "labs.hinglish",
+        Kind::Bool,
+        "Labs: write the Devanagari in each dictation in Latin letters, the way Hindi is texted",
+    ),
+    key(
         "labs.screen_vocabulary",
         Kind::Bool,
         "Labs: use names and terms visible in the focused window as temporary vocabulary for each dictation (macOS)",
@@ -526,6 +531,16 @@ pub(super) const KEYS: &[Key] = &[
         "labs.standalone_special_keys",
         Kind::Bool,
         "Labs: shortcuts may use Menu, Pause, or Scroll Lock, alone or with modifiers (Linux); off puts such a shortcut back to its default",
+    ),
+    key(
+        "labs.phone_dictation",
+        Kind::Bool,
+        "Labs: dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi",
+    ),
+    key(
+        "labs.phone_dictation_port",
+        Kind::Integer { min: 0, max: 65535 },
+        "The port Labs › Phone dictation listens on; 0 picks one automatically",
     ),
     key(
         "labs.section_key_alone",
@@ -754,6 +769,30 @@ pub(super) const KEYS: &[Key] = &[
         Kind::Text,
         "Labs: the phrase that finishes a hands-free dictation, at least two words and six \
          letters; \"stop dictation\" by default",
+    ),
+    key(
+        "labs.signature",
+        Kind::Bool,
+        "Labs: every normal dictation is signed with labs.signature_text on its own line at \
+         the end, before it is pasted, kept in History, and remembered for Paste Last",
+    ),
+    key(
+        "labs.signature_text",
+        Kind::Text,
+        "Labs: the line added to each normal dictation, one line of at most 200 characters; \
+         \"Sent from Hex\" by default, and empty adds nothing",
+    ),
+    key(
+        "labs.dictation_style",
+        Kind::Bool,
+        "Labs: every normal dictation is written as Polished, Casual, Notes, or Verbatim \
+         (labs.dictation_style_choice), like the iPhone app, without an AI model",
+    ),
+    key(
+        "labs.dictation_style_choice",
+        Kind::Choice(&["polished", "casual", "notes", "verbatim"]),
+        "Labs: the style every normal dictation is written as while Labs › Dictation style \
+         is on; polished by default",
     ),
     key(
         "meetings.enabled",

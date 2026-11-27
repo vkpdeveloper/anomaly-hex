@@ -73,6 +73,15 @@ nonisolated struct ShiftStateMachine: Equatable, Sendable {
         lastTapDown = nil
     }
 
+    /// Call after a key in a layout without capitals (Hangul) commits: shift is one key's,
+    /// and a lock lifts with it.
+    mutating func didTypeOneShot() {
+        didType()
+        if state == .locked {
+            state = .off
+        }
+    }
+
     /// Auto-capitalization after an edit or a field change. Leaves caps lock and a held shift alone.
     mutating func refreshAutoCapitalization(_ shouldCapitalize: Bool) {
         guard state != .locked, !isHeld else { return }
@@ -167,7 +176,7 @@ nonisolated struct KeyboardLayerState: Equatable, Sendable {
 
     mutating func didInsert(_ text: String) {
         guard layer != .letters else { return }
-        if text == " " || text == "\n" || text == "'" {
+        if text == " " || text == "\n" || text == "'" || text == "\u{02BC}" {
             layer = .letters
         }
     }
@@ -198,5 +207,13 @@ nonisolated enum KeyboardFieldRouting {
         default:
             return .keys(.text, initialLayer: .letters)
         }
+    }
+
+    /// Whether a number pad (`.handOff`) goes to the next keyboard: where iOS asks for a globe,
+    /// except where Apple's keyboard is split (the Duo unfolded and upright). There iOS 27.2's
+    /// switch to the next keyboard can end the app being typed in (TestFlight build 121,
+    /// `FullKeyboardView.passesGlobeTouch`), so Hex stays on its 123 page.
+    static func handsOffNumberPad(needsInputModeSwitchKey: Bool, posture: KeyboardPosture) -> Bool {
+        needsInputModeSwitchKey && !posture.splitsKeyboard
     }
 }

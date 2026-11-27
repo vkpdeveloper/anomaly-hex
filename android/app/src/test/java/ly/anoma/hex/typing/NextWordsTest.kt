@@ -1,0 +1,124 @@
+package ly.anoma.hex.typing
+
+import java.io.File
+import java.util.concurrent.Executor
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+// The next-word model in the strip: its words come first between words and for a 1–3 letter word, and
+// the strip never waits for them.
+class NextWordsTest {
+    private val english = TypingModel.file(File("src/main/assets/typing/en.hextm"), "en")
+    private val hinglish = TypingModel.file(File("src/main/assets/typing/hien.hextm"), "hien")
+    private val neural by lazy { NextWordModel.file(File("src/main/assets/typing/next.hexnn")) }
+    private val grid = Glides.grid()
+
+    private fun writing(model: TypingModel, next: NextWords?) = TypingWord(SpatialDecoder(model), true).also { it.next = next }
+    private fun now() = NextWords({ neural }, Executor { it.run() })
+    private fun TypingWord.typed(before: String, text: String) = apply {
+        reset(before)
+        for (c in text) grid.centres.getValue(c).let { letter(c.toString(), it.x, it.y, grid) }
+    }
+
+    @Test fun betweenWordsTheModelsWordsComeFirst() {
+        assertEquals(listOf("ka", "se", "ki"), writing(hinglish, now()).predictions("bhai kal "))
+        assertEquals(listOf("advice", "recommendation", "tip"), writing(english, now()).predictions("thanks for the "))
+        // Without the model the word pairs answer, as before.
+        assertTrue(writing(english, null).predictions("thanks for the ").isNotEmpty())
+    }
+
+    @Test fun aShortWordIsCompletedFromTheTextBefore() {
+        val words = writing(english, now()).typed("can you send me the ", "sc").strip().map { it.text }
+        assertTrue(words.toString(), "script" in words)
+        val hindi = writing(hinglish, now()).typed("bhai kal ", "sh").strip().map { it.text }
+        assertTrue(hindi.toString(), "shaadi" in hindi || "shaam" in hindi)
+    }
+
+    // A worker that hasn't answered yet leaves the strip to the word pairs; once it answers, [NextWords.ready]
+    // fires and the same question gets the model's words.
+    @Test fun theStripNeverWaitsForTheModel() {
+        val queued = ArrayList<Runnable>()
+        val next = NextWords({ neural }, Executor { queued.add(it) })
+        var readied = 0
+        next.ready = { readied++ }
+        val typing = writing(english, next)
+        val before = typing.predictions("thanks for the ")
+        assertEquals(1, queued.size)
+        // Asking again while it is worked out doesn't queue it twice.
+        typing.predictions("thanks for the ")
+        assertEquals(1, queued.size)
+        queued.removeAt(0).run()
+        assertEquals(1, readied)
+        val after = typing.predictions("thanks for the ")
+        assertEquals(listOf("advice", "recommendation", "tip"), after)
+        assertTrue(before != after)
+    }
+
+    // While a letter's words are worked out, the words already in for the letters before it that still fit
+    // answer, and [NextWords.ready] follows with its own; a model that can't be read answers none.
+    @Test fun aLetterGetsTheWordsOfTheLettersBeforeUntilItsOwnAreIn() {
+        val queued = ArrayList<Runnable>()
+        var readied = 0
+        val next = NextWords({ neural }, Executor { queued.add(it) }).also { it.ready = { readied++ } }
+        val context = listOf("bhai", "kal")
+        assertNull(next.words(context, "k"))
+        queued.removeAt(0).run()
+        val k = next.words(context, "k")!!
+        val ka = next.words(context, "ka")
+        assertEquals(k.filter { it.startsWith("ka") }, ka)
+        assertEquals(1, queued.size)
+        queued.removeAt(0).run()
+        assertEquals(2, readied)
+        val own = next.words(context, "ka")!!
+        assertTrue(own.toString(), own.all { it.startsWith("ka") } && own.size > ka!!.size)
+        val broken = NextWords({ throw java.io.IOException("unreadable") }, Executor { it.run() })
+        assertEquals(emptyList<String>(), broken.words(context, "k"))
+    }
+
+    // The words after the word being typed, asked ahead, are worked out behind the question for its letters
+    // and are in when the space asks for them; asking ahead never calls [NextWords.ready].
+    @Test fun wordsAskedAheadAreInWhenTheSpaceAsks() {
+        val queued = ArrayList<Runnable>()
+        var readied = 0
+        val next = NextWords({ neural }, Executor { queued.add(it) }).also { it.ready = { readied++ } }
+        val typing = writing(english, next).typed("thanks for the ", "adv")
+        typing.strip()
+        next.ahead(NextWords.context("thanks for the advice "))
+        // A newer guess replaces one not yet begun, and the same one isn't asked twice.
+        next.ahead(NextWords.context("thanks for the advise "))
+        next.ahead(NextWords.context("thanks for the advise "))
+        assertEquals(3, queued.size)
+        for (r in queued) r.run()
+        queued.clear()
+        assertEquals(1, readied)
+        assertNull(next.words(NextWords.context("thanks for the advice "), ""))
+        queued.clear()
+        assertEquals(NextWords.WORDS, next.words(NextWords.context("thanks for the advise "), "")?.size)
+        assertTrue(queued.isEmpty())
+        assertEquals(1, readied)
+    }
+
+    // Only the newest question is worked out: the older one waiting behind it is dropped.
+    @Test fun olderQuestionsAreDropped() {
+        val queued = ArrayList<Runnable>()
+        var loads = 0
+        val next = NextWords({ loads++; neural }, Executor { queued.add(it) })
+        next.words(listOf("thanks", "for"), "")
+        next.words(listOf("thanks", "for", "the"), "")
+        for (r in queued) r.run()
+        queued.clear()
+        assertEquals(6, next.words(listOf("thanks", "for", "the"), "")?.size)
+        assertNull(next.words(listOf("thanks", "for"), ""))
+        assertEquals(1, queued.size)
+        assertEquals(1, loads)
+    }
+
+    @Test fun contextReadsTheTextAsTheModelWasTrained() {
+        assertEquals(listOf("hey", ",", "it's", "here", "."), NextWords.context("Hey, it’s https://x.y/z here @bob #tag."))
+        val long = (1..55).joinToString(" ") { "w$it" }
+        // Past 40 words the first kept moves on 20 at a time.
+        assertEquals("w21", NextWords.context(long).first())
+    }
+}

@@ -8,7 +8,7 @@
 
 use std::io::Cursor;
 use std::net::TcpStream;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::transcription::transcript::TimestampLevel;
 
@@ -32,7 +32,7 @@ pub(super) fn transcribe_audio(
     stream: &mut TcpStream,
     admitted: Admitted,
     content_length: usize,
-    mut body: Vec<u8>,
+    body: Vec<u8>,
     context: &HttpContext,
 ) -> Option<HttpResponse> {
     let Admitted {
@@ -41,8 +41,62 @@ pub(super) fn transcribe_audio(
         guard,
         timings,
     } = admitted;
-    let transcription = &context.transcription;
-    let shutdown = &context.shutdown;
+    let language = selection.language.clone();
+    let upload = Upload {
+        selection,
+        admission,
+        timings,
+    };
+    let heard = match transcribe_upload(
+        stream,
+        upload,
+        content_length,
+        body,
+        &context.transcription,
+        &context.shutdown,
+    ) {
+        Ok(heard) => heard,
+        Err(response) => return response,
+    };
+    let mut response = serde_json::json!({
+        "transcript": &heard.transcript.text,
+        "durationMs": heard.duration_ms,
+    });
+    timestamps::attach(&mut response, timings, &heard.transcript, heard.duration_ms);
+    processing::attach(
+        &mut response,
+        guard.as_ref(),
+        &heard.transcript.text,
+        &language,
+        &context.shutdown,
+    );
+    Some(HttpResponse::json(200, &response))
+}
+
+/// What an admitted upload is transcribed with.
+pub(super) struct Upload {
+    pub selection: crate::transcription::models::TranscriptionSelection,
+    pub admission: crate::transcription::service::AudioAdmission,
+    pub timings: TimestampLevel,
+}
+
+/// A finished upload's transcript as the model heard it.
+pub(super) struct Heard {
+    pub transcript: crate::transcription::transcript::Transcript,
+    pub duration_ms: u64,
+}
+
+/// Reads, decodes, and transcribes an uploaded WAV (`/transcriptions` and
+/// the phone relay). `Err` carries the reply for a failure, or `None` when
+/// there is no one left to answer.
+pub(super) fn transcribe_upload(
+    stream: &mut TcpStream,
+    upload: Upload,
+    content_length: usize,
+    mut body: Vec<u8>,
+    transcription: &crate::transcription::service::TranscriptionServiceHandle,
+    shutdown: &AtomicBool,
+) -> Result<Heard, Option<HttpResponse>> {
     if let Err(error) = read_body_bounded(
         stream,
         content_length,
@@ -51,7 +105,7 @@ pub(super) fn transcribe_audio(
         MAX_AUDIO_BYTES,
         UPLOAD_DEADLINE,
     ) {
-        return Some(match error {
+        return Err(Some(match error {
             BodyReadError::ResourceExhausted => HttpResponse::code(413, "resource-exhausted"),
             BodyReadError::Invalid => HttpResponse::code(400, "invalid-audio"),
             BodyReadError::Io(error) => {
@@ -59,49 +113,44 @@ pub(super) fn transcribe_audio(
                 HttpResponse::code(400, "invalid-audio")
             }
             BodyReadError::Deadline => HttpResponse::code(408, "upload-timeout"),
-            BodyReadError::Shutdown => return None,
-        });
+            BodyReadError::Shutdown => return Err(None),
+        }));
     }
     let clip = match crate::transcription::service::AudioClip::decode_wav(Cursor::new(body)) {
         Ok(clip) => clip,
         Err(crate::transcription::service::AudioError::ResourceExhausted) => {
-            return Some(HttpResponse::code(413, "resource-exhausted"));
+            return Err(Some(HttpResponse::code(413, "resource-exhausted")));
         }
         Err(crate::transcription::service::AudioError::Unsupported) => {
-            return Some(HttpResponse::code(415, "unsupported-audio"));
+            return Err(Some(HttpResponse::code(415, "unsupported-audio")));
         }
         Err(crate::transcription::service::AudioError::Invalid) => {
-            return Some(HttpResponse::code(400, "invalid-audio"));
+            return Err(Some(HttpResponse::code(400, "invalid-audio")));
         }
     };
     let duration_ms = clip.duration_ms;
-    let language = selection.language.clone();
+    let Upload {
+        selection,
+        admission,
+        timings,
+    } = upload;
     let job = match transcription.transcribe(selection, clip, admission, timings) {
         Ok(job) => job,
-        Err(error) => return Some(transcription_error(error)),
+        Err(error) => return Err(Some(transcription_error(error))),
     };
     loop {
         match job.wait_timeout(TRANSCRIPTION_POLL_INTERVAL) {
             Ok(Some(Ok(transcript))) => {
-                let mut response = serde_json::json!({
-                    "transcript": &transcript.text,
-                    "durationMs": duration_ms,
+                return Ok(Heard {
+                    transcript,
+                    duration_ms,
                 });
-                timestamps::attach(&mut response, timings, &transcript, duration_ms);
-                processing::attach(
-                    &mut response,
-                    guard.as_ref(),
-                    &transcript.text,
-                    &language,
-                    &context.shutdown,
-                );
-                return Some(HttpResponse::json(200, &response));
             }
-            Ok(Some(Err(error))) | Err(error) => return Some(transcription_error(error)),
+            Ok(Some(Err(error))) | Err(error) => return Err(Some(transcription_error(error))),
             Ok(None) => {
                 if shutdown.load(Ordering::Acquire) || client_aborted(stream) {
                     job.cancel();
-                    return None;
+                    return Err(None);
                 }
             }
         }

@@ -12,15 +12,15 @@ internal object KeyboardLetters {
         // apostrophe key after n on row 3, between shift and delete.
         "fr" to listOf("azertyuiop", "qsdfghjklm", "wxcvbn'"),
         "it" to listOf("qwertyuiop", "asdfghjkl", "zxcvbnm"),
+        "hien" to listOf("qwertyuiop", "asdfghjkl", "zxcvbnm"),
     )
 
     fun rows(layoutCode: String) = rows[layoutCode] ?: rows.getValue("en")
 
-    /** Row 1's digits, 1 to 0 on its first ten keys, as Gboard draws and holds them. */
-    fun digit(row: Int, index: Int): Char? = if (row == 0 && index < 10) "1234567890"[index] else null
-
-    /** The 123 page and the second symbols page; Spanish puts ¿ and ¡ on the second page's last row. */
-    fun numbers(layoutCode: String) = listOf("1234567890", "-/:;()$&@\"", punctuation(layoutCode, more = false))
-    fun symbols(layoutCode: String) = listOf("[]{}#%^*+=", "_\\|~<>€£¥•", punctuation(layoutCode, more = true))
-    private fun punctuation(layoutCode: String, more: Boolean) = if (more && layoutCode == "es") ".,¿¡'" else ".,?!'"
+    /** Gboard's two symbol pages, row by row; row 3 sits between the page switch and delete. */
+    val numbers = listOf("1234567890", "@#₹_&-+()/", "*\"':;!?")
+    val symbols = listOf("~`|•√π÷×§Δ", "€¥$¢^°={}\\", "%©®™✓[]")
+    /** Row 1's long-press digits, as Gboard's small corner digits show them. */
+    fun digit(layoutCode: String, c: Char): Char? = rows(layoutCode)[0].indexOf(c.lowercaseChar())
+        .takeIf { it in 0..9 }?.let { "1234567890"[it] }
 }

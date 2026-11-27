@@ -1283,7 +1283,7 @@ final class DictationControllerTests: XCTestCase {
         // A described error keeps its sentence.
         XCTAssertEqual(
             UserFacingError.message(for: ParakeetTranscriber.TranscriberError.notPrepared, context: .transcription),
-            "Parakeet V2 is not ready."
+            "The speech model isn't ready."
         )
         for message in [plain, UserFacingError.message(for: cannotInterrupt, context: .transcription)] {
             XCTAssertFalse(message.contains("OSStatus"))
@@ -1306,7 +1306,7 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(UserFacingError.message(for: offline, context: .model), UserFacingError.offline)
         XCTAssertEqual(
             UserFacingError.message(for: ParakeetTranscriber.TranscriberError.downloadFailed, context: .model),
-            "Parakeet V2 didn't download. Check your connection and try again."
+            "The speech model didn't download. Check your connection and try again."
         )
 
         // Hex's own language messages, short enough for the keyboard's strip.
@@ -1418,7 +1418,7 @@ final class DictationControllerTests: XCTestCase {
             XCTAssertLessThan(snapshot.fractionCompleted, 0.99)
             last = snapshot.fractionCompleted
         }
-        XCTAssertEqual(progress.snapshot(at: 120).detail, "Optimizing for this iPhone… about a minute")
+        XCTAssertEqual(progress.snapshot(at: 120).detail, "Optimizing for this iPhone, about a minute")
         XCTAssertEqual(
             progress.snapshot(at: 100 + progress.expectedLoadSeconds * 2 + 1).detail,
             "Still optimizing. The first time can take a few minutes."
@@ -1569,23 +1569,136 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertFalse(ParakeetCompileRecord(key: ParakeetUltraTranscriber.compileRecordKey, defaults: defaults).isCurrent)
     }
 
-    func testMultilingualParakeetsDownloadSaysItsSizeAndWiFi() {
-        var progress = ParakeetPreparationProgress(
-            downloads: true,
-            compiledBefore: false,
-            downloadDetail: ParakeetUltraTranscriber.downloadDetail
-        )
-        progress.download(0.5)
-        let detail = progress.snapshot(at: 1).detail
-        XCTAssertEqual(detail, ParakeetUltraTranscriber.downloadDetail)
-        XCTAssertTrue(detail.contains("632"), detail)
-        XCTAssertTrue(detail.contains("Wi-Fi"), detail)
+    func testMultilingualParakeetNeverTakesDictationUntilItIsReady() {
+        let step = DictationController.multilingualStep
+        XCTAssertEqual(step(nil, true, true), .none, "off, another language, or set aside")
+        XCTAssertEqual(step("nl-NL", false, false), .download, "the usual engine dictates while it downloads")
+        XCTAssertEqual(step("nl-NL", false, true), .download)
+        XCTAssertEqual(step("nl-NL", true, false), .loadBeside, "a first load compiles beside the usual engine")
+        XCTAssertEqual(step("nl-NL", true, true), .dictate)
         XCTAssertEqual(
             ParakeetPreparationProgress(downloads: true, compiledBefore: false).downloadDetail,
             "Downloading the speech model",
             "V2's words are unchanged"
         )
-        XCTAssertTrue(DictationController.isDownloadInterruption(ParakeetUltraTranscriber.TranscriberError.downloadFailed))
+    }
+
+    func testTheKeyboardOpensHexForMultilingualParakeetOnlyOnceItIsReady() {
+        let settings = MultilingualParakeetSettings(defaults: defaults)
+        XCTAssertFalse(settings.keyboardOpensHex(language: "nl-NL"), "off")
+        settings.isEnabled = true
+        XCTAssertFalse(settings.keyboardOpensHex(language: "nl-NL"), "on, still downloading: the keyboard dictates itself")
+        settings.isModelReady = true
+        XCTAssertTrue(settings.keyboardOpensHex(language: "nl-NL"))
+        XCTAssertFalse(settings.keyboardOpensHex(language: nil), "a language it doesn't take")
+        settings.isEnabled = false
+        XCTAssertFalse(settings.keyboardOpensHex(language: "nl-NL"))
+    }
+
+    func testOnlyASwitchTurnedOffDeletesTheMultilingualModelAtLaunch() {
+        let settings = MultilingualParakeetSettings(defaults: defaults)
+        XCTAssertFalse(settings.isTurnedOff, "never set: nothing to delete")
+        settings.isEnabled = true
+        XCTAssertFalse(settings.isTurnedOff)
+        settings.isEnabled = false
+        XCTAssertTrue(settings.isTurnedOff)
+        XCTAssertFalse(
+            MultilingualParakeetSettings(defaults: nil).isTurnedOff,
+            "an App Group Hex can't read says nothing about the switch"
+        )
+    }
+
+    func testTheMultilingualDownloadResumesFromItsPartialFileAndSaysItsBytes() async throws {
+        let model = try UltraStubModel()
+        defer { model.remove() }
+        let first = model.files[0]
+        let partial = model.folder.appendingPathComponent(first.path).appendingPathExtension("partial")
+        try FileManager.default.createDirectory(at: partial.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try model.bodies[first.path]!.prefix(1000).write(to: partial)
+        XCTAssertEqual(ParakeetUltraModel.bytesOnDisk(in: model.folder, files: model.files), 1000)
+
+        let download = model.download()
+        download.start()
+        if case .downloading(let bytes) = download.state {
+            XCTAssertEqual(bytes, 1000, "picks up from what's on disk")
+        } else {
+            XCTFail("\(download.state)")
+        }
+        XCTAssertEqual(download.status, "Downloading the multilingual model: 1\u{00A0}KB of 5\u{00A0}KB")
+        try await waitUntil { download.state == .loading }
+
+        XCTAssertTrue(ParakeetUltraModel.isDownloaded(in: model.folder, files: model.files))
+        XCTAssertEqual(UltraStubProtocol.requested.first ?? nil, "bytes=1000-", "resumed with a range")
+    }
+
+    func testAMultilingualDownloadThatDropsOrStallsTriesAgainFromWhereItWas() async throws {
+        let model = try UltraStubModel()
+        defer { model.remove() }
+        UltraStubProtocol.script([.cut(1200), .hang(800), .serve])
+        let download = model.download()
+        var finished = 0
+        download.onDownloaded = { finished += 1 }
+        download.start()
+        try await waitUntil(seconds: 10) { download.state == .loading }
+
+        XCTAssertEqual(finished, 1)
+        XCTAssertTrue(ParakeetUltraModel.isDownloaded(in: model.folder, files: model.files))
+        XCTAssertEqual(
+            Array(UltraStubProtocol.requested.prefix(3)),
+            [nil, "bytes=1200-", "bytes=2000-"],
+            "a dropped connection and a stalled one each pick up from the partial file"
+        )
+    }
+
+    func testAMultilingualDownloadThatKeepsMovingNeverRunsOutOfTries() async throws {
+        let model = try UltraStubModel()
+        defer { model.remove() }
+        UltraStubProtocol.script(Array(repeating: .cut(400), count: ParakeetUltraDownload.automaticTries + 1))
+        let download = model.download()
+        download.start()
+        try await waitUntil(seconds: 10) { download.state == .loading || download.isFailed }
+        XCTAssertEqual(download.state, .loading, "each drop came after more bytes, so it kept going")
+        XCTAssertTrue(ParakeetUltraModel.isDownloaded(in: model.folder, files: model.files))
+    }
+
+    func testAMultilingualDownloadThatKeepsFailingSaysWhatHappened() async throws {
+        let model = try UltraStubModel()
+        defer { model.remove() }
+        UltraStubProtocol.script(Array(repeating: .status(503), count: 10))
+        let download = model.download()
+        download.start()
+        try await waitUntil { download.isFailed }
+        XCTAssertEqual(UltraStubProtocol.requested.count, ParakeetUltraDownload.automaticTries)
+        XCTAssertEqual(download.status, "The multilingual model didn't download (error 503). Try again later.")
+
+        UltraStubProtocol.script([.status(404)])
+        download.restart()
+        try await waitUntil { download.isFailed }
+        XCTAssertEqual(UltraStubProtocol.requested.count, 1, "a refused request isn't tried again by itself")
+
+        XCTAssertEqual(
+            ParakeetUltraDownload.message(for: URLError(.notConnectedToInternet)),
+            "The multilingual model's download stopped. Check your connection and try again."
+        )
+        XCTAssertTrue(ParakeetUltraDownload.message(for: CocoaError(.fileWriteOutOfSpace)).contains("free space"))
+        XCTAssertEqual(ParakeetUltraDownload.backoff(1), 2)
+        XCTAssertEqual(ParakeetUltraDownload.backoff(4), 16)
+        XCTAssertEqual(ParakeetUltraDownload.backoff(9), 30)
+    }
+
+    func testTurningTheMultilingualModelOffStopsItsDownloadBeforeItIsDeleted() async throws {
+        let model = try UltraStubModel()
+        defer { model.remove() }
+        UltraStubProtocol.script([.hang(800)])
+        let download = model.download(stallLimit: .seconds(30))
+        download.start()
+        try await waitUntil { ParakeetUltraModel.bytesOnDisk(in: model.folder, files: model.files) == 800 }
+
+        await download.stop()
+        XCTAssertEqual(download.state, .idle)
+        ParakeetUltraModel.remove(from: model.folder)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.folder.path), "nothing wrote after stop")
     }
 
     func testParakeetUltrasFilesArePinnedAndComplete() throws {
@@ -1631,6 +1744,15 @@ final class DictationControllerTests: XCTestCase {
         try await settle()
         XCTAssertEqual(made, 1)
 
+        // Turned off (the test host's App Group has it off) while the usual engine dictates:
+        // nothing to prepare again.
+        controller.multilingualParakeetChanged()
+        try await settle()
+        XCTAssertEqual(made, 1)
+        XCTAssertEqual(controller.phase, .ready)
+
+        // Turned off while Parakeet Ultra dictated: Hex prepares the engine it picks without it.
+        controller.engineName = ParakeetUltraTranscriber.name
         controller.multilingualParakeetChanged()
         try await settle()
         XCTAssertEqual(made, 2)
@@ -1709,8 +1831,8 @@ final class DictationControllerTests: XCTestCase {
         try await settle()
         controller.finishRecording()
         try await settle()
-        XCTAssertEqual(controller.phase, .failed("Parakeet V2 is not ready."))
-        XCTAssertEqual(bridge.snapshot().message, "Parakeet V2 is not ready.")
+        XCTAssertEqual(controller.phase, .failed("The speech model isn't ready."))
+        XCTAssertEqual(bridge.snapshot().message, "The speech model isn't ready.")
     }
 
     /// The keyboard opened Hex to dictate (its speech model was missing) and the microphone
@@ -2013,7 +2135,7 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(choice.engine(for: "en-US", appleSpeechPicks: false), .onDeviceRecognizer)
         XCTAssertEqual(
             choice.notice(for: "en-US"),
-            "Parakeet needs more memory than Hex has here. Hex uses Apple's on-device speech instead."
+            "Not enough memory for the speech model. Hex is using Apple's on-device speech recognition."
         )
         let transcriber = DictationController.transcriberBeforeAppleSpeech(choice: choice, suite: suiteName, resolve: { _ in "en-US" })
         XCTAssertTrue(transcriber is OnDeviceSpeechTranscriber)
@@ -2048,7 +2170,7 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(controller.phase, .ready)
         XCTAssertEqual(
             controller.languageNotice,
-            "Parakeet needs more memory than Hex has here. Hex uses Apple's on-device speech instead."
+            "Not enough memory for the speech model. Hex is using Apple's on-device speech recognition."
         )
     }
 
@@ -2076,7 +2198,7 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(access.requests, 1)
         XCTAssertEqual(
             details.values,
-            ["Checking Apple's on-device speech", "Allow Speech Recognition. It stays on this iPhone."],
+            ["Checking on-device speech recognition", "Allow Speech Recognition. It stays on this iPhone."],
             "says it stays on the iPhone before iOS asks"
         )
         let languageID = await transcriber.languageIdentifier
@@ -2154,6 +2276,146 @@ final class DictationControllerTests: XCTestCase {
         for _ in 0..<(twice ? 16 : 8) {
             try await Task.sleep(for: .milliseconds(25))
         }
+    }
+
+    private func waitUntil(seconds: Double = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("timed out")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+}
+
+/// Two small files standing in for Parakeet Ultra's, served by `UltraStubProtocol`.
+@MainActor
+private struct UltraStubModel {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ultra-\(UUID().uuidString)")
+    let bodies: [String: Data]
+    let files: [ParakeetUltraModel.File]
+
+    init() throws {
+        var bodies: [String: Data] = [:]
+        var files: [ParakeetUltraModel.File] = []
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        for (path, size) in [("Encoder.mlmodelc/weights/weight.bin", 3000), ("parakeet_vocab.json", 2000)] {
+            let body = Data((0..<size).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ path.count) })
+            try body.write(to: scratch)
+            bodies[path] = body
+            files.append(.init(path: path, size: Int64(size), sha256: try ParakeetUltraModel.sha256(of: scratch)))
+        }
+        self.bodies = bodies
+        self.files = files
+        UltraStubProtocol.reset(bodies: bodies)
+    }
+
+    func download(stallLimit: Duration = .seconds(1)) -> ParakeetUltraDownload {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UltraStubProtocol.self]
+        return ParakeetUltraDownload(
+            directory: folder,
+            files: files,
+            base: "https://stub.invalid/model",
+            session: URLSession(configuration: configuration),
+            stallLimit: stallLimit,
+            backoff: { _ in 0 }
+        )
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: folder)
+    }
+}
+
+/// Serves `UltraStubModel`'s files with ranges, following a script for its next requests:
+/// cut the connection after some bytes, send some and then nothing, or answer a status.
+private final class UltraStubProtocol: URLProtocol, @unchecked Sendable {
+    enum Step: Sendable {
+        case serve
+        case cut(Int)
+        case hang(Int)
+        case status(Int)
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var bodies: [String: Data] = [:]
+    nonisolated(unsafe) private static var steps: [Step] = []
+    nonisolated(unsafe) private static var ranges: [String?] = []
+
+    static func reset(bodies: [String: Data]) {
+        lock.withLock {
+            self.bodies = bodies
+            steps = []
+            ranges = []
+        }
+    }
+
+    static func script(_ steps: [Step]) {
+        lock.withLock {
+            self.steps = steps
+            ranges = []
+        }
+    }
+
+    /// Each request's Range header, in order.
+    static var requested: [String?] {
+        lock.withLock { ranges }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let url = request.url!
+        let range = request.value(forHTTPHeaderField: "Range")
+        let path = url.path.replacingOccurrences(of: "/model/", with: "")
+        let (step, body): (Step, Data?) = Self.lock.withLock {
+            Self.ranges.append(range)
+            let step = Self.steps.isEmpty ? .serve : Self.steps.removeFirst()
+            return (step, Self.bodies[path])
+        }
+        guard let body else {
+            respond(404, url: url)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        if case .status(let status) = step {
+            respond(status, url: url)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let offset = range.flatMap { Int($0.dropFirst("bytes=".count).dropLast()) } ?? 0
+        respond(offset > 0 ? 206 : 200, url: url)
+        let rest = body.dropFirst(offset)
+        switch step {
+        case .cut(let count):
+            client?.urlProtocol(self, didLoad: Data(rest.prefix(count)))
+            // The connection drops a moment after the bytes arrive, as on a network.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+                self.client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            }
+        case .hang(let count):
+            client?.urlProtocol(self, didLoad: Data(rest.prefix(count)))
+        case .serve, .status:
+            client?.urlProtocol(self, didLoad: Data(rest))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {}
+
+    private func respond(_ status: Int, url: URL) {
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/octet-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
     }
 }
 
@@ -2399,7 +2661,7 @@ final class SpeechLanguagePickerTests: XCTestCase {
     func testAnEnglishOnlyIPhoneStillDictatesEnglishAfterItsModelFailedOnce() async {
         // TestFlight build 31, iPhone SE (3rd generation), iOS 26.6.1: English's model didn't
         // install once, so it was set aside, and with no other language to move to Automatic
-        // picked nothing: "Apple Speech doesn't have your language on this iPhone." It tries
+        // picked nothing: "Apple's speech recognition can't dictate this language on this iPhone." It tries
         // English again instead.
         let english = await pick(preferred: ["en-US"], setAside: ["en-US"])
         XCTAssertEqual(english?.identifier, "en-US")

@@ -32,7 +32,8 @@ internal enum class FieldKind(val mark: String) {
     }
 }
 
-/** What the keys show: one page of one layout, with shift, the enter key and the field's kind. */
+/** What the keys show: one page of one layout, with shift, the enter key and the field's kind.
+ * [symbols] is any page but the letters; [more] is the second symbols page and [numpad] the number pad. */
 internal data class KeyboardPage(
     val language: Spoken,
     val symbols: Boolean,
@@ -40,84 +41,92 @@ internal data class KeyboardPage(
     val shifted: Boolean,
     val locked: Boolean,
     val enter: EnterKey,
+    val numpad: Boolean = false,
     val kind: FieldKind = FieldKind.Text,
-    val pad: Pad? = null,
 ) {
     val lines: List<String> get() {
         val code = language.layoutCode
         return when {
             !symbols -> KeyboardLetters.rows(code)
-            more -> KeyboardLetters.symbols(code)
-            else -> KeyboardLetters.numbers(code)
+            more -> KeyboardLetters.symbols
+            else -> KeyboardLetters.numbers
         }
     }
 }
 
-/** Sizes in dp, measured from Gboard on a Pixel 8 emulator (API 36, 411 dp wide, default
- * height) in the same field: row 1's keycaps start 52.2 dp below the keyboard's top, keycaps
- * are 47 dp tall on a 58.9 dp row pitch with 5.33 dp between them, and row 4 ends 12.2 dp
- * above the system's bar. Taps type row 1 from 2 dp above its cell, and the gaps and edges type
- * the nearest key, as Gboard's do. Widths are in cells: a tenth of the row for the bottom row and
- * 10-letter rows, an eleventh where a layout has 11 letters. */
+/** How tall the key plane's parts are, in px: the number row (Keyboard > Number row, over the letters
+ * only), the three rows, and row 4 below them. The plane is as tall on every page, so changing pages never
+ * moves the editor: with the number row on, the other pages spread their three rows over its height.
+ * Touches, glides and the space bar are measured from the three rows' top, never the plane's, so a number
+ * row above them changes nothing the decoders see. */
+internal data class PlaneRows(val row: Int, val last: Int, val numberRow: Boolean) {
+    val height get() = row * (if (numberRow) 4 else 3) + last
+    /** The number row's height on [page]: a row on the letters, none elsewhere. */
+    fun numbers(page: KeyboardPage) = if (numberRow && !page.symbols) row else 0
+    /** The three rows' height on [page]. */
+    fun rows(page: KeyboardPage) = height - last - numbers(page)
+}
+
+/** Sizes in dp, measured from Gboard's dark theme on a OnePlus Nord (3.5 px per dp, default height):
+ * a 52 dp toolbar, keycaps 40.6 dp tall on a 50.6 dp row pitch (row 4's are 41.4 dp), 2 dp from the
+ * screen's edges with 4.6 dp between them, and row 4 ending 6 dp above the system's bar. Each row's
+ * cell is the pitch with half the gap above and below its keycap, and taps in the gaps and edges type
+ * the nearest key, as Gboard's do. Widths are in cells: a tenth of the row, an eleventh where a layout
+ * has 11 letters. */
 internal object KeyboardMetrics {
-    const val SIDE = 1.9f
-    const val GAP = 5.33f
-    const val STRIP = 44.25f
-    /** Row 1's touch targets reach this far above its cell, into the strip (Gboard's reach about 2 dp). */
-    const val ROW1_REACH = 2f
-    /** Where the strip's words and the Hex mark centre, from its top (Gboard's mic: 21.7 dp). */
-    const val STRIP_CENTER = 21.7f
-    const val ROW = 58.9f
-    const val KEY_HEIGHT = 47f
-    /** Under row 4's cell, above the system's bar: with half a row gap it is Gboard's 12.2 dp. */
-    const val BOTTOM = 6.25f
-    // Turned, Gboard's rows are 43 dp apart with 39 dp keycaps (it goes full screen; Hex doesn't).
-    const val STRIP_LANDSCAPE = 38f
-    const val STRIP_CENTER_LANDSCAPE = 19f
-    const val ROW_LANDSCAPE = 43f
-    const val KEY_HEIGHT_LANDSCAPE = 39f
-    const val BOTTOM_LANDSCAPE = 2f
-    const val CORNER = 7f
-    /** The Hex key's target at the strip's trailing end: its centre is where Gboard's mic is. */
-    const val HEX_KEY = 42.7f
-    /** The Hex key's circle when pressed or dictating, and the recording bar's height. */
+    const val SIDE = 2f
+    const val GAP = 4.57f
+    /** The toolbar above the keys; row 1's cell takes the last 5 dp of Gboard's 52. */
+    const val TOOLBAR = 47f
+    /** Where the toolbar's icons centre, from its top. */
+    const val TOOLBAR_CENTER = 21.7f
+    const val ROW = 50.57f
+    const val KEY_HEIGHT = 40.57f
+    const val INSET_TOP = 5f
+    /** Row 4's keycaps are taller, and the gap under them wider. */
+    const val LAST_KEY_HEIGHT = 41.43f
+    const val LAST_BOTTOM = 10f
+    /** The number pad's keycaps on rows 1 to 3 reach 4 dp lower. */
+    const val NUMPAD_KEY_HEIGHT = 44.57f
+    // Turned, the keys are shorter; the toolbar and widths stay.
+    const val ROW_LANDSCAPE = 40f
+    const val KEY_HEIGHT_LANDSCAPE = 32f
+    const val TOOLBAR_LANDSCAPE = 40f
+    const val TOOLBAR_CENTER_LANDSCAPE = 19f
+    const val CORNER = 6f
+    /** The mic's and the clipboard chip's height, and the mic's width: fully round. */
     const val PILL = 34f
-    const val MARK = 24f
-    const val MENU_ROWS = 4
-    /** A slide on space moves the cursor one character after this much travel, then one more each step
-     * (Gboard: about 45 px and 33 px on a 2.625 density Pixel 8). */
+    /** The mic's touch target at the toolbar's trailing end, centred where Gboard's is. */
+    const val MIC_TARGET = 48f
+    /** Letters, the number pad's digits, and the small digits in row 1's corners. */
+    const val LETTER = 24.5f
+    const val SYMBOL = 23.5f
+    const val NUMPAD_DIGIT = 31f
+    const val HINT = 10.5f
+    const val LABEL = 14.75f
+    /** A slide on space moves the cursor one character after this much travel, then one more each step. */
     const val CURSOR_START = 17f
     const val CURSOR_STEP = 12.6f
     /** A slide left from delete selects a word after this much travel, one more each step; a press
-     * that went further than the cancel distance deletes nothing on its own (Gboard: about 140 px,
-     * 95 px, and under 107 px on the Pixel 8). Held still, delete repeats every 50 ms after 400 ms. */
+     * that went further than the cancel distance deletes nothing on its own. Held still (sideways
+     * travel under DELETE_STILL: a held thumb rolls further than the touch slop), delete repeats every
+     * 50 ms after 400 ms, then takes a whole word every 150 ms once 20 characters have gone
+     * ([DeleteRepeat]). */
+    /** Two fingers swiped sideways on the keys this far undo a step (left) or redo one (right),
+     * then another each SWIPE_STEP further. */
+    const val SWIPE_START = 40f
+    const val SWIPE_STEP = 56f
     const val DELETE_START = 53f
     const val DELETE_STEP = 36f
     const val DELETE_CANCEL = 32f
+    const val DELETE_STILL = 16f
     const val DELETE_REPEAT_DELAY = 400L
     const val DELETE_REPEAT_EVERY = 50L
-    /** A key held this long shows what it holds (Gboard's long press: between 300 and 350 ms). */
-    const val HOLD_MS = 300L
-    /** Gboard's pads: 53.3 dp keys on the letters' 58.9 dp rows (a 5.7 dp gap between rows). */
-    const val PAD_ROW_GAP = 5.7f
-    /** Gboard ticks again as a key lifts when it was held at least this long. */
-    const val RELEASE_TICK_MS = 200L
-
-    // The bottom row, in tenths: ?123, comma, emoji, space, period, enter (Gboard's with its emoji key).
-    const val MODE = 1.5f
-    const val COMMA = 1f
-    const val EMOJI = 1f
-    const val SPACE = 4f
-    const val PERIOD = 1f
-    const val ENTER = 1.5f
-    /** The emoji grid's cell, as Gboard's (a 45 dp row pitch, nine across in portrait). */
-    const val EMOJI_CELL = 45f
-    const val EMOJI_CELL_LANDSCAPE = 38f
-    /** The emoji picker's own category bar above the grid, and a category's title in it. */
-    const val EMOJI_HEADER = 42f
-    const val EMOJI_TITLE = 24f
-    /** Gboard's emoji panel stands this much taller than its keyboard (Pixel 8 emulator: 325 px). */
-    const val EMOJI_GROW = 124f
+    const val DELETE_WORDS_AFTER = 20
+    const val DELETE_WORD_EVERY = 150L
+    /** A long press shows row 1's digit and the accents after this long. Gboard's 300 ms caught slow taps,
+     * which then typed the digit or an accent instead of the letter. */
+    const val LONG_PRESS = 400L
 
     /** Cells across the letter rows: the longer of rows 1 and 2. */
     fun columns(lines: List<String>) = maxOf(lines[0].length, lines[1].length)

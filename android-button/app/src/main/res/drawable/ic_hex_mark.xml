@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hex's mark (app/AppIcon.icon): two hexagon rings around a solid one. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path
+        android:pathData="M32,8 L52.78,20 L52.78,44 L32,56 L11.22,44 L11.22,20 Z M32,17.6 L44.47,24.8 L44.47,39.2 L32,46.4 L19.53,39.2 L19.53,24.8 Z"
+        android:strokeWidth="3.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M32,24.8 L38.24,28.4 L38.24,35.6 L32,39.2 L25.76,35.6 L25.76,28.4 Z"
+        android:fillColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineJoin="round" />
+</vector>

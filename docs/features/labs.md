@@ -85,6 +85,10 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 │                                        with Turn off the mic when not dictating on, the microphone stays open for that
 │                                        long after a capture, so the next dictation starts at once
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (every OS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
+├── Signature       no    labs.signature + labs.signature_text ("Sent from Hex", every OS)
+│                                        every normal dictation pastes with the signature on its own line at the end, and
+│                                        History and Paste Last keep that same text; not added to an empty transcript, one
+│                                        that already ends with it as its own line, raw, printed, or API output
 ├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
 ├── YOLO mode no labs.yolo_mode (every OS) press Return after pasting a shortcut dictation in a chosen app (none chosen = everywhere); Escape after release skips Return on macOS
 ├── Return to app   no    labs.return_to_app           (macOS)   a dictation pastes into the app it started in, switching back to it first when another app came forward
@@ -104,6 +108,13 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Spoken formatting no labs.spoken_formatting      spoken "new line"/"line break", "new paragraph", "open/close quote", "quote … unquote" become line breaks and quotation marks; Spanish "nuevo párrafo", "nueva línea", "abre/cierra comillas", … too (#630, #1040)
 ├── Spoken symbols  no    labs.spoken_symbols          spoken "hashtag", "underscore", "comma", … become symbols joined to their words: "#release", "my_variable", "done, thanks"; Spanish "arroba", "guion bajo", "coma", … too (#678, #1040)
 ├── Remove filler words no labs.filler_words          English dictations lose um, umm, uh, uhh, erm, er, ah, with no model (#631)
+├── Hindi in Latin letters no labs.hinglish         (every OS) Devanagari in a dictation is written the way Hindi is texted, with no model:
+│                                        "क्या हाल है यार" → "kya haal hai yaar"; English stays as heard; needs Language set to Hindi
+│                                        // dictation/hinglish.rs tests; hindi_in_latin_letters_precedes_replacements_and_only_when_on
+│                                        // (dictation/processor.rs); hinglish_is_its_own_switch_and_everywhere (labs.rs)
+├── Dictation style no    labs.dictation_style + labs.dictation_style_choice (polished/casual/notes/verbatim, polished by default, every OS)
+│                                        each dictation is written as Polished, Casual, Notes, or Verbatim like the iPhone app,
+│                                        without an AI model
 ├── Clean up with Apple Intelligence no labs.clean_up_with_apple_intelligence (macOS)
 │                                        one short on-device pass after the corrections fixes clearly misheard words and
 │                                        resolves spoken self-corrections ("tuesday, no wait, wednesday" → "wednesday");
@@ -291,6 +302,11 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Annotate last 15 seconds no labs.annotate_replay + capture.replay_hotkey (macOS 27+)
 │                                        keeps a rolling 15 s SCClipBufferingOutput screen buffer for hex capture replay and the replay shortcut;
 │                                        macOS keeps its screen-recording dot lit the whole time it is on
+├── Phone dictation no   labs.phone_dictation + labs.phone_dictation_port (0 = automatic)
+│                                        Hex for Android dictates on this computer's model over Tailscale or Wi-Fi, with the Output steps of the mode for the phone's app (else Global),
+│                                        and its keyboard offers Global's one-word replacements as text shortcuts (docs/phone-dictation.md)
+│                                        its keyboard starts from this computer's History words and Vocabulary terms, and words fixed after a phone
+│                                        dictation come back through POST /phone/v1/corrections into Vocabulary (the phone's Learn from my corrections)
 ├── Copy a capture as one file no labs.copy_capture_zip (macOS, Linux, Windows)
 │                                        a finished Annotate capture goes on the clipboard as one file, <stem>.scrawl.slim.zip, written
 │                                        inside its bundle: the manifest, summary (with the bundle's path written as `.`), contact sheet,
@@ -1127,6 +1143,83 @@ in [control/settings.rs](../../src/control/settings.rs);
 dictation with the lab on, and the Mac and Windows builds, which the Linux host
 cannot compile.
 
+Signature (`signature`, every OS): while on, every normal dictation is pasted
+with `labs.signature_text` on its own line at the end. The line is added once,
+at the one point each output stage's final text feeds the paste, History, and
+Paste last dictation, so History shows exactly what was inserted and Paste
+last reinserts it unchanged. macOS signs in `parakeet::finish_output` only a
+`TranscriptionTarget::Paste` or `CopyOnlyPaste` (never raw, printed, or the
+local API), Windows in `windows::dictation::output::process_dictation_job`
+only when the job is neither printed nor a raw flavour, and Linux in
+`linux::dictation::output::DictationOutput::deliver` behind the same gate.
+Nothing signs meetings, typed text, Annotate, or `Paster::paste` itself.
+
+The pure rule is `dictation::signature::append`: it appends only when the lab
+is on, the text is not empty after trimming, the saved signature is not empty
+after trimming, and the text does not already carry it on a line of its own.
+That means the text is the signature, or the signature follows a line break
+with nothing but spaces or tabs in between; a signature that merely ends a line
+of prose, like "Hex" in "I love Hex", is appended. The saved signature is
+trimmed, so its own edges add no blank line. A saved value must be one line of
+at most 200 characters with no control characters; another value is an
+`invalid-value` error, and settings load falls back to the default without
+changing the saved file and keeps the switch. While the lab is on, its card
+shows Text: a draft that fails validation stays in the field with the reason
+under it in danger color, and the saved line keeps working; a valid draft saves
+once typing pauses. A line saved elsewhere updates the field without resetting
+its focus, and an invalid draft leaves when the lab is turned off.
+
+A signed paste is standalone on every OS: it neither joins the dictation
+before it nor records a continuation, so the next dictation is never glued onto
+the signature line. macOS passes `PasteMode::Standalone`; Windows and Linux
+pass `standalone` through their paster. Paste last dictation remembers with
+its kept text whether that text was signed (`dictation::paste_last::LastDictation`)
+and reinserts a signed one standalone as well, so it neither joins nor leaves a
+continuation even after the lab is turned off or its line changes; an unsigned
+one reinserts as a continuation. On Linux, Live typing commits the
+signed text in its own final input-method step, so the provisional preedit never
+shows the line and the text is typed exactly once; if that commit fails, the
+ordinary paste path carries the same signed text.
+
+```ts
+Dictate "we ship friday"                  // labs.signature + labs.signature_text
+├── Off -> pasted and kept exactly as before
+├── On, "Sent from Hex" -> pasted "we ship friday\nSent from Hex"
+│   -> History and Paste Last hold the same two lines
+├── Text already ends with the line
+│   └── it is the signature, or follows a line break -> left alone
+├── Empty text, empty signature -> nothing appended
+├── Raw (Dictate without processing), printed, API, meeting, typed text, Annotate -> unaffected
+├── Paste Last of a signed text -> standalone too, even after the lab is off
+└── The next dictation -> standalone: never continues the signature line
+```
+
+Checks: `the_signature_is_appended_once_on_its_own_line`,
+`off_appends_nothing`, `empty_text_appends_nothing`,
+`an_empty_or_whitespace_signature_appends_nothing`,
+`text_that_already_ends_with_the_signature_is_left_alone`,
+`a_signature_that_ends_a_line_of_prose_is_still_appended`,
+`a_signature_after_a_line_break_is_left_alone`,
+`a_saved_signature_is_trimmed_before_it_is_appended`,
+`a_signature_must_be_one_line_of_at_most_the_limit`, and
+`a_signature_refuses_line_and_control_characters` in
+[dictation/signature.rs](../../src/dictation/signature.rs);
+`a_signed_dictation_reinserts_standalone` and
+`an_unsigned_dictation_reinserts_as_a_continuation` in
+[dictation/paste_last.rs](../../src/dictation/paste_last.rs);
+`paste_last_reinserts_a_signed_dictation_standalone` in
+[parakeet.rs](../../src/parakeet.rs), macOS; and
+`signature_is_its_own_atomic_and_carries_its_text` in
+[labs.rs](../../src/labs.rs); `a_signature_is_trimmed_and_must_be_one_line` in
+[control/settings.rs](../../src/control/settings.rs);
+`an_invalid_signature_loads_the_default_and_keeps_its_switch` and
+`an_empty_signature_stays_empty_and_appends_nothing` in
+[persistence/tests.rs](../../src/app_settings/persistence/tests.rs). Nothing
+pastes into a real app here; the three call sites are gated by the same pure
+rule and their platform tests, and CI's clippy builds compile macOS and
+Windows. Not yet observed: a real dictation with the lab on, and the next
+dictation's continuation after a signed paste.
+
 Spoken formatting (`spoken-formatting`, issue 630, every OS): while on,
 `Profiles::process_cancellable` in
 [dictation/processor.rs](../../src/dictation/processor.rs) reads
@@ -1222,6 +1315,142 @@ exactly as before. Checks: `only_english_dictations_apply_the_filter`,
 [panes.rs](../../src/rune_ui/tests/panes.rs). Not yet observed: a real
 dictation with the toggle on; the Labs page goldens need regenerating on
 Linux with the new row.
+
+Hindi in Latin letters (`hinglish`, every OS, off by default): while on,
+`Profiles::process_cancellable` in
+[dictation/processor.rs](../../src/dictation/processor.rs) reads
+`labs::hinglish()` as each dictation's processing starts and runs
+`dictation::hinglish::apply` first, before spoken formatting, spoken
+symbols, filler words, the Global and mode corrections, OpenCode rewriting,
+Apple Intelligence cleanup, and transformations. It goes first so every
+later step reads the spelling that gets pasted: a correction written in
+Latin letters ("accha" → "acha") changes a spelling the person doesn't
+like, and an OpenCode rewrite or a transformation never sees Devanagari.
+Every dictation that is processed gets it: the shortcut on every OS,
+`hex dictation stop --print`, Phone dictation (the computer runs Global's
+Output steps on the phone's transcript), and the local API's
+`process=global`. History's final text and Paste Last hold the Latin text;
+History's raw text keeps the Devanagari as heard. Dictate without
+processing, typed text, live text (provisional, in the HUD), and meetings
+are unchanged. Meetings stay out on purpose: a meeting transcript is a
+record, kept in the script the model wrote, and its search, notes, and
+`hex meetings` read that.
+
+The rewrite touches only Devanagari words (U+0900 to U+097F), whatever the
+dictation's language; Latin text, numbers, emoji, and other scripts pass
+through, so a sentence mixing Hindi and English keeps its English. A short
+table holds common words no rule spells the chat way ("नहीं" → "nahi",
+"हम" → "hum", "क्यों" → "kyun") and English words written in Devanagari
+("टीम" → "team", "ऑफ़िस" → "office"); its keys ignore nukta and treat
+chandrabindu as anusvara, so "हूँ" and "हूं" match alike. Every other word
+is read as syllables and spelled by rule, with no model and no added
+latency: the inherent "a" is dropped at the end of a word (kept after a
+conjunct ending in र, य, or व: "mitra", "satya") and in the middle between
+a sounded syllable no anusvara closes and a single sounded consonant
+("karna", "samajhna", "zindagi", but "namaste"); anusvara and chandrabindu
+are "m" before प फ ब भ म, nothing before न, "in" after a last e ("mein"),
+else "n"; nukta letters keep their sound ("ज़" z, "फ़" f, "ड़" d); long
+vowels take chat spellings ("ee" and "oo" inside a word, "aa" only in a
+closed syllable: "yaar", "khana"); a first "a" before a silent ह is "e"
+("pehle", "rehna"); ए after a vowel is "ye" ("gaye", "chahiye"). Output is
+lowercase. A danda becomes a full stop against the last word, and
+Devanagari digits become ASCII digits.
+
+Hindi has to reach a model that writes it. Hex's default Parakeet models
+write English only. Set Language to Hindi (Settings › General, or
+`hex model use qwen3_asr06_b --language hi`); the picker then recommends Qwen3-ASR 0.6B
+(about 850 MB), and Whisper large-v3-turbo (about 890 MB) writes Hindi too.
+On Auto, Whisper guesses, and Hindi can come out in Urdu script, which this
+lab leaves alone. Phone dictation uses the computer's model and language:
+Hex for Android sends none of its own. The card says to set the speech
+language to Hindi; the model names live here, not on the card. Marathi,
+Nepali, and other Devanagari text would be rewritten by the same Hindi
+rules, and names or rare words can come out spelled differently from how a
+person writes them; a correction fixes either.
+
+Checks: `writes_everyday_hindi_the_chat_way`,
+`drops_the_schwas_hindi_does_not_say`, `spells_nasals_by_what_follows`,
+`reads_a_word_however_the_model_encodes_it`, `rewrites_whole_sentences`, and
+`keeps_english_numbers_and_emoji_as_heard` in
+[dictation/hinglish.rs](../../src/dictation/hinglish.rs);
+`hindi_in_latin_letters_precedes_replacements_and_only_when_on` in
+[dictation/processor.rs](../../src/dictation/processor.rs);
+`hinglish_is_its_own_switch_and_everywhere` in [labs.rs](../../src/labs.rs);
+`labs_lists_every_toggle_off_by_default` in
+[panes.rs](../../src/rune_ui/tests/panes.rs). Observed on a Mac
+(2026-11-22): two synthetic Hindi clips (macOS `say -v Lekha`, 16 kHz)
+transcribed by `hex transcribe --model qwen3_asr06_b --language hi` in an
+isolated data folder came out in Devanagari, and `hinglish::apply` turned
+them into "kya haal hai yaar main khush nahi hoon lekin theek hai" and "bhai
+kal ki meeting kitne baje hai mujhe thoda der ho jayegi". That run joined
+the model and the rewrite by hand, since `hex transcribe` doesn't process.
+Not yet observed: a real dictation with the toggle on through the shortcut
+or a phone.
+
+Dictation style (`dictation-style`, every OS, off by default): while on,
+`Profiles::process_cancellable_with` in
+[dictation/processor.rs](../../src/dictation/processor.rs) reads
+`labs::dictation_style()` (the switch and `labs.dictation_style_choice`,
+one of `polished`, `casual`, `notes`, or `verbatim`, Polished by
+default) as each dictation's processing starts, and
+[dictation/style.rs](../../src/dictation/style.rs) writes the text after the
+Global and mode corrections and after any Apple Intelligence cleanup,
+OpenCode rewrite, or voice-prompt rewrite, and before the selected
+transformations. The styled text is therefore `Processed.text` when the
+transformations run, and transformations still have the last word. Only a
+heard dictation (`Source::Dictation`) is styled: Labs › Transform typed
+text, the local API's `process=global` (which promises Global's
+replacement, correction, rewrite, and transformation steps, not a dictation
+style), meetings, and live text keep their text exactly. Dictate without
+processing skips the processor entirely. With the toggle off, processing is
+byte-for-byte as before.
+
+The rules are the iPhone app's `TranscriptFormatter` (`ios/HEXShared/`),
+ported without its spoken lists, spoken punctuation, insertion spacing, or
+"End with a period" handling, which desktop already has as its own Labs or
+does not have. Verbatim only collapses runs of spaces and tabs and trims the
+ends. Polished trims fillers, writes the English informal contractions
+("gonna", "wanna", "gotta", "kinda", "lemme") out except inside quotes or on
+a name mid-sentence, capitalizes each sentence, writes the English pronoun
+"I", and ends every line with "." or, after Chinese or Japanese, "。" (never
+a second mark, and never after a lone address or a line that already ends a
+sentence). Casual trims fillers, drops an opening English interjection's
+comma ("Yeah, sounds good" becomes "yeah sounds good"), lowercases sentence
+starts except acronyms, words with inner capitals, and addresses ("OK"
+becomes "ok"), writes English "I" as "i", and drops the final full stop on a
+short message (one line, up to three sentences). Notes trims fillers, turns
+spoken "new line", "new paragraph", and "bullet"/"bullet point"/"next bullet"
+into lines, makes several sentences a list, splits a short "Intro: a, b,
+and c" into a colon line and bullets (English also splits the last "and" or
+"or"), drops an opening English connective ("so", "yeah", "and then", and
+the rest), removes a final full stop, and capitalizes the first letter.
+
+Filler trimming follows the dictation's language as the iPhone app's
+patterns do: English, Spanish, German, and Norwegian/Danish/Swedish have
+their own hesitations, and any other language trims nothing ("er" is "is" in
+Norwegian, "um" is "a" in Portuguese, and "eh" is "anyway" in German). The
+English-only rules apply when that dictation's language is `en` or starts
+with `en-`/`en_`; `auto` and an empty language say nothing about the
+language, so they get only the language-neutral rules and trim no fillers
+(the iPhone app treats an unknown language as English, which desktop does
+not). Checks: `styles_differ_on_ordinary_short_dictation`,
+`polished_writes_full_sentences`, `casual_texts`,
+`notes_list_several_items_concisely`, `styles_keep_an_address_whole`,
+`styles_trim_spanish_and_german_hesitations`,
+`filler_trimming_follows_the_dictation_language`, and
+`verbatim_collapses_horizontal_spaces_only` in
+[dictation/style/tests.rs](../../src/dictation/style/tests.rs);
+`the_dictation_style_writes_a_dictation_and_leaves_typed_text_and_the_api_alone`
+in [dictation/processor.rs](../../src/dictation/processor.rs);
+`dictation_style_is_its_own_atomic_and_carries_its_choice` in
+[labs.rs](../../src/labs.rs);
+`dictation_style_shows_its_choices_on_its_card_while_on` and
+`output_shows_the_style_row_while_its_lab_is_on` in
+[panes.rs](../../src/rune_ui/tests/panes.rs);
+`every_dictation_style_string_has_every_language` in
+[i18n.rs](../../src/desktop/i18n.rs). Not yet observed with a real
+dictation; the Labs-page goldens were regenerated on Linux, and no Output
+golden moved because its scene leaves the lab off.
 
 Clean up with Apple Intelligence (`clean-up-apple-intelligence`, macOS, off
 by default): while on, each macOS dictation that its mode does not rewrite
@@ -3422,6 +3651,46 @@ each recording in the Meetings list always shows its call service's icon, or
 a neutral one ([meetings.md](meetings.md)). `hex labs on|off
 meeting-platform-icons` still answers with that and exits 0
 (`labs::GRADUATED`); the saved `labs.meeting_platform_icons` key is ignored.
+
+Phone dictation (`phone-dictation`, every OS): this computer transcribes for
+Hex for Android (`android/`), a keyboard that never runs a speech model. The
+contract is [`docs/phone-dictation.md`](../phone-dictation.md).
+
+```ts
+Toggle on -> the app's supervisor (local_api::phone::PhoneDictation) serves  // labs.phone-dictation
+│   the phone API; a CLI process never serves
+├── Port -> labs.phone_dictation_port; 0 (the field blank) is automatic:
+│   the port it got last time, else 47213, else a random free one in
+│   47300..48900, remembered in <support>/phone-dictation.json (0600)
+├── Pairing code -> 12 Crockford base32 characters, shown XXXX-XXXX-XXXX,
+│   kept beside the port; New code replaces it and every phone pairs again
+├── Addresses -> this computer's Tailscale (100.64.0.0/10) then LAN (RFC 1918)
+│   IPv4 addresses, reread every 5 s; the LAN gets a DNS-SD advert
+│   `_hex-phone._tcp` (mdns-sd, IPv4 only, never on the Tailscale interface)
+├── A peer outside loopback, link-local, RFC 1918, or Tailscale -> closed at accept
+├── A request without the code -> 401 after 400 ms
+├── A clip -> transcribed on the dictation engine's loaded model when it
+│   holds the selected one (clips up to 30 s), then Global's Output steps
+│   (the local API's processor); no History, no paste
+└── A saved import that can't run -> the model the listener runs in its place
+    (custom_models::runnable), not model-not-ready
+```
+
+The phone records 16 kHz mono PCM16, so the computer never resamples, and
+resolves its route (Tailscale first, then Wi-Fi, or one the user pins)
+when the keyboard opens, so a dictation goes straight to an address that
+answered. Plain HTTP on the LAN is visible to that network; Tailscale's
+route is WireGuard-encrypted. The transcript goes in at the field's cursor;
+an empty field's placeholder ("Message") is not text, and a field that
+reports no cursor gets the transcript pasted where its own cursor is.
+Checks: `serves_a_paired_phone_only`, `answers_only_private_networks`,
+`tailscale_routes_sort_first`, and `codes_read_the_way_people_type_them` in
+[local_api/phone.rs](../../src/local_api/phone.rs);
+`blank_is_automatic_and_low_ports_are_refused` in
+[rune_ui/phone_dictation.rs](../../src/rune_ui/phone_dictation.rs); the Android
+unit tests in `android/app/src/test`. Its card, in the Dictation group,
+shows where a phone reaches this computer, the pairing code with Copy and
+New code, and the port; scene `mac-labs-phone`.
 
 Ten meeting features left Labs together. Follow live transcript,
 More call apps, Vocabulary in meeting notes, Meeting finished event, Subtitle

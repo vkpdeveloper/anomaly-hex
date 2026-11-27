@@ -177,6 +177,9 @@ impl Feature {
             Self::PasteLastPicker => {
                 "Tap Paste Last for the newest dictation or annotation, hold it to pick another, and see dictations, annotations, screenshots, and recordings together in History (macOS)"
             }
+            Self::PhoneDictation => {
+                "Dictate on Hex for Android with this computer's model, over Tailscale or Wi-Fi (labs.phone_dictation_port)"
+            }
             Self::ApiProcessing => {
                 "Let apps using Hex's local API ask for text with Global mode's replacements, corrections, rewriting, and transformations applied"
             }
@@ -222,11 +225,20 @@ impl Feature {
             Self::VocabularyFiles => {
                 "Import terms from a CSV file into the vocabulary sheet, merging them into the list, and export the list as a CSV file"
             }
+            Self::Hinglish => {
+                "Write the Devanagari in each dictation in Latin letters the way Hindi is texted (\"kya haal hai\"), leaving English as heard; set the speech language to Hindi so the model writes Hindi"
+            }
             Self::AnnotateAgentTools => {
                 "Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely"
             }
             Self::AnnotateAgentInstall => {
                 "Adds an Agents section to the Annotate pane: one checked row per coding agent writes the hex-annotate skill into its own skills folder, a row copies the npx skills add command, and on macOS the Command-line tool row links hex onto PATH (/opt/homebrew/bin, /usr/local/bin, else ~/.local/bin) without replacing a hex another program owns"
+            }
+            Self::Signature => {
+                "Each normal dictation pastes with your signature on its own line at the end, and Paste Last and History keep the same text; not added to raw, printed, or API output"
+            }
+            Self::DictationStyle => {
+                "Write each dictation as Polished, Casual, Notes, or Verbatim after the corrections and rewrite and before transformations; Dictate without processing, Voice Action, meetings, and the local API are left alone"
             }
         }
     }

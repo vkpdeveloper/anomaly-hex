@@ -1,13 +1,16 @@
 package ly.anoma.hex
 
-import android.content.ClipData
-import android.content.ClipboardManager
+import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.os.Build
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.Settings
+import android.view.textservice.TextServicesManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
@@ -26,8 +29,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.pluralStringResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -36,28 +37,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import ly.anoma.hex.speech.*
+import ly.anoma.hex.button.ButtonPreferences
+import ly.anoma.hex.fix.TinyfixFiles
+import ly.anoma.hex.keyboard.FreeTimes
+import ly.anoma.hex.keyboard.Snippet
+import ly.anoma.hex.keyboard.Snippets
+import ly.anoma.hex.keyboard.TextedCodes
+import ly.anoma.hex.relay.Store
 import ly.anoma.hex.typing.TypingPreferences
+import ly.anoma.hex.typing.TypingStats
 
-private enum class Page(val title: Int) {
-    Home(R.string.app_name), Dictation(R.string.settings_dictation), Keyboard(R.string.settings_keyboard), Privacy(R.string.settings_privacy),
-    Language(R.string.settings_dictation_language), Layout(R.string.settings_keyboard_layout), Styles(R.string.settings_style),
-    Policy(R.string.settings_privacy_policy), Licences(R.string.settings_licences), Licence(R.string.settings_licences);
+private enum class Page(val title: String) {
+    Home("Hex"), Computer("Computer"), Keyboard("Keyboard"), Privacy("Privacy"),
+    Layout("Keyboard layout"), Shortcuts("Text shortcuts"), Shortcut("Text shortcut"), Policy("Privacy policy"), Licences("Open-source licences"), Licence("Open-source licences");
     val parent get() = when (this) {
-        Language, Styles -> Dictation
-        Layout -> Keyboard
+        Layout, Shortcuts -> Keyboard
+        Shortcut -> Shortcuts
         Policy, Licences -> Privacy
         Licence -> Licences
         else -> Home
     }
-}
-
-/** A dictation style's name, in the app and the keyboard's menu. */
-internal val Style.label get() = when (this) {
-    Style.Polished -> R.string.style_polished
-    Style.Casual -> R.string.style_casual
-    Style.Notes -> R.string.style_notes
-    Style.Verbatim -> R.string.style_verbatim
 }
 
 /** Licence files the credits name, in the order they appear in assets/licenses. */
@@ -65,43 +66,87 @@ private fun licenceFiles(context: Context) =
     context.assets.list("licenses").orEmpty().filter { it != "credits.txt" }.sorted()
 
 @Composable
-internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: TypingPreferences,
-                         model: ModelStore.State, download: () -> Unit, phase: SpeechPhase, transcript: String,
-                         notice: String?, dictate: () -> Unit, cancel: () -> Unit, clear: () -> Unit, setupPage: (Int) -> Unit,
-                         systemSettings: () -> Unit) {
+internal fun HexSettings(setup: Setup, typing: TypingPreferences, store: Store,
+                         setupPage: (Int) -> Unit, systemSettings: () -> Unit) {
     var page by rememberSaveable { mutableStateOf(Page.Home) }
     var licence by rememberSaveable { mutableStateOf("") }
     var practice by remember { mutableStateOf("") }
+    var computer by remember { mutableStateOf(store.computer) }
     val context = LocalContext.current
     // The activity and the IME write the same preferences.
     // Observe them even while trying the keyboard inside this page.
     var revision by remember { mutableIntStateOf(0) }
     DisposableEffect(context) {
-        val stores = listOf("speech", "typing").map { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
+        val stores = listOf("typing", "button").map { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
         val changed = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> revision++ }
         stores.forEach { it.registerOnSharedPreferenceChangeListener(changed) }
         onDispose { stores.forEach { it.unregisterOnSharedPreferenceChangeListener(changed) } }
     }
-    val automatic = remember(revision, LocalConfiguration.current) { speech.spoken }
-    val selectedLanguage = remember(revision) { speech.language }
+    val automatic = remember(LocalConfiguration.current) { Spoken.system() }
     val selectedLayout = remember(revision) { typing.layout }
-    val style = remember(revision) { speech.style }
-    val translate = remember(revision) { speech.translation }
-    val clean = remember(revision) { speech.clean }
-    val lowercase = remember(revision) { speech.lowercase }
-    val endWithPeriod = remember(revision) { speech.endWithPeriod }
-    val formatLists = remember(revision) { speech.formatLists }
-    val spokenPunctuation = remember(revision) { speech.spokenPunctuation }
-    val customVocabulary = remember(revision) { speech.customVocabulary }
-    var vocabularyDraft by remember { mutableStateOf(speech.vocabularyTerms.joinToString("\n")) }
-    val autoCapitalize = remember(revision) { typing.autoCapitalize }
     val autocorrect = remember(revision) { typing.autocorrect }
+    val autoCapitalize = remember(revision) { typing.autoCapitalize }
     val swearWords = remember(revision) { typing.suggestSwearWords }
     val spatial = remember(revision) { typing.spatial }
+    val numberRow = remember(revision) { typing.numberRow }
     val popups = remember(revision) { typing.popups }
     val haptics = remember(revision) { typing.haptics }
-    var copied by remember(transcript) { mutableStateOf(false) }
-    fun open(next: Page) { if (phase != SpeechPhase.Idle) cancel(); page = next }
+    val glide = remember(revision) { typing.glide }
+    val glideTrail = remember(revision) { typing.glideTrail }
+    val learnFromHistory = remember(revision) { typing.learnFromHistory }
+    val learnFromCorrections = remember(revision) { typing.learnFromCorrections }
+    val sayToSend = remember(revision) { typing.sayToSend }
+    val typingLog = remember(revision) { typing.typingLog }
+    val cleanLinks = remember(revision) { typing.cleanLinks }
+    val expandLinks = remember(revision) { typing.expandLinks }
+    val snippets = remember(revision) { Snippets.read(typing.snippets) }
+    // The shortcut being edited: its place in the list, or -1 for a new one.
+    var editing by rememberSaveable { mutableIntStateOf(-1) }
+    // Codes from texts is on only with the SMS permission too, asked as Contacts is.
+    var smsAllowed by remember { mutableStateOf(TextedCodes.allowed(context)) }
+    var smsRefused by rememberSaveable { mutableStateOf(false) }
+    val textedCodes = remember(revision, smsAllowed) { typing.textedCodes && smsAllowed }
+    val askSms = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        smsAllowed = granted
+        smsRefused = !granted && (context as? android.app.Activity)
+            ?.shouldShowRequestPermissionRationale(TextedCodes.PERMISSION) != true
+        if (granted) typing.textedCodes = true
+    }
+    // Free times reads the calendar only with its permission, asked as Contacts is.
+    var calendarAllowed by remember { mutableStateOf(FreeTimes.allowed(context)) }
+    var calendarRefused by rememberSaveable { mutableStateOf(false) }
+    val freeTimes = remember(revision, calendarAllowed) { typing.freeTimes && calendarAllowed }
+    val askCalendar = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        calendarAllowed = granted
+        calendarRefused = !granted && (context as? android.app.Activity)
+            ?.shouldShowRequestPermissionRationale(FreeTimes.PERMISSION) != true
+        if (granted) typing.freeTimes = true
+    }
+    // On only with the Contacts permission too. Once Android stops asking (a second no), the switch opens
+    // Hex's app info instead.
+    var contactsAllowed by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
+    var contactsRefused by rememberSaveable { mutableStateOf(false) }
+    val contactEmails = remember(revision, contactsAllowed) { typing.contactEmails && contactsAllowed }
+    val askContacts = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        contactsAllowed = granted
+        contactsRefused = !granted && (context as? android.app.Activity)
+            ?.shouldShowRequestPermissionRationale(Manifest.permission.READ_CONTACTS) != true
+        if (granted) typing.contactEmails = true
+    }
+    // Whether Android's spell checker is Hex's, read again each time you come back from its settings.
+    var hexChecks by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        val services = context.getSystemService(TextServicesManager::class.java)
+        hexChecks = services?.isSpellCheckerEnabled == true && services.currentSpellCheckerInfo?.packageName == context.packageName
+        onPauseOrDispose {}
+    }
+    val fixState by TinyfixFiles.state.collectAsState()
+    LaunchedEffect(revision) { TinyfixFiles.refresh(context, typing) }
+    var confirmForget by remember { mutableStateOf(false) }
+    val helped = remember(revision) { TypingStats.summary(context.filesDir) }
+    val button = remember { ButtonPreferences(context) }
+    val hideButton = remember(revision) { button.hideWithKeyboard }
+    fun open(next: Page) { page = next }
     BackHandler(page != Page.Home) { open(page.parent) }
 
     Box(Modifier.fillMaxSize().background(colorResource(R.color.page)).safeDrawingPadding(),
@@ -116,16 +161,16 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                             colorFilter = ColorFilter.tint(colorResource(R.color.ink)))
                         else Box(Modifier.size(44.dp).clickable(role = Role.Button) { open(page.parent) },
                             contentAlignment = Alignment.CenterStart) {
-                            Image(painterResource(R.drawable.ic_back), stringResource(R.string.back), Modifier.size(24.dp),
+                            Image(painterResource(R.drawable.ic_back), "Back", Modifier.size(24.dp),
                                 colorFilter = ColorFilter.tint(colorResource(R.color.ink)))
                         }
                         if (page == Page.Home) Spacer(Modifier.width(10.dp))
-                        Label(if (page == Page.Licence) licence else stringResource(page.title), size = 26, weight = FontWeight.SemiBold,
+                        Label(if (page == Page.Licence) licence else page.title, size = 26, weight = FontWeight.SemiBold,
                             lines = 2, mod = Modifier.semantics { heading() })
                     }
                     if (page == Page.Home) {
-                        val steps = listOf(setup.mic, setup.chosen).count { !it }
-                        val status = if (steps == 0) stringResource(R.string.home_ready) else pluralStringResource(R.plurals.home_finish_setup, steps, steps)
+                        val steps = listOf(setup.mic, setup.chosen, computer != null).count { !it }
+                        val status = if (steps == 0) "Ready" else "Finish setup · $steps " + if (steps == 1) "step" else "steps"
                         Row((if (steps > 0) Modifier.clickable(role = Role.Button) { setupPage(1) } else Modifier)
                             .heightIn(min = if (steps > 0) 44.dp else 26.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (steps == 0) Image(painterResource(R.drawable.ic_check), null, Modifier.size(16.dp),
@@ -137,136 +182,161 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
                 }
                 when (page) {
                     Page.Home -> {
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colorResource(R.color.ink))
-                            .height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.weight(1f).fillMaxHeight().clickable(phase != SpeechPhase.Transcribing, role = Role.Button) { dictate() },
-                                contentAlignment = Alignment.Center) {
-                                Label(stringResource(when (phase) {
-                                    SpeechPhase.Idle -> R.string.home_dictate
-                                    SpeechPhase.Transcribing -> R.string.home_transcribing
-                                    else -> R.string.home_finish
-                                }), inverted = true, weight = FontWeight.SemiBold)
-                            }
-                            if (phase != SpeechPhase.Idle) Box(Modifier.fillMaxHeight().width(68.dp).clickable(role = Role.Button) { cancel() },
-                                contentAlignment = Alignment.Center) { Label(stringResource(R.string.home_cancel), inverted = true, size = 14) }
-                        }
-                        if (transcript.isNotEmpty()) Card {
-                            SelectionContainer { Label(transcript, mod = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp), lines = Int.MAX_VALUE) }
-                            // iPhone Hex's Copy and Clear. Android 13 and later show their own copied preview.
-                            Row(Modifier.padding(horizontal = 4.dp)) {
-                                Action(stringResource(if (copied) R.string.home_copied else R.string.home_copy)) {
-                                    context.getSystemService(ClipboardManager::class.java)
-                                        ?.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), transcript))
-                                    copied = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-                                }
-                                Action(stringResource(R.string.home_clear), clear)
-                            }
-                        }
-                        if (notice != null) Label(notice, muted = true, size = 14, lines = 3)
                         Card {
-                            listOf(Page.Dictation, Page.Keyboard, Page.Privacy).forEachIndexed { i, dest ->
-                                if (i != 0) Rule()
-                                Entry(stringResource(dest.title), action = { open(dest) })
+                            Entry("Computer", computer?.name ?: "Not connected", action = { open(Page.Computer) })
+                            listOf(Page.Keyboard, Page.Privacy).forEach { dest ->
+                                Rule(); Entry(dest.title, action = { open(dest) })
                             }
                         }
                         Card {
-                            Entry(stringResource(R.string.home_keyboard_settings), value = "↗", action = systemSettings)
-                            Rule(); Entry(stringResource(R.string.home_run_setup), action = { setupPage(0) })
+                            // Android only lets the person turn an accessibility service on; off, it switches itself off.
+                            Toggle("Floating button", "Dictate into any app without the keyboard", setup.button) {
+                                if (it) ButtonPreferences.openAccessibility(context) else button.on = false
+                            }
+                            if (setup.button) {
+                                Rule(); Toggle("Hide with Hex keyboard", "The keyboard has its own mic", hideButton) { button.hideWithKeyboard = it }
+                            }
+                        }
+                        Card {
+                            Entry("Keyboard settings", value = "↗", action = systemSettings)
+                            Rule(); Entry("Run setup again", action = { setupPage(0) })
                         }
                     }
-                    Page.Dictation -> {
-                        Card {
-                            Entry(stringResource(R.string.settings_style), value = stringResource(style.label), action = { open(Page.Styles) })
-                            Rule(); Toggle(stringResource(R.string.dictation_lowercase), stringResource(R.string.dictation_lowercase_detail),
-                                lowercase) { speech.lowercase = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_format_lists), stringResource(R.string.dictation_format_lists_detail),
-                                formatLists) { speech.formatLists = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_spoken_punctuation), stringResource(R.string.dictation_spoken_punctuation_detail),
-                                spokenPunctuation) { speech.spokenPunctuation = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_end_with_period), stringResource(R.string.dictation_end_with_period_detail),
-                                endWithPeriod) { speech.endWithPeriod = it }
-                            Rule(); Entry(stringResource(R.string.settings_dictation_language), if (selectedLanguage == null) automatic.label else null,
-                                selectedLanguage?.label ?: stringResource(R.string.settings_automatic), { open(Page.Language) })
-                        }
-                        Card {
-                            Toggle(stringResource(R.string.settings_translate), stringResource(R.string.settings_translate_detail), translate) { speech.translation = it }
-                            Rule(); Toggle(stringResource(R.string.settings_clean), stringResource(R.string.settings_clean_detail), clean) { speech.clean = it }
-                            Rule(); Toggle(stringResource(R.string.dictation_vocabulary), stringResource(R.string.dictation_vocabulary_detail),
-                                customVocabulary) { speech.customVocabulary = it }
-                            if (customVocabulary) {
-                                val ink = colorResource(R.color.ink)
-                                BasicTextField(value = vocabularyDraft, onValueChange = {
-                                    vocabularyDraft = it; speech.vocabularyTerms = it.split('\n')
-                                }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 14.dp),
-                                    textStyle = TextStyle(color = ink, fontFamily = inter, fontSize = 16.sp),
-                                    cursorBrush = SolidColor(ink), decorationBox = { field ->
-                                        Box { if (vocabularyDraft.isEmpty()) Label(stringResource(R.string.dictation_vocabulary_hint), muted = true); field() }
-                                    })
-                            }
-                        }
-                        Card {
-                            val action = modelAction(model)
-                            Entry(stringResource(R.string.model_title), modelStatus(model), action?.let { stringResource(it) } ?: "",
-                                if (action != null) download else null)
-                        }
+                    Page.Computer -> Card {
+                        Box(Modifier.padding(16.dp)) { ComputerSection(store, computer) { computer = it } }
                     }
                     Page.Keyboard -> {
+                        val photos = rememberRecentPhotos(context)
                         Card {
-                            Entry(stringResource(R.string.settings_keyboard_layout),
-                                if (selectedLayout == null) stringResource(R.string.settings_layout_follows, automatic.label) else null,
-                                selectedLayout?.label ?: stringResource(R.string.settings_automatic), { open(Page.Layout) })
-                            Rule(); Toggle(stringResource(R.string.settings_auto_capitalisation), stringResource(R.string.settings_auto_capitalisation_detail),
-                                autoCapitalize) { typing.autoCapitalize = it }
-                            Rule(); Toggle(stringResource(R.string.settings_autocorrect), stringResource(R.string.settings_autocorrect_detail), autocorrect) { typing.autocorrect = it }
-                            // Shown under Autocorrect while it is on, as on iPhone (it was alone on an Experiments page, on by default).
-                            if (autocorrect) { Rule(); Toggle(stringResource(R.string.settings_spatial), stringResource(R.string.settings_spatial_detail), spatial) { typing.spatial = it } }
-                            Rule(); Toggle(stringResource(R.string.settings_swear_words), stringResource(R.string.settings_swear_words_detail), swearWords) { typing.suggestSwearWords = it }
+                            Entry("Keyboard layout", if (selectedLayout == null) automatic.label else null,
+                                selectedLayout?.label ?: "Automatic", { open(Page.Layout) })
+                            Rule(); Toggle("Auto-capitalization", "Capitalize the first word of each sentence", autoCapitalize) { typing.autoCapitalize = it }
+                            Rule(); Toggle("Autocorrect", "Fix typos when you press space", autocorrect) { typing.autocorrect = it }
+                            // Shown under Autocorrect while it is on, as on iPhone.
+                            if (autocorrect) { Rule(); Toggle("Spatial autocorrect", "Use where taps land to fix typos", spatial) { typing.spatial = it } }
+                            // The fix button's files download only once it is turned on, and go when it is turned off.
+                            Rule(); Toggle("Fix button", when (val state = fixState) {
+                                is TinyfixFiles.State.Downloading -> "Downloading, ${state.percent}%"
+                                TinyfixFiles.State.Failed -> "Couldn't download. Try again"
+                                TinyfixFiles.State.Ready -> "Fixes English words like \u201Cform\u201D for \u201Cfrom\u201D"
+                                TinyfixFiles.State.Off -> "Fixes English words like \u201Cform\u201D for \u201Cfrom\u201D. Downloads 3.5 MB"
+                            }, fixState is TinyfixFiles.State.Ready || fixState is TinyfixFiles.State.Downloading) {
+                                if (it) TinyfixFiles.enable(context, typing) else TinyfixFiles.disable(context, typing)
+                            }
+                            Rule(); Toggle("Suggest swear words", "Slurs are never suggested", swearWords) { typing.suggestSwearWords = it }
+                            Rule(); Toggle("Suggest contacts' names and emails",
+                                if (contactsRefused) "Allow Contacts in Hex's app info" else "Needs access to your contacts", contactEmails) {
+                                contactsAllowed = context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                                when {
+                                    !it || contactsAllowed -> typing.contactEmails = it
+                                    contactsRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)))
+                                    else -> askContacts.launch(Manifest.permission.READ_CONTACTS)
+                                }
+                            }
                             // The words the keyboard keeps and suggests are Android's own personal dictionary.
-                            Rule(); Entry(stringResource(R.string.settings_personal_dictionary), stringResource(R.string.settings_personal_dictionary_detail), "↗",
+                            Rule(); Entry("Personal dictionary", "Words the keyboard always knows", "↗",
                                 { context.startActivity(Intent(Settings.ACTION_USER_DICTIONARY_SETTINGS)) })
-                            Rule(); Toggle(stringResource(R.string.settings_popups), stringResource(R.string.settings_popups_detail), popups) { typing.popups = it }
-                            Rule(); Toggle(stringResource(R.string.settings_haptics), stringResource(R.string.settings_haptics_detail), haptics) { typing.haptics = it }
+                            // Android's spell checker setting: with Hex, a misspelled word's fixes show on the strip.
+                            Rule(); Entry("Spell checker", if (hexChecks) "Hex underlines words it doesn't know" else "Choose Hex to underline mistakes", "↗",
+                                { openSpellCheckers(context) })
+                            Rule(); Entry("Text shortcuts", snippets.firstOrNull()?.let { "Type ${it.shortcut} for \u201C${it.filled().first}\u201D" },
+                                action = { open(Page.Shortcuts) })
+                            Rule(); Toggle("Number row", "1 to 0 above the letters", numberRow) { typing.numberRow = it }
+                            Rule(); Toggle("Key pop-ups", "Show the letter above your finger", popups) { typing.popups = it }
+                            Rule(); Toggle("Haptics", "A light tap when you press a key", haptics) { typing.haptics = it }
+                            Rule(); Toggle("Glide typing", "Slide across the letters to type a word", glide) { typing.glide = it }
+                            Rule(); Toggle("Show gesture trail", if (glide) "A line follows your finger" else "Turn on Glide typing",
+                                glideTrail, enabled = glide) { typing.glideTrail = it }
+                            Rule(); Toggle("Recent screenshots", if (photos.partial) "Only the photos you chose" else "Offer a screenshot you just took",
+                                photos.on) { photos.change(it) }
+                            Rule(); Toggle("Codes from texts",
+                                if (smsRefused) "Allow SMS in Hex's app info" else "Offer a code a text message brings", textedCodes) {
+                                smsAllowed = TextedCodes.allowed(context)
+                                when {
+                                    !it || smsAllowed -> typing.textedCodes = it
+                                    smsRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)))
+                                    else -> askSms.launch(TextedCodes.PERMISSION)
+                                }
+                            }
+                            Rule(); Toggle("Free times",
+                                if (calendarRefused) "Allow Calendar in Hex's app info" else "Type \u201Cfree\u201D and a space to offer when you're free", freeTimes) {
+                                calendarAllowed = FreeTimes.allowed(context)
+                                when {
+                                    !it || calendarAllowed -> typing.freeTimes = it
+                                    calendarRefused -> context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)))
+                                    else -> askCalendar.launch(FreeTimes.PERMISSION)
+                                }
+                            }
+                            Rule(); Toggle("Remove tracking from links", "When you copy a link", cleanLinks) {
+                                typing.cleanLinks = it
+                            }
+                            Rule(); Toggle("Expand short links", "Show where bit.ly and amzn.to links go", expandLinks) {
+                                typing.expandLinks = it
+                            }
+                            Rule(); Toggle("Learn from Hex history", "Start from the words in your computer's dictations", learnFromHistory) {
+                                typing.learnFromHistory = it
+                            }
+                            Rule(); Toggle("Learn from my corrections", "Remember words you fix after dictating", learnFromCorrections) {
+                                typing.learnFromCorrections = it
+                            }
+                            Rule(); Toggle("Say \"send it\" to send", "End a dictation with it to press send", sayToSend) {
+                                typing.sayToSend = it
+                            }
+                            Rule(); Toggle("Keep a typing log", "Every key and suggestion, saved to Download/Hex", typingLog) {
+                                typing.typingLog = it
+                            }
+                            Rule(); Entry("Forget learned words", if (confirmForget) "Tap again to forget everything the keyboard learned" else helped, "", {
+                                if (confirmForget) { typing.forgetLearned(context.filesDir); confirmForget = false } else confirmForget = true
+                            })
                         }
                         val ink = colorResource(R.color.ink)
                         Card {
                             BasicTextField(value = practice, onValueChange = { practice = it }, maxLines = 4,
                                 modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                textStyle = TextStyle(color = ink, fontFamily = inter, fontSize = 16.sp),
+                                textStyle = TextStyle(color = ink, fontFamily = sans, fontSize = 16.sp),
                                 cursorBrush = SolidColor(ink), decorationBox = { field ->
-                                    Box { if (practice.isEmpty()) Label(stringResource(R.string.settings_test_keyboard), muted = true); field() }
+                                    Box { if (practice.isEmpty()) Label("Test keyboard…", muted = true); field() }
                                 })
                         }
                     }
                     Page.Privacy -> {
-                        // A statement, not rows that look tappable.
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(painterResource(R.drawable.ic_lock), null, Modifier.size(15.dp), colorFilter = ColorFilter.tint(colorResource(R.color.ink)))
-                            Spacer(Modifier.width(8.dp)); Label(stringResource(R.string.settings_privacy_line), weight = FontWeight.Medium)
-                        }
-                        Label(stringResource(R.string.settings_privacy_detail), muted = true, size = 14, lines = Int.MAX_VALUE)
                         Card {
-                            Entry(stringResource(R.string.settings_privacy_policy), action = { open(Page.Policy) })
-                            Rule(); Entry(stringResource(R.string.settings_licences), action = { open(Page.Licences) })
+                            Entry("Your voice goes to your computer", "Hex on your computer transcribes it, never a cloud service")
+                            Rule(); Entry("Typing history", "Hex stores no keystrokes or transcripts")
+                        }
+                        Card {
+                            Entry("Privacy policy", action = { open(Page.Policy) })
+                            Rule(); Entry("Open-source licences", action = { open(Page.Licences) })
                         }
                     }
-                    Page.Styles -> Card {
-                        Style.entries.forEachIndexed { i, it ->
+                    Page.Layout -> Card {
+                        (listOf(null) + Spoken.entries).forEachIndexed { i, it ->
                             if (i != 0) Rule()
-                            Entry(stringResource(it.label), value = if (it == style) "✓" else "", action = { speech.style = it; open(Page.Dictation) })
+                            Entry(it?.label ?: "Automatic", if (it == null) "Follow the phone's language" else null,
+                                if (it == selectedLayout) "✓" else "", { typing.layout = it; open(page.parent) })
                         }
                     }
-                    Page.Language, Page.Layout -> Card {
-                        val layout = page == Page.Layout
-                        // Layouts and dictation languages are separate lists that happen to match today.
-                        val choices: List<Triple<String?, Boolean, () -> Unit>> =
-                            if (layout) (listOf(null) + Spoken.entries).map { Triple(it?.label, it == selectedLayout, { typing.layout = it }) }
-                            else (listOf(null) + DictationLanguage.entries).map { Triple(it?.label, it == selectedLanguage, { speech.language = it }) }
-                        choices.forEachIndexed { i, (label, chosen, pick) ->
-                            if (i != 0) Rule()
-                            Entry(label ?: stringResource(R.string.settings_automatic),
-                                if (label != null) null else stringResource(if (layout) R.string.settings_layout_automatic_detail else R.string.dictation_language_automatic_detail),
-                                if (chosen) "✓" else "", { pick(); open(page.parent) })
+                    Page.Shortcuts -> {
+                        if (snippets.isNotEmpty()) Card {
+                            snippets.forEachIndexed { i, it ->
+                                if (i != 0) Rule()
+                                Entry(it.shortcut, it.text, action = { editing = i; open(Page.Shortcut) })
+                            }
                         }
+                        Card { Entry("Add shortcut", value = "+", action = { editing = -1; open(Page.Shortcut) }) }
+                    }
+                    Page.Shortcut -> ShortcutEditor(snippets.getOrNull(editing), snippets.filterIndexed { i, _ -> i != editing }) { changed ->
+                        val list = snippets.toMutableList()
+                        when {
+                            changed == null -> if (editing in list.indices) list.removeAt(editing)
+                            editing in list.indices -> list[editing] = changed
+                            else -> list += changed
+                        }
+                        typing.snippets = Snippets.write(list)
+                        open(Page.Shortcuts)
                     }
                     Page.Policy, Page.Licences, Page.Licence -> {
                         val asset = when (page) { Page.Policy -> "privacy-policy.txt"; Page.Licences -> "licenses/credits.txt"; else -> "licenses/$licence" }
@@ -286,9 +356,36 @@ internal fun HexSettings(setup: Setup, speech: SpeechPreferences, typing: Typing
     }
 }
 
+/** A text shortcut's two fields, with Save, and Delete for one already kept; [done] gets null for Delete. */
+@Composable private fun ShortcutEditor(snippet: Snippet?, others: List<Snippet>, done: (Snippet?) -> Unit) {
+    var shortcut by rememberSaveable { mutableStateOf(snippet?.shortcut ?: ";") }
+    var text by rememberSaveable { mutableStateOf(snippet?.text.orEmpty()) }
+    val taken = others.any { it.shortcut == shortcut.trim() }
+    val ready = shortcut.trim().length >= 2 && shortcut.trim().none { it.isWhitespace() } && text.isNotBlank() && !taken
+    Card {
+        Field("Shortcut", shortcut, single = true) { shortcut = it }
+        Rule(); Field("Text", text, single = false) { text = it }
+    }
+    Label(if (taken) "You already have that shortcut" else "Put a part in { } to select it, like There in {10} min",
+        size = 13, muted = true, lines = 2, mod = Modifier.padding(horizontal = 16.dp))
+    Card {
+        Entry("Save", value = if (ready) "✓" else "", action = if (ready) ({ done(Snippet(shortcut.trim(), text)) }) else null)
+        if (snippet != null) { Rule(); Entry("Delete", value = "", action = { done(null) }) }
+    }
+}
+@Composable private fun Field(title: String, value: String, single: Boolean, change: (String) -> Unit) {
+    val ink = colorResource(R.color.ink)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Label(title, size = 13, muted = true)
+        BasicTextField(value = value, onValueChange = change, singleLine = single, maxLines = if (single) 1 else 6,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            textStyle = TextStyle(color = ink, fontFamily = sans, fontSize = 16.sp), cursorBrush = SolidColor(ink))
+    }
+}
+
 @Composable private fun Label(text: String, size: Int = 16, weight: FontWeight = FontWeight.Normal,
                               muted: Boolean = false, inverted: Boolean = false, lines: Int = 1, mod: Modifier = Modifier) {
-    BasicText(text, mod, style = TextStyle(fontFamily = inter, fontWeight = weight, fontSize = size.sp,
+    BasicText(text, mod, style = TextStyle(fontFamily = sans, fontWeight = weight, fontSize = size.sp,
         lineHeight = (size + 5).sp, color = colorResource(if (inverted) R.color.page else if (muted) R.color.quiet else R.color.ink)),
         maxLines = lines, overflow = TextOverflow.Ellipsis)
 }
@@ -312,10 +409,6 @@ private fun reflow(lines: List<String>) = buildString {
         append(if (ends) "\n" else " ")
     }
 }
-@Composable private fun Action(text: String, onClick: () -> Unit) {
-    Box(Modifier.heightIn(min = 48.dp).clickable(role = Role.Button, onClick = onClick).padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center) { Label(text, weight = FontWeight.Medium, size = 15) }
-}
 @Composable private fun Card(content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(colorResource(R.color.sheet)), content = content)
 }
@@ -328,6 +421,12 @@ private fun reflow(lines: List<String>) = buildString {
         if (note != null) Label(note, size = 13, muted = true, lines = 2)
     }
 }
+/** Android's spell checker page, which has no public action: Settings' own screen, else the keyboards'. */
+private fun openSpellCheckers(context: Context) {
+    val page = Intent().setClassName("com.android.settings", "com.android.settings.Settings\$SpellCheckersSettingsActivity")
+    runCatching { context.startActivity(page) }.onFailure { context.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
+}
+
 @Composable private fun Entry(title: String, note: String? = null, value: String = "›", action: (() -> Unit)? = null) {
     val click = if (action != null) Modifier.clickable(role = Role.Button, onClick = action) else Modifier
     Row(Modifier.fillMaxWidth().then(click).heightIn(min = 52.dp).padding(horizontal = 16.dp, vertical = 10.dp),

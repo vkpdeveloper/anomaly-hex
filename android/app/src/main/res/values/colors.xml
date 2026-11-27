@@ -8,7 +8,22 @@
     <color name="keyboard">#E5E8EC</color>
     <color name="key">#FFFFFF</color>
     <color name="modifier">#CED3DA</color>
-    <color name="emoji_pressed">#33191C20</color>
     <color name="pressed">#B7BDC6</color>
     <color name="launcher_background">#191C20</color>
+    <!-- The keyboard is always Gboard's dark theme, whatever the system's. -->
+    <color name="kb_background">#1E1F20</color>
+    <color name="kb_key">#37393B</color>
+    <color name="kb_function">#444746</color>
+    <color name="kb_key_pressed">#4E5052</color>
+    <color name="kb_function_pressed">#5B5E5D</color>
+    <color name="kb_ink">#E3E3E3</color>
+    <color name="kb_hint">#C4C7C5</color>
+    <color name="kb_quiet">#8E918F</color>
+    <color name="kb_off">#686869</color>
+    <color name="kb_enter">#A8C7FA</color>
+    <color name="kb_enter_pressed">#C2D7FB</color>
+    <color name="kb_enter_ink">#062E6F</color>
+    <color name="kb_selected_ink">#041E49</color>
+    <color name="kb_emoji_background">#1B1B1B</color>
+    <color name="kb_emoji_pill">#282A2C</color>
 </resources>

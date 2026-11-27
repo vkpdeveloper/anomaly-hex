@@ -1,47 +1,235 @@
 # Hex for Android
 
-Hold the Hex key, speak and release to insert text in the current app. A tap starts hands-free dictation; ✓ finishes and ✕ discards. The Hex key sits at the strip’s trailing end, where Gboard has its mic; while dictating it becomes ✓ and the live dot waveform grows out of it, above the keys. While Hex transcribes, a spinner takes the checkmark’s place and ✕ still cancels. The keys are Gboard’s size and place on a Pixel (measured on an emulator), with ?123, comma, space, period and enter in the bottom row; the system’s own switcher in the navigation bar, or Hex menu › Next keyboard, changes keyboards.
+A keyboard and a floating button that dictate with Hex on your computer. The phone records; the paired computer transcribes with its own model, runs its Output steps, and sends the text back to the cursor. Tap the mic at the strip's end for hands-free dictation, which ends once you stop talking, or hold it and let go. ✕ discards a recording or a transcript still on its way. A recording that never heard a voice (only the room, a fan or a click) isn't sent: the strip or the button says No speech, and hands-free dictation gives up after 5 seconds without one.
 
-## Speech model and privacy
+## Dictation and privacy
 
-**[Whisper small Q5_1](https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin) is the default; multilingual tiny Q5_1 is bundled and works from first launch in airplane mode.** The [Android benchmark](benchmark/README.md) compares tiny, base, small, Parakeet and Android’s strictly on-device provider on the same 40 clips. Hex’s small configuration reduced WER from 17.54% to 5.26% and used 344 MiB peak native RSS on short clips. Norwegian remains the weakest language.
+Pair once under **Computer**: Hex finds the computer on the local network, or takes an address (Tailscale works anywhere), then its pairing code. The protocol, routes and limits are in [docs/phone-dictation.md](../docs/phone-dictation.md). The computer turns on **Labs › Phone dictation** and answers only private and Tailscale addresses.
 
-Welcome explains that the internet is used only to fetch the 190 MB speech model. Get started begins a fixed HTTPS download; setup shows progress and lets you continue with tiny. The partial file is kept: when Android closes the connection because Hex went to the background, or Hex is closed or the phone restarts, the download continues with an HTTP range request the next time a Hex screen is open. A real failure (no connection, server error, full storage) says so and offers Retry, which also continues. [ModelStore](app/src/main/java/ly/anoma/hex/speech/ModelStore.kt) verifies the exact byte count and SHA-256 before atomically installing it in private, non-backed-up storage. The keyboard never makes a network request. Missing or unusable small weights fall back to tiny. Voice, words and translations stay on the device; Hex has no telemetry, transcript history or network speech service.
+What leaves the phone: each recording, to the paired computer only, with the name of the app it's for and the keyboard layout's language, so the computer can use that app's mode; with **Learn from Hex history** (on by default), the word counts and Vocabulary terms the keyboard fetches from that computer every few hours; with **Learn from my corrections** (on by default), each word you fix in text you just dictated, with about 300 characters around it, to that computer only; and with **Keyboard › Fix button** on, a one-time download of its files from Hugging Face. Nothing goes to a cloud speech service, and Hex has no telemetry. Typed words, learned words, emoji picks and pinned clips stay on the phone.
 
-## Keyboard and styles
+A transcript goes back to the field it was spoken in. If that field went away while the computer was transcribing (another field, or the keyboard closed), it's copied instead and the strip's chip offers it; an app that restarts the same field (chat apps do) still gets it. The keyboard shapes it with the language the computer says it heard: mid-sentence, a capital the model gave an ordinary first word goes. When the computer chooses the language itself, the text stays as it came.
 
-**Automatic** uses the first supported Android system language, or English if none is supported. Hold the language-labelled space bar to switch immediately between Automatic, English, Español, Deutsch and Norsk (Bokmål). Slide on the Hex key or tap **Hex menu** to change the spoken language or style:
-
-- **Polished** (default): trims standalone hesitation sounds, fixes spacing/capitals and closes sentences.
-- **Casual:** lowercase texting, without the period at the end of a single statement.
-- **Notes:** “bullet point,” “next bullet,” “new line” and “new paragraph” become list items and breaks.
-- **Verbatim:** keeps the recognizer’s words and punctuation; no cleanup is applied.
-
-**Clean up what I say** is off by default. The [deterministic rules](app/src/main/java/ly/anoma/hex/speech/SpokenCleanup.kt) remove hesitations and resolve explicit self-corrections against nearby words of the same kind. Spanish, German and Norwegian use the iOS word lists and pause boundaries; English uses explicit markers, not iOS’s learned tagger or an LLM. Ambiguous repairs stay as spoken. Ordinary negation and language-specific words such as German “eh” and Norwegian “er” stay intact.
-
-**Translate what I say** is also off by default. With Español and translation enabled, **Next dictation** offers **Paste in English** or **Paste as spoken**. The choice is captured when recording begins; after a one-off spoken-language insertion, the next dictation returns to English. Translation is multilingual Whisper’s native speech-to-English task, not a second text model or online SDK. The tested Spanish WAV inserted both “El café todavía está caliente.” and “The coffee is still hot.” offline.
+**Keyboard › Keyboard layout** is Automatic (the first supported Android system language, else English) or English, Español, Deutsch, Norsk, Français, Italiano or Hinglish.
 
 ## Typing assistance
 
-All four layouts have a bundled, memory-mapped **HXTM v3** word and word-pair model. English and Spanish keep the original iOS Google Books files. German uses Google Books; Bokmål uses the National Library of Norway’s book counts filtered by Norsk ordbank. Start typing to see ranked suggestions; tap one to insert it. A space brings up next-word predictions. Passwords, addresses and editors that disable suggestions use literal typing.
+Every layout has a bundled, memory-mapped **HXTM v3** word and word-pair model. English is the original iOS Google Books file plus chat words the books lack (“tbh”, “ngl”, “rizz”); Spanish keeps its iOS file. German uses Google Books; Bokmål uses the National Library of Norway’s book counts filtered by Norsk ordbank. Hinglish is English’s model with Hindi written in Latin letters mixed in from the PHINC corpus and chat words PHINC lacks (“bindaas”, “chapri”), so “kya”, “nahi” and “yaar” tap and glide as English words do. Start typing to see ranked suggestions; tap one to insert it. A space brings up next-word predictions; on English and Hinglish they come from a small neural model that runs on the phone and reads the words before the cursor ([benchmark](benchmark/typing/README.md#next-word-model)), and the word-pair model still does autocorrect. Passwords, addresses and editors that disable suggestions use literal typing.
 
-**Keyboard › Keyboard layout** follows dictation by default; an explicit layout can differ from the space bar’s spoken language. Spanish has a dedicated ñ and ¿/¡ on the second symbols page. German is QWERTZ with ü, ö and ä; hold s for ß. Bokmål has å, ø and æ.
+Spanish has a dedicated ñ and ¿/¡ on the second symbols page. German is QWERTZ with ü, ö and ä; hold s for ß. Bokmål has å, ø and æ. Hinglish uses English’s keys and spelling rules; no phone language picks it, so choose it in Keyboard layout.
 
-**Keyboard › Suggest swear words** is off by default on every layout. Slurs on the
+**Keyboard › Suggest swear words** is on by default on every layout; English and Hinglish models also know chat swears the books and PHINC lack (“stfu”, “bsdk”, “chutiya”). Slurs on the
 [curated list](app/src/main/assets/typing/never-suggest.tsv) are never offered, even when
 swear words are enabled. The filter applies to completions, next words, autocorrect and
 both halves of a missed-space correction. Typing a listed word in full keeps your exact
 spelling; its literal chip accepts what you typed. The filter never changes the HXTM models.
 
-On space, the Kotlin decoder compares each tap with the measured key centres and combines those distances with the previous word’s probability. It can recover a missing space. A known spelling requires a higher confidence margin than a nonword. Immediately press **Delete** to restore exactly what you typed, without the space. Undo the same replacement twice and Hex keeps that spelling in later sessions. Only rejection counts keyed by hashes are saved locally; there is no typing journal.
+**Your spellings.** Hindi in Latin letters has no one spelling: nahi, nhi and nahin; acha, accha
+and achha; theek and thik; kya and kia. Once you write one spelling of a word at least three times,
+and four times as often as another, the strip, autocorrect, next-word predictions and glides give
+yours: typing "nahi" offers "nhi", and a slip aimed at "nahi" becomes "nhi". A spelling you type that
+is a word is only offered another, never replaced. British and American English spellings ("colour",
+"realise", "centre") work the same way on the English and Hinglish layouts. The
+[rules](app/src/main/java/ly/anoma/hex/typing/Spellings.kt) are narrow so two words never merge: main
+and mein, kya and kiya, bhi and bhai, hai and hain stay apart, and a word English's model has
+("sheet") is never read as Hindi. It counts what the keyboard already learns, so password fields and
+apps that ask for no personalised learning teach it nothing, and **Forget learned words** clears it.
+There is no setting.
+
+**What it learns.** Like Gboard, the keyboard learns from what you write, only on the phone
+([LearnedWords](app/src/main/java/ly/anoma/hex/typing/LearnedWords.kt)). A word you write twice joins
+your words; one you pick from the strip as you typed it, or keep by deleting an autocorrection with one
+backspace, or by picking it over the autocorrection, joins at once. Undoing an autocorrection also takes back what
+the corrected word just counted, so repeated undos never make it yours, and so does tapping back into a
+word later and picking another: the pick counts in its place. Deleting into a pick takes back what it
+counted and taught, a phrase word by word, and so does a swipe undo of a word, which a redo counts again. A
+word already in the text counts nothing when you only put the caret after it, or delete back into it, and end
+it again. Search boxes that show their app's own
+suggestions learn too, though nothing is corrected there. It learns which word follows one
+word and which follows two ("see you" then "soon",
+[PersonalTrigrams](app/src/main/java/ly/anoma/hex/typing/PersonalTrigrams.kt)), so a space offers your
+own phrases; a prediction stays far under a millisecond with 60,000 phrases kept. What you wrote
+lately counts most: every use fades by half each 30 days. Your counts weigh in by how much they show:
+a word or pair seen a few times barely moves the word list's own choice, one seen often wins, and
+autocorrect and glides read the two words before, not just one. Each of the eight apps you write in
+most also keeps its own small count on top, so chat and email habits stay apart. A run of words you
+write often ("let me know if that works") is offered as one wide chip once you have written it four
+times and it clearly leads after the words before
+([LearnedPhrases](app/src/main/java/ly/anoma/hex/typing/LearnedPhrases.kt)); tapping it types the
+whole run. Words of four letters or more already in the field you're writing in (a name earlier in the
+email) are read and completed more readily while you stay in it
+([FieldWords](app/src/main/java/ly/anoma/hex/typing/FieldWords.kt), kept in memory only, never in
+password fields). It learns your slips ([TypoMemory](app/src/main/java/ly/anoma/hex/typing/TypoMemory.kt)):
+a misspelling you fixed by hand, by picking from the strip or deleting and retyping, is corrected that
+way next time even where the tap decoder alone is unsure, though a common word the taps spell first
+keeps its place in the strip; a word you once wrote in odd capitals ("CAN") shows and glides in its
+usual form; one undo of an autocorrection stops that one
+change (typed to replacement) without banning the replacement elsewhere; when that change also fixed the
+word before ("your welcom" to "you're welcome"), space still fixes the word itself. An apostrophe typed inside a
+word stays part of it, so "cna't" becomes "can't". It learns where your
+thumbs land on each key ([TouchOffsets](app/src/main/java/ly/anoma/hex/typing/TouchOffsets.kt)): once
+a key has eight taps, the tap decoder reads that key as sitting where you aim, moved at most a third of
+a key, and older taps count less; once a key has a dozen taps it also learns how scattered they are, so
+a key you hit cleanly is trusted more than one you often miss. Long-press a suggestion for **Forget word**: it is never offered
+again, and the phrases it is in go too. Words you fix in text you just dictated (Hex's own dictation,
+within five minutes) are learned here at once and, with **Learn from my corrections**, sent to the
+paired computer (one it can't reach gets them at the next contact, even after a restart), which adds names and spellings to its Vocabulary
+([docs/phone-dictation.md](../docs/phone-dictation.md)); the computer's Vocabulary terms come back as
+words here. The keyboard also counts, as numbers only ([TypingStats](app/src/main/java/ly/anoma/hex/typing/TypingStats.kt)),
+the keys you type, suggestions you tap, autocorrections made and undone, and deletes; once there are
+a few hundred words, **Forget learned words** says how many keystrokes suggestions saved and how many
+autocorrections you undid. Nothing is learned or counted in password fields, incognito tabs or apps that ask for no personalised
+learning, and **Forget learned words** clears all of it.
+
+**Spell checker.** Hex is also the phone's spell checker once you choose it (**Keyboard › Spell
+checker** opens Android's page for it). [HexSpellChecker](app/src/main/java/ly/anoma/hex/keyboard/HexSpellChecker.kt)
+underlines a word the layout's language doesn't know, your personal dictionary and learned words
+included, so Hinglish isn't marked wrong in Hinglish. It asks the app for no pop-up: put the caret in
+the word and its fix shows in the strip's middle slot, with other spellings beside it, as Gboard does.
+A word already in the text is read as each key tapped at its centre, so swapped or slipped letters
+still find it ("wrods" -> "words"). Addresses, handles, acronyms and camelCase are left alone. With
+**Keyboard › Fix button** on (its files downloaded), on English and Hinglish, it also runs the fix
+button's checker over each sentence: a real word the sentence says should be another ("form" for
+"from") gets Android's grammar underline, and with the caret in it the strip offers the fix in the
+middle. The two share one copy of the checker, one check at a time. Apps
+built with Compose (Google Messages) don't ask for spell checks.
+
+**Emoji.** On the English and Hinglish layouts the strip shows up to two emoji for the word being
+typed once it spells a whole word, or the word just before a space, in the third word's place, as Gboard does ("medicine" 💊 💉,
+"chai" ☕ 🫖). English's come from Unicode CLDR 46's emoji names and keywords
+([en.emoji](app/src/main/assets/typing/en.emoji)), with Hex's own picks for chat words first;
+Hinglish adds Hex's list of Hindi words ([hien.emoji](app/src/main/assets/typing/hien.emoji)). A tap
+ends the word, then types the emoji and a space. The emoji you pick for a word come first next time,
+most picked first; one picked from the emoji panel right after a word shows for that word once
+picked twice. Picks are counts per word (at most 1,000 words), never learned in password fields or
+apps that ask for no personalised learning, and **Forget learned words** clears them.
+
+**Grid menu.** The grid at the strip's start opens a menu in place of the strip and keys:
+**Clipboard**, **Fix mistakes** (only where the Fix button works) and **Settings**.
+
+**Selection.** A selection puts **Cut** and **Copy** on the strip in the suggestions' place. Hold shift and slide on space to select
+as the caret moves. **Undo and redo**: swipe two fingers left on the keys to undo, right to redo, a
+word with its space, a run of deletes, or one larger edit (a pick, a dictation, a paste, the Fix button's fixes)
+at a time. Hex keeps the steps itself, so they work in any field; a password field keeps none, and
+sending a message forgets them.
+
+**Sums and conversions.** A sum before the caret (`45*12`, `120*15%`, `(1000+4001)/2`) offers its
+answer on the strip, which replaces it; `45*12=` keeps the sum and adds the answer. An amount
+followed by a space (`250 usd`, `₹1000`, `8 km`, `70 kg`, `30°c`, `6 ft`) offers its conversion,
+which goes after it in brackets: money into the phone's own currency (dollars when it already is),
+at fixed rates for now. Dates and phone numbers (`23/11`, `98765-43210`) aren't sums, and a unit
+after a number is never autocorrected. Nor is a part under four letters after a hyphen ("hi-fi",
+"anti-vax"); a longer one is ("well-knwn" becomes "well-known").
+
+**Keyboard › Text shortcuts** are yours to add: typing one offers its text on the strip. One that
+starts with a mark (`;eta`) shows from its mark and one letter (`;e`); a plain one (`omw`) only as
+its own whole word. A part in braces is a blank: `There in {10} min` goes in as "There in 10 min"
+with the 10 selected, so the next keys replace it. `;eta` comes as an example. They stay on the
+phone.
+
+**Keyboard › Free times** (off by default; it asks for the Calendar permission): "free" or
+"available", optionally with today, tomorrow or a weekday ("free on friday"), and a space offers the
+gaps in your calendars of at least half an hour between 9 am and 9 pm, as chips such as "today 3 to
+5 pm" (the day is said when you didn't type one). Only busy events count; all-day and declined ones
+don't. Hex reads just their start and end times, only then, and keeps nothing.
+
+**Text shortcuts** from Android's personal dictionary put their phrase in the strip, as Gboard does;
+tap it to replace the shortcut. Space, marks and return leave the shortcut as typed. The paired
+computer's one-word text replacements work the same way (fetched hourly; yours win), and go when
+the computer is forgotten.
+
+**Say "send it" to send** (Keyboard settings, off by default): end a dictation with "send it" (or
+"bhej do") after a pause or a sentence's end, and Hex types the rest and presses the field's send
+key. Only where the enter key sends or goes, never in a password field.
+
+**Scratch that.** End a dictation with "scratch that" to take it back (said alone, it takes back
+the one before). As with "send it", it must follow a pause or a sentence's end, so "I'll delete
+that tomorrow" stays text.
+
+**Fields that turn off suggestions** (search boxes, some chat apps) still get the strip:
+suggestions, emoji and corrections show as anywhere, and tapping a word still offers its fixes. Only
+the automatic correction on space stops there, as on Gboard.
+
+**Email addresses.** While you type one, the strip offers addresses that complete it: the phone's
+accounts that Android shows Hex without a permission, addresses you've typed before, and, with
+**Keyboard › Suggest contacts' names and emails** (off by default; it asks for the Contacts permission), your
+contacts' and every account on the phone that syncs contacts, such as each Google account you're
+signed in to (Android hides those from other apps otherwise); their names are also words the strip, autocorrect and glides know. An address is learned once a space, comma, semicolon or return follows it, or you leave the
+field, and never in password fields, URL fields or apps that ask for no personalised learning. Email
+fields offer up to three from the first letter, before the strip's words, and a tap puts one in with
+no space after it. Elsewhere one address takes the strip's last slot once three characters match, and
+contacts' only after an @. Contacts are read in the background, at most 5,000, and again a moment
+after they change. Typed addresses stay on the phone with the learned words.
+
+**Keyboard › Fix button** is off by default. Turning it on downloads tinyfix's model and word
+lists (3.5 MB, MIT, pinned to one Hugging Face revision and checked by size and SHA-256) into
+the app's files; the APK ships none of it, and turning it off deletes them. On the English and
+Hinglish layouts (tinyfix knows no other language) the button is found in two places: the grid menu's
+**Fix mistakes**, and a **Fix** chip that comes up by itself at the strip's end when the text has
+something to fix. The chip comes from the same check: once typing and the caret have been still for
+0.7 s, the text around the caret is checked off the main thread (a check for older text is stopped
+at its next word), and the chip shows only if the fix would change it, so it never shows on clean
+text. Any edit or caret move takes it away until the next check, and it stays off while a word is
+being typed, over a selection, an undo offer or a clipboard chip, and in password, email and number
+fields. A tap on it makes the fixes it was shown for. On Hinglish it leaves Hindi words alone: those Hinglish's typing model has and
+English's lacks, so "nahi" never becomes "nazi"; a Hindi word that is also English ("main") is
+still checked as English. Tapping it checks up to 1,000 characters on each
+side of the caret with a [Kotlin port](app/src/main/java/ly/anoma/hex/fix/) of tinyfix 0.1.1
+(misspellings, and real words that don't fit, such as "form" for "from") and rewrites the
+fixed words in one batch, keeping the caret. **Undo fixes** puts them back while the field is
+unchanged, and those words are left alone until the keyboard restarts. Password fields never
+show the tile. `TinyfixTest.fixesAsThePackageDoes` compares the port with the npm package's
+output on 55 sentences when `HEX_TINYFIX_DIR` points at the downloaded files. Each checked word
+costs one model run (about 3 ms on a Pixel emulator), and the first tap also reads the files
+(0.7 to 1.6 s); another tap waits until the check finishes.
+
+On space or return, the Kotlin decoder compares each tap with the measured key centres and combines those distances with the previous word’s probability. The fix it will make shows in the strip's middle slot as you type, with the likeliest completion beside it, and space applies exactly that fix; once a space is typed, a late answer from the next-word model only replaces predictions you haven't had time to read. It can recover a missing space, but not inside a word whose letters still start a longer one, and a slip early in a word ("somr") still offers the word it was heading for ("something"). A known spelling requires a higher confidence margin than a nonword. On English and Hinglish a word cut short is completed when one word is clearly the likeliest ("peop" to "people", "somth" to "something"), while "wor" stays "work". Stretched words ("thankss", "whyy") and Hinglish words the model knows ("konse", "jaysa") stand. Immediately press **Delete** to restore exactly what you typed, without the space. An undo, or deleting the corrected word and typing it again, turns that change off for good and leaves the word as you typed it for a week; a word you edited by hand is fixed only when one letter off. Only rejections keyed by hashes are saved locally. **Keyboard › Keep a typing log** (off) writes every key, what the strip offered, picks (emoji included), corrections and their undos, pastes, dictations and app changes to a file in Download/Hex, for debugging the keyboard; it stays on the phone.
+
+**Keyboard › Glide typing** (on by default) types a word when you slide across its letters. A drag that starts on a letter key becomes a glide once it has moved about half a key (a key and a half right after a tapped letter, so a quick tap that slides stays a tap); passwords, numbers, addresses and the symbol pages take none. On lifting, [GlideDecoder](app/src/main/java/ly/anoma/hex/typing/GlideDecoder.kt) walks the same HXTM word list along the path, matching each letter in order to a point where the path passes its key and charging corners no letter explains, then adds the word-pair cost after the previous word; your own words are walked too: the personal dictionary, contacts' names (your own from the phone's profile card) with the contacts switch on, the computer's words, and any word you've written twice, names included. Glides learn as taps do: a glided word counts once the next word starts, a reading you pick over a glide is yours at once, and so is a word you type after deleting one. The likeliest word goes in, after a space when it follows a word, capitalised with shift and in capitals with caps lock; the strip shows it highlighted with up to two other readings nearly as likely, and tapping one replaces it. A path that turns short of a far key still reads the word it meant. Delete right after a glide removes the whole word. A mark such as a comma goes against the glided word, while the next word, glided or tapped, puts its space in first. **Show gesture trail** draws a line that follows the finger and fades.
 
 **Keyboard settings and Hex menu → Typing feedback** control key pop-ups and key haptics independently. Both default on; Hex follows system keyboard vibration. Hold a letter, slide to an accent, and release. Turning off pop-ups leaves the deliberate accent picker available.
 
+Hold the period on the letters page for Gboard's punctuation (`; / ( ) # ! , ?` with `& % + " - : ' @` above), slide to one and release; release on the period to type the period. A mark from the list goes through the same spacing and autocorrect as one typed on the symbols page.
+
+**Keyboard › Number row** (off by default) puts 1 to 0 above the letters, at once, even with the keyboard open. Row 1 then drops its small digits and their long press; the accents stay. The keyboard is one row taller on every page (the symbol pages and number pad stretch their rows to fill it), so changing pages never moves the editor. Taps and glides are measured from the letter rows, so the number row changes nothing autocorrect or glide typing sees.
+
 [English/Spanish typing benchmark, model sources and licences](benchmark/typing/README.md)
+
+**Learning benchmark** ([LearningBenchTest](app/src/test/java/ly/anoma/hex/keyboard/LearningBenchTest.kt), JVM, about a minute): how much the keyboard gains from learning a person's writing. It types the sent mail of ten authors from the public Enron email corpus (CMU, 2015 snapshot; [learn-corpus.py](scripts/learn-corpus.py) downloads it once, 440 MB, and cleans it into `$TMPDIR/hex-learn-bench/authors`: own mail only, no quotes, signatures, links, numbers or anything the English letters page can't type) through the real `KeyboardEngine` and English model with a seeded thumb (key centre plus Gaussian noise plus a fixed per-author grip habit, about 9% of letters landing on a neighbouring key). The first 80% of an author's first 30,000 words teach a keyboard, which then types the rest while still learning; the same text is typed on a keyboard that learns nothing. The thumb taps the strip's word or phrase when it offers the one intended, ends words with space or their mark, and undoes a correction that broke a word it typed right. It reports keystroke savings (1 - keystrokes / characters), word accuracy, corrections that broke or fixed a word, next-word hits in the strip, the gain from learning, and time per key. Taps only, no glides.
+
+```
+HEX_LEARN_BENCH=1 HEX_LEARN_BENCH_LABEL=mine ./gradlew :app:testDebugUnitTest --rerun --tests '*LearningBenchTest*' -i
+```
+
+The table prints and `$TMPDIR/hex-learn-bench/<label>.json` is written; `HEX_LEARN_BENCH_BASE=<other.json>` prints the deltas against an earlier run. The numbers are the same on every run except the times. Other knobs: `HEX_LEARN_BENCH_AUTHORS` (first n), `HEX_LEARN_BENCH_WORDS` (per author), `HEX_LEARN_BENCH_SD` (tap noise in key pitches), `HEX_LEARN_BENCH_SEED`, `HEX_LEARN_BENCH_DIR` (where the samples live), `HEX_LEARN_BENCH_SPREAD=1` (a thumb steadier mid-keyboard than at the edges), `HEX_LEARN_BENCH_SLIPS=1` (each author misspells ten common words the same way most times) `HEX_LEARN_BENCH_DEBUG=1` (lists each word that came out wrong) and `HEX_LEARN_BENCH_NEXT=1` (next words from the neural model, as the keyboard has them).
+
+## Clipboard
+
+The grid menu's Clipboard tile opens the clipboard in place of the strip and keys, at their height: recent screenshots in a row, then copies in two columns, pinned first and newest first. A tap pastes a clip or puts an image in and goes back to the keys; touch and hold one for Pin and Delete (TalkBack has both as actions); Clear removes everything not pinned. The strip's chip offers the last copy for 10 minutes, or a screenshot taken in the last 5 minutes, whichever is newer, in place of next-word guesses. An image (a screenshot or a copied picture) is offered only in a field that takes images (`EditorInfo.contentMimeTypes`), as Gboard does. It goes when it is tapped, when a word is typed, or once it is too old, and the clipboard keeps it.
+
+A copied link shows without `https://` or `www.`, in the chip and on its Clipboard card, with the site's own icon: fetched over HTTPS from the site itself (its `/favicon.ico`, else the icon its home page names), only once the chip shows, and kept in memory while the keyboard runs. A copy holding a phone number, an email address, a link, an address, a date or a flight gets up to two of them as their own chips beside it, each with its icon, the way Gboard splits a copy; a copy that is only one of them takes its icon. A text card in the Clipboard panel shows its pieces in a row under the text. Android's on-device text classifier finds them ([ClipPieces](app/src/main/java/ly/anoma/hex/keyboard/ClipPieces.kt)); a sensitive copy is never looked at. The classifier marks a date only with a time ("tomorrow at 9am"), so Hex also finds plain ones itself: today, tonight, tomorrow, full day names ("next Friday", "Sunday evening"), "25 Nov", "Nov 25th, 2026" and "22/11/2026", each with its time when one follows. Where both find the same date, it is one piece. A tap pastes that piece alone.
+
+**Keyboard › Remove tracking from links** (off by default) takes campaign and share tags out of a link as it is copied, while the keyboard runs, and puts the clean link back on the clipboard, so pasting anywhere gets it: `utm_*`, `fbclid`, `gclid` and the like everywhere, YouTube's and Spotify's `si`, X's `s`/`t`, Instagram's `igsh`, Amazon's `ref` and `tag`, and others ([Links](app/src/main/java/ly/anoma/hex/keyboard/Links.kt)). The rest of the link, its order and its `#` part stay. Only a copy under 5 seconds old is rewritten, so an old one read again when the keyboard starts isn't made new; links pasted from the chip or the panel are cleaned too. A sensitive copy is left alone.
+
+**Keyboard › Expand short links** (off by default) turns a copied link on a known shortener (bit.ly, amzn.to, tinyurl.com, t.co, maps.app.goo.gl and others, [ShortLinks](app/src/main/java/ly/anoma/hex/keyboard/ShortLinks.kt)) into the link it stands for, cleaned when Remove tracking is on, and puts that on the clipboard; the chip and the panel then show the real site and its icon. Hex asks only the shortener, over HTTPS, for its redirect (up to 5 hops, 4 s each) and stops at the first link off a shortener, so the site itself isn't contacted. If the shortener doesn't answer, the copy stays as it was.
+
+**Keyboard › Codes from texts** (off by default) offers a one-time code a text message brought in the last 10 minutes as the strip's chip, with a message icon, as Gboard does. Turning it on asks for SMS (`READ_SMS`; Android words it "send and view SMS messages", though Hex never sends one). While on and the keyboard runs, it reads the inbox off the main thread when the keyboard comes up and when a text arrives: only messages from the last 10 minutes, at most 10 codes, and only the codes are kept, in memory ([TextedCodes](app/src/main/java/ly/anoma/hex/keyboard/TextedCodes.kt)). A code is a run of 4 to 8 digits (or "482 913") nearest a word such as code, OTP, verification or कोड; amounts, card endings, times, dates and phone numbers aren't. A tap types the code, after which it isn't offered again; a newer copy takes the chip. Copying a code a text just brought (from the notification's Copy, say) offers it the same way and never adds it to the clipboard history. Android 15 hides code-bearing notifications from apps that read notifications, which is why Hex reads texts instead. Google Play lets only default SMS apps ask for SMS, so a Play build would have to leave this out.
+
+[ClipKeeper](app/src/main/java/ly/anoma/hex/keyboard/ClipKeeper.kt) watches the clipboard while the keyboard runs, so copies made in other apps join too. Unpinned clips go an hour after they were copied, as Gboard's do: the clipboard carries one-time codes, addresses and things copied in passing, and an hour covers copying here to paste there without the keyboard keeping a record. At most 20 stay, 5 of them images; text over 50,000 characters pastes from the chip but isn't kept. Up to 50 pinned clips stay until unpinned (which starts their hour) or deleted, and only they are written to disk: `clipboard/pinned.txt` and the pinned images beside it, in Hex's private files (owner-only, never backed up). Recent clips live in memory and go when the keyboard's process ends. A copy marked sensitive (`EXTRA_IS_SENSITIVE`, as password managers mark theirs) or made in a password field is never kept; the chip shows it masked.
+
+A copied image is copied into that folder under its SHA-256 (16 MB at most), since the copying app's grant ends when the clipboard changes. Putting an image in calls `commitContent` with a read grant on a `FileProvider` URI when the editor's `contentMimeTypes` takes its type (Google Messages does); elsewhere the image goes on the clipboard and the strip says so.
+
+**Keyboard › Recent screenshots** is off until turned on, and asks for photos (`READ_MEDIA_IMAGES`, or storage on Android 12). Android 14's "Select photos" grants only the chosen ones, which leaves out new screenshots; the row says so, and turning it on again asks again. While on, the keyboard reads MediaStore off the main thread when it comes up and when images change: at most 40 rows from the last hour, of which only screenshots (a `Screenshots/` folder) are offered, never camera photos or what other apps saved, such as a chat's downloads; the panel shows up to 8. A screenshot is copied into the cache for the editor and kept a day. Thumbnails are decoded on their own thread at 256 px and cached up to 8 MB.
+
+`ClipHistoryTest` and `RecentImagesTest` cover expiry, pins, bounds, secret copies, the saved format, which photos are offered and when a texted code takes the chip; `OneTimeCodeTest` covers which numbers are codes and which links are short. On a Pixel emulator: a tracked link copied came back cleaned on the system paste, a tinyurl link copied came back as the Wikipedia page with its icon, a texted code showed as the chip, typed on a tap and went, a copied code stayed out of the panel, and panel cards showed favicons and pieces.
+
+## Autofill
+
+Saved passwords and usernames from the phone's autofill service, and a verification code it found in a text message, show as chips in the strip, as Gboard's do. They use Android's inline suggestions ([InlineAutofill](app/src/main/java/ly/anoma/hex/keyboard/InlineAutofill.kt)): the keyboard asks for chips the height of the clipboard chip in its own light or dark colours, the service draws them, and a tap is the service's to handle, which fills the field. Hex never sees the saved password or the message; these chips need no SMS permission (Codes from texts, above, is Hex's own and separate). The chips take the strip's place, ahead of the clipboard chip and next-word guesses, with the service's pinned ones at the end by the mic; the grid button and the mic stay. A word being typed takes the strip back for its suggestions, and the chips return once it is done; they go when the field changes or the service sends none. Nothing needs turning on in Hex: it asks for chips in every field, and they show whenever the phone's autofill service (Settings › Passwords, passkeys & autofill) sends some. A service draws its chip at the width it chose, which Hex keeps, and a chip that scrolls under the mic is cut off at its edge. Without an autofill service, nothing changes. Verification codes come only from a service that offers them inline: Google's reads them from Messages, while a password manager such as Bitwarden sends none. `InlineChipsTest` covers the order and when they show or go.
 
 ## Settings
 
-After setup, Home shows **Ready** or **Finish setup**, a **Dictate** bar and four destinations, following the iOS navigation in #2054. Tap Dictate, speak, then Finish dictation: Hex displays the local result on Home. **Dictation** controls style, language, translation, cleanup and the offline speech model. **Keyboard** has layout, autocorrect, key pop-ups, haptics and a practice field. **Privacy** explains storage and links the model credits. **Experiments › Spatial autocorrect** controls tap-based correction; it starts on to preserve existing Android behavior. Turning it off keeps dictionary completions and the fixed English typo/contraction rules; turning off Keyboard › Autocorrect disables all automatic replacements.
+After setup, Home shows **Ready** or **Finish setup**, then **Computer** (pairing), **Keyboard** (layout, autocorrect, the Fix button, suggestions, text shortcuts, number row, key pop-ups, haptics, glide typing, recent screenshots, Codes from texts, Free times, Remove tracking from links, Expand short links, Learn from Hex history, Learn from my corrections, Say "send it" to send and a practice field) and **Privacy**. **Floating button** dictates into any app without the keyboard, and can hide while the Hex keyboard is up.
 
 **Privacy › Privacy policy** opens the [Android policy text](play/policy/privacy-policy.txt) even in airplane mode.
 

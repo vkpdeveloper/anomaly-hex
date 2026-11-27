@@ -43,11 +43,11 @@ internal object ContextWords {
     private val richFollowers = setOf("will", "would", "had", "us")
     private fun fold(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).filter { it !in '\u0300'..'\u036f' }
 
-    /** Whether [language] has words its context decides. */
+    /** Whether [language] (a model's [TypingModel.spelling]) has words its context decides. */
     fun decides(language: String) = language in groups
 
     private fun cost(model: TypingModel, word: String, previous: String?, next: String?, startsSentence: Boolean): Double {
-        val expanded = if (model.language == "en") expansions[word.lowercase()] else null
+        val expanded = if (model.spelling == "en") expansions[word.lowercase()] else null
         var best = Double.POSITIVE_INFINITY
         for (words in expanded ?: listOf(listOf(word.lowercase()))) {
             var cost = model.cost(words[0], previous) ?: UNKNOWN
@@ -66,7 +66,7 @@ internal object ContextWords {
      * null to keep it. `previous` and `next` are lowercase, null when unknown. */
     fun choice(model: TypingModel, word: String, previous: String?, next: String?, startsSentence: Boolean): String? {
         val lower = word.lowercase()
-        val group = groupOf[model.language]?.get(lower) ?: return null
+        val group = groupOf[model.spelling]?.get(lower) ?: return null
         val own = cost(model, word, previous, next, startsSentence)
         var best: String? = null
         var bestCost = Double.POSITIVE_INFINITY

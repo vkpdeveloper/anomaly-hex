@@ -48,8 +48,8 @@ Vocabulary files, Words on screen, Learn from corrections
 (macOS), Rewrite reads nearby text (macOS), Switch model with keyboard
 language (#216), Mouse shortcuts (#209, macOS), Also pause the browser (#301,
 macOS), Share dictation shortcut (#176, Windows), Free memory when idle
-(#442), Smaller model files (macOS), Terminal paste (Windows), Terminal
-paste shortcut (Windows, Linux), Stop phrase, Hold through other keys
+(#442), Smaller model files (macOS), Phone dictation, Terminal paste
+(Windows), Terminal paste shortcut (Windows, Linux), Stop phrase, Signature, Hold through other keys
 (macOS and Windows), and Microphone key alone (#181, macOS).
 Externally contributed features land there too.
 Every `Everyone` lab also gets a page on Hex's website,
@@ -261,6 +261,18 @@ substitute for source inspection or a second roadmap.
   adapter (`linux::app::LinuxControl`, `windows::rune::WindowsControl`);
   `macos_rune::control` is macOS's host. What an OS can't do answers
   `unsupported` at runtime. Contract: `docs/cli.md`.
+- `local_api/phone`, `android/`: Labs › Phone dictation. The app's
+  supervisor (`PhoneDictation`, held by each OS's app, never a CLI) serves
+  `/phone/v1/hello` and `/phone/v1/transcriptions` on its own port (saved,
+  else 47213, else a free one in 47300..48900) to private and Tailscale
+  peers holding the pairing code, advertises `_hex-phone._tcp` on the LAN,
+  and transcribes through `transcription/service` like the local API.
+  `android/` is Hex for Android in Kotlin: an always-on accessibility-service
+  button (held in the foreground by a silent notification) that records
+  16 kHz audio, sends it on a pre-picked route (Tailscale first), and
+  inserts the transcript, which went through Global's Output steps as a
+  desktop dictation does.
+  Contract: [`docs/phone-dictation.md`](docs/phone-dictation.md).
 - `sdk/typescript`: Promise and Effect v4 host wrappers for direct-child
   lifecycle, authenticated model preparation, and host-audio transcription.
 - `control/developer_control`: the typed debug-only command/reply protocol the local

@@ -2,17 +2,38 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Only once Settings › Keyboard's switch asks: the strip offers contacts' email addresses. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Keyboard › Codes from texts, off until turned on: only codes from the last 10 minutes, kept in memory. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- Keyboard › Free times, off until turned on: busy times only, read when you type "free". -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- A silent notification keeps the floating button's service in the foreground. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Hex registers no non-exported dynamic receivers through ContextCompat. -->
     <permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
     <uses-permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Keyboard › Recent screenshots, off until turned on: the keyboard offers a screenshot just
+         taken. Android 14 can grant only the photos the person picks; Android 12 has storage alone. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- The keyboard reads Android's personal dictionary (UserDictionary.Words), which only the enabled
-         input method may read; declared so package visibility never hides the provider. -->
+         input method may read; declared so package visibility never hides the provider. The floating
+         button names the launchable app it dictates into, so the computer picks that app's mode; an
+         input method already sees the app it types into. -->
     <queries>
         <provider android:authorities="user_dictionary" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
     <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher"
-        android:theme="@style/HexApp" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
+        android:theme="@style/HexApp" android:allowBackup="false" android:usesCleartextTraffic="true" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -27,6 +48,32 @@
                 <action android:name="android.view.InputMethod" />
             </intent-filter>
             <meta-data android:name="android.view.im" android:resource="@xml/input_method" />
+        </service>
+        <!-- Hex as the phone's spell checker, chosen in Settings: it underlines words the keyboard doesn't
+             know, and the keyboard's strip offers their spellings. -->
+        <service android:name=".keyboard.HexSpellChecker" android:label="@string/app_name"
+            android:exported="true" android:permission="android.permission.BIND_TEXT_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.textservice.SpellCheckerService" />
+            </intent-filter>
+            <meta-data android:name="android.view.textservice.scs" android:resource="@xml/spell_checker" />
+        </service>
+        <!-- The keyboard's images (clipboard copies and photos it inserts), shared read-only with the
+             editor that receives one, for that one grant. -->
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.clips"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/clip_paths" />
+        </provider>
+        <!-- The floating button, for dictating without the keyboard; off until turned on. -->
+        <service android:name=".button.ButtonService" android:label="@string/button_label"
+            android:exported="true" android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the floating dictation button on screen" />
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/button_accessibility" />
         </service>
     </application>
 </manifest>

@@ -158,6 +158,7 @@ const PATHS: &[(&str, &str)] = &[
     ("output-open", "Window/Output/App rule open"),
     ("output-trust", "Window/Output/Trust prompt"),
     ("output-empty", "Window/Output/Empty"),
+    ("output-style", "Window/Output/Dictation style"),
     ("modes", "Window/Modes/Modes"),
     ("modes-global", "Window/Modes/Global mode"),
     ("modes-picker", "Window/Modes/App picker"),
@@ -261,6 +262,7 @@ const PATHS: &[(&str, &str)] = &[
     ("mac-labs-category", "Window/General/Labs category"),
     ("mac-labs-search", "Window/General/Labs search"),
     ("mac-labs-settings", "Window/General/Labs settings"),
+    ("mac-labs-phone", "Window/General/Labs phone dictation"),
     ("mac-labs-yolo-mode", "Window/General/Labs YOLO mode"),
     (
         "mac-labs-yolo-mode-picker",

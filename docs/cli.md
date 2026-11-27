@@ -464,7 +464,10 @@ recording", "The window isn't open"). Setting `kind` is one of `bool`,
   "capture": {"state": "idle", "recording": null, "pending_jobs": 0},
   "meeting": {"state": "recording", "title": "Design sync", "elapsed_seconds": 723},
   "model": {"id": "parakeet_v3", "name": "…", "language": "en", "installed": true,
-            "preparing": null, "downloaded_bytes": 0, "error": null, "fallback": null},
+            "preparing": null, "downloaded_bytes": 0, "error": null,
+            "backend": {"kind": "vulkan", "device": "AMD Radeon RX 9060 XT",
+                        "crash_fallback": false},
+            "fallback": null},
   "features": {"meetings": true, "release_microphone_while_idle": false,
                "history_retention": "week"},
   "permissions": {"ready": true, "microphone": "ready", "accessibility": "ready",
@@ -483,6 +486,11 @@ capture.state       idle | recording | transcribing | unknown (the listener didn
 capture.recording   dictation | service | null
 meeting.state       idle | starting | recording | transcribing
 model               the saved selection; installed is about that model
+model.backend       {"kind", "device", "crash_fallback"} for the model actually loaded, or null before a
+                    load and once it unloads; kind is cpu, vulkan, cuda, rocm, metal, or another backend's
+                    name, device is the backend's own description (usually the processor name on the CPU), and
+                    crash_fallback is true when the GPU crashed twice starting and this launch stays on
+                    the CPU. macOS omits it (null)
 model.fallback      {"id", "name", "language", "reason": "missing" | "changed" | "labs-off"}, the
                     model Hex runs while the saved one can't, or null
 permissions.*       ready | needs-request | needs-settings | needs-restart
@@ -658,7 +666,8 @@ Writable keys: `release_microphone_while_idle`,
 `avoid_bluetooth_microphone`, `recording_audio_behavior`, `recording_duck_volume`, `double_tap_lock`, `double_tap_only`,
 `shortcut_mode`, `dictation_hotkey`, `paste_last_hotkey`, `raw_dictation_hotkey`,
 `second_dictation_hotkey`, `extra_dictation_hotkeys`, `labs.second_dictation_shortcut`,
-`labs.more_dictation_shortcuts`, `labs.standalone_special_keys`, `labs.app_model_switching`, `show_dock_icon`, `vocabulary_boost`,
+`labs.more_dictation_shortcuts`, `labs.standalone_special_keys`, `labs.app_model_switching`,
+`labs.phone_dictation`, `labs.phone_dictation_port` (0 is automatic, else 1024 to 65535), `show_dock_icon`, `vocabulary_boost`,
 `labs.keep_microphone_open`, `labs.keep_microphone_open_seconds`,
 `dictation_processing.default_mode`, `dictation_processing.modes`,
 `history_retention`, `meetings.enabled`,

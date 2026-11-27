@@ -209,6 +209,14 @@ pub(super) const SCENES: &[Scene] = &[
         *ui = portal_fixture();
         ui.pane = Pane::Output;
     }),
+    // Labs › Dictation style on: its row sits above Every dictation.
+    ("output-style", |ui| {
+        *ui = portal_fixture();
+        output::fixture(ui);
+        ui.settings.labs.dictation_style = true;
+        ui.settings.labs.dictation_style_choice = crate::app_settings::DictationStyle::Notes;
+        ui.pane = Pane::Output;
+    }),
     ("modes", |ui| {
         *ui = portal_fixture();
         modes::fixture(ui);
@@ -468,7 +476,8 @@ pub(super) const SCENES: &[Scene] = &[
             TranscriptionModelId::ParakeetV3,
         ]);
     }),
-    // The sound sets sheet at rest, then Wood's dictation recording.
+    // The sound sets sheet at rest, then Wood's dictation playing with the
+    // sounds off.
     ("sound-sets", |ui| {
         *ui = mac_fixture();
         sound_sets::fixture(ui, None);
@@ -476,14 +485,7 @@ pub(super) const SCENES: &[Scene] = &[
     ("sound-sets-playing", |ui| {
         *ui = mac_fixture();
         ui.settings.sound_effects = false;
-        sound_sets::fixture(
-            ui,
-            Some((
-                crate::feedback::SoundSet::Wood,
-                crate::feedback::Audition::Dictation,
-                900.0,
-            )),
-        );
+        sound_sets::fixture(ui, Some(crate::feedback::SoundSet::Wood));
     }),
     ("mac-microphone-missing", |ui| {
         *ui = mac_fixture();
@@ -817,6 +819,27 @@ pub(super) const SCENES: &[Scene] = &[
         ui.settings.labs.screenshots = true;
         ui.lab_store.group = Some(crate::labs::Feature::Screenshots.group());
     }),
+    // Labs › Phone dictation's card while on, listening on both networks.
+    ("mac-labs-phone", |ui| {
+        use crate::local_api::phone::{Listening, Route, RouteKind, Status};
+        labs_with_some_on(ui);
+        ui.settings.labs.phone_dictation = true;
+        ui.lab_store.group = Some(crate::labs::Feature::PhoneDictation.group());
+        ui.phone.status = Status::Listening(Listening {
+            port: 47213,
+            code: "7KQ2M9XD4FTA".into(),
+            routes: vec![
+                Route {
+                    kind: RouteKind::Tailscale,
+                    host: std::net::Ipv4Addr::new(100, 64, 0, 7),
+                },
+                Route {
+                    kind: RouteKind::Lan,
+                    host: std::net::Ipv4Addr::new(192, 168, 1, 20),
+                },
+            ],
+        });
+    }),
     // Labs › YOLO mode's card while on, limited to two apps.
     ("mac-labs-yolo-mode", |ui| {
         labs_with_some_on(ui);
@@ -1096,6 +1119,7 @@ pub(super) fn fixture(shortcuts: DesktopShortcuts) -> Ui {
             preparation_stage: None,
             selection: ui.settings.transcription.clone(),
             preparing: None,
+            backend: None,
         },
         update_status: DesktopUpdateStatus::Current,
         update_notes: None,

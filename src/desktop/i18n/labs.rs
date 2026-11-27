@@ -1,6 +1,8 @@
 //! The Labs rows' translated strings, the History multiple-selection card's,
 //! and the Vocabulary sheet's Import and Export strings, kept beside
 //! [`super::TRANSLATIONS`] so the main table stays under the source cap.
+//! French, Portuguese, and Russian take newer Labs rows here too, since
+//! their own tables sit at the cap.
 
 /// Columns: Polish, Chinese (Simplified), Japanese, German, Spanish, Ukrainian.
 #[rustfmt::skip]
@@ -189,6 +191,8 @@ pub(super) const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("On Wayland, a capture records the monitor you point at, and each monitor remembers its own screen", ["W Waylandzie nagranie obejmuje monitor, na który wskazujesz, a każdy monitor pamięta własny ekran", "在 Wayland 上，录制你指向的显示器，每台显示器各自记住自己的屏幕", "Wayland では、ポインターがあるモニターを収録し、モニターごとに画面を記憶します", "Unter Wayland nimmt eine Aufnahme den Monitor auf, auf den du zeigst, und jeder Monitor merkt sich seinen eigenen Bildschirm", "En Wayland, la captura graba el monitor al que apuntas y cada monitor recuerda su propia pantalla", "У Wayland запис охоплює монітор, на який ви вказуєте, і кожен монітор пам’ятає власний екран"]),
     ("Vocabulary files", ["Pliki słownictwa", "词汇文件", "語彙ファイル", "Vokabular-Dateien", "Archivos de vocabulario", "Файли словника"]),
     ("Import terms from a CSV file in the Vocabulary sheet, or save the whole list as one", ["Importuj terminy z pliku CSV w arkuszu Słownictwa lub zapisz całą listę jako taki plik", "在词汇表中从 CSV 文件导入术语，或把整个列表保存为 CSV 文件", "語彙シートで CSV ファイルから用語を読み込むか、リスト全体を CSV ファイルとして保存します", "Importiere Begriffe aus einer CSV-Datei im Vokabular-Blatt oder speichere die ganze Liste als eine", "Importa términos de un archivo CSV en la hoja de vocabulario o guarda toda la lista como uno", "Імпортуйте терміни з файлу CSV в аркуші словника або збережіть увесь список як такий файл"]),
+    ("Hindi in Latin letters", ["Hindi alfabetem łacińskim", "用拉丁字母写印地语", "ヒンディー語をラテン文字で", "Hindi in lateinischer Schrift", "Hindi en letras latinas", "Гінді латиницею"]),
+    ("Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi.", ["Zapisuj dyktowany hindi literami łacińskimi, tak jak w wiadomościach, np. \"kya haal hai\". Ustaw język mowy na hindi.", "像发消息那样用拉丁字母写出印地语听写，例如 \"kya haal hai\"。请把语音语言设为印地语。", "ヒンディー語の音声入力を、チャットのようにラテン文字で書きます（例: \"kya haal hai\"）。音声の言語をヒンディー語に設定してください。", "Schreibe Hindi-Diktate in lateinischen Buchstaben, wie beim Chatten, etwa \"kya haal hai\". Stelle die Sprache auf Hindi.", "Escribe los dictados en hindi con letras latinas, como en un chat, por ejemplo \"kya haal hai\". Elige hindi como idioma de voz.", "Записує диктування гінді латиницею, як у переписці, наприклад \"kya haal hai\". Виберіть гінді як мову мовлення."]),
     ("Import…", ["Importuj…", "导入…", "読み込む…", "Importieren…", "Importar…", "Імпортувати…"]),
     ("Export…", ["Eksportuj…", "导出…", "書き出す…", "Exportieren…", "Exportar…", "Експортувати…"]),
     ("Import vocabulary", ["Importuj słownictwo", "导入词汇", "語彙を読み込む", "Vokabular importieren", "Importar vocabulario", "Імпортувати словник"]),
@@ -221,4 +225,22 @@ pub(super) const TRANSLATIONS: &[(&str, [&str; 6])] = &[
     ("Added {added} terms, updated {updated}, skipped {skipped}", ["Dodano terminy: {added}, zaktualizowano: {updated}, pominięto {skipped}", "已添加 {added} 个术语，更新 {updated}，跳过 {skipped}", "{added} 件の用語を追加し、{updated} 件を更新し、{skipped} 件をスキップしました", "{added} Begriffe hinzugefügt, {updated} aktualisiert, {skipped} übersprungen", "Se añadieron {added} términos, se actualizaron {updated}, se omitieron {skipped}", "Додано термінів: {added}, оновлено {updated}, пропущено {skipped}"]),
     ("Agent tools for captures", ["Narzędzia agenta do zrzutów", "截图的助手工具", "キャプチャのエージェントツール", "Agenten-Werkzeuge für Aufnahmen", "Herramientas de agente para capturas", "Інструменти агента для знімків"]),
     ("Adds hex annotate zoom, inspect, frames, and skill so coding agents can read a capture closely", ["Dodaje hex annotate zoom, inspect, frames i skill, aby agenci kodujący mogli dokładnie przejrzeć zrzut", "添加 hex annotate 的 zoom、inspect、frames 和 skill，让编码助手能仔细查看截图", "hex annotate の zoom、inspect、frames、skill を追加し、コーディングエージェントがキャプチャを詳しく読めるようにします", "Fügt hex annotate zoom, inspect, frames und skill hinzu, damit Coding-Agenten eine Aufnahme genau lesen können", "Añade hex annotate zoom, inspect, frames y skill para que los agentes de código lean una captura de cerca", "Додає hex annotate zoom, inspect, frames і skill, щоб агенти для коду могли уважно прочитати знімок"]),
+];
+
+#[rustfmt::skip]
+pub(super) const FRENCH: &[(&str, &str)] = &[
+    ("Hindi in Latin letters", "Hindi en lettres latines"),
+    ("Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi.", "Écrit les dictées en hindi en lettres latines, comme dans un chat, par exemple \"kya haal hai\". Choisissez l'hindi comme langue parlée."),
+];
+
+#[rustfmt::skip]
+pub(super) const PORTUGUESE: &[(&str, &str)] = &[
+    ("Hindi in Latin letters", "Hindi em letras latinas"),
+    ("Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi.", "Escreve ditados em hindi com letras latinas, como numa conversa, por exemplo \"kya haal hai\". Defina o idioma da fala como hindi."),
+];
+
+#[rustfmt::skip]
+pub(super) const RUSSIAN: &[(&str, &str)] = &[
+    ("Hindi in Latin letters", "Хинди латиницей"),
+    ("Write Hindi dictations in Latin letters the way you text, like \"kya haal hai\". Set the speech language to Hindi.", "Записывает диктовку на хинди латиницей, как в переписке, например \"kya haal hai\". Выберите хинди языком речи."),
 ];

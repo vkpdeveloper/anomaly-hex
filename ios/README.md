@@ -310,20 +310,35 @@ never at a launch by itself.
     0.6B v3) with it, which hears them mixed within a sentence (Dutch with English
     words, a TestFlight request); any other dictation language keeps the engine Hex
     picks without it. The language Ultra takes is the one set, else the one Automatic
-    follows on the keyboard, else the iPhone's first. Turning it on downloads
+    follows on the keyboard, else the iPhone's first. The experiment never takes
+    dictation away: until Ultra is ready, Hex and the keyboard dictate as they would
+    with it off, and Hex switches to Ultra once it has loaded (a dictation in flight
+    isn't interrupted). Turning it on downloads
     FluidInference's Core ML build (632 MB, pinned to revision `95eaa59`, each file
     checked against its SHA-256 and resumed from its `.partial`) into Application
-    Support, out of backups, through the usual preparation bar ("Downloading 632.2 MB ·
-    Wi-Fi recommended", then Core ML's compile); turning it off deletes it, as does a
-    launch that finds a download left with it off. FluidAudio 0.15.5 has no
+    Support, out of backups, beside that engine (`ParakeetUltraDownload`): home and the
+    switch say "Downloading the multilingual model: 123.4 MB of 632.2 MB" with a bar. A
+    dropped connection, or bytes that stop for 20 s, tries again by itself after 2, 4, 8,
+    16, then 30 s, starting over whenever it got further; in the background it waits for
+    Hex to come back to the front, which picks it up at once (and starts a fresh
+    connection after 25 s away). After six tries in a row that got nothing further, or a
+    refused request or a full iPhone, it says what happened in plain words with Try again
+    and Turn off. Once downloaded, Ultra's first load (Core ML's compile, a minute or
+    more) runs beside the usual engine too, except where Parakeet V2 dictates and leaves
+    no room for it (English before iOS 26), where Ultra takes V2's place for that load;
+    later launches load it directly when Core ML has compiled it for this iOS. Turning it off stops the download, then deletes it;
+    a launch deletes a leftover only when the switch reads off as stored, never when the
+    App Group can't be read (a launch before the first unlock). FluidAudio 0.15.5 has no
     `.ultra`, so `ParakeetUltraModel` loads the four models itself and hands
     FluidAudio v3 `AsrModels` (its own loader would replace a folder it can't load
     with v3's download). It is chosen only with 1.5 GB left to load it
     (`os_proc_available_memory`), and never again after a load that ended Hex
-    (`ParakeetLoadGuard`, its own keys) until the switch is turned off and on. The
-    keyboard can't load it, so while it takes the dictation language, Dictate and the
-    Hex key open Hex, as before iOS 26 (a warm session still dictates without
-    leaving the app). Measured on a Mac (`~/dev/experiments/2026-11-21-hex-multilingual-parakeet`):
+    (`ParakeetLoadGuard`, its own keys) until Try again beside the status, or the switch
+    turned off and on. The keyboard can't load it, so once Hex has it ready
+    (`MultilingualParakeetSettings.isModelReady`, set after a load, cleared while it's
+    missing, set aside or off) and it takes the dictation language, Dictate and the Hex
+    key open Hex, as before iOS 26 (a warm session still dictates without leaving the
+    app); until then the keyboard dictates itself. Measured on a Mac (`~/dev/experiments/2026-11-21-hex-multilingual-parakeet`):
     mixed Dutch-English test sentences 7.5% WER against Apple Speech nl-NL's 26.9%,
     pure Dutch 0.9% (0.4%), pure English 0% (0%). Load memory, compile time and speed
     on an iPhone are unmeasured.
@@ -548,7 +563,7 @@ never at a launch by itself.
       update, fixed spread. No letters, words, times or sequences: 23,588 bytes, in a file
       in the keyboard's own container with Full Access (protected, excluded from backup,
       never in the App Group or its exports, written in batches off the main thread), in
-      memory only without it. Settings shows Session only, Learning (n of 400 taps) or
+      memory only without it. Settings shows that it resets without Full Access, Learning (n of 400 taps) or
       Active from counts the keyboard reports; Reset touch learning, and Delete what Hex
       learned, bump a reset generation that drops it from memory and disk (the file is
       the keyboard's, so it goes the next time the keyboard runs) and that a write
@@ -586,8 +601,11 @@ never at a launch by itself.
     swipe types " There"), and a name the dictionary only knows capitalised is
     capitalised. The strip then offers the next three readings, the likeliest in the
     centre; tapping one puts it in the word's place. Until anything else changes the
-    text, delete takes the whole word back (with the space it added) and space never
-    autocorrects it. As on Apple's keyboard (watched on iOS 27.2), a space stays pending
+    text, delete takes the whole word back (with the space it added), unless Settings ›
+    Experiments › Delete swiped words letter by letter is on
+    (`experiments.swipeDeleteLetterByLetter`, off by default), which makes delete act as
+    anywhere else and take one letter at a time; space never autocorrects it. As on Apple's
+    keyboard (watched on iOS 27.2), a space stays pending
     after the word: a tapped letter, digit, opening mark or symbol goes in after a space
     ("hello" then w-o-r-l-d types "hello world", "(" types "hello ("), while
     `, . ! ? ; : ) ] } ' - /` go against the word ("hello,") and take that space; shift you
@@ -673,9 +691,8 @@ never at a launch by itself.
     as `FullKeyboardSettings.isEnabled`, App Group key `experiments.fullKeyboard`
     from when the full keyboard was an experiment: unset or true is Full, false
     the dictation bar, so testers who turned that experiment off keep the bar;
-    an iPad follows the same choice, and there, while Full is chosen, the row says "The full
-    keyboard works on iPad too", since until build 117 an iPad always showed the bar), Auto-start (Never, On
-    switch by default, or Always) while the dictation bar is chosen, then Languages, Auto-capitalization, Autocorrect (with Spatial autocorrect below it while it's
+    an iPad follows the same choice, where until build 117 it always showed the bar), Auto-start (Never, On
+    switch by default, or Always) while the dictation bar is chosen, then Languages, Number row (off by default), Auto-capitalization, Autocorrect (with Spatial autocorrect below it while it's
     on), Suggest swear words, Vocabulary (Hex's custom vocabulary list, how many words it
     holds) and Key pop-ups only while Full is chosen, Haptics (the dictation bar uses it too),
     then Swipe typing and Emoji (Clear emoji history while it's on), which say they need the
@@ -683,10 +700,11 @@ never at a launch by itself.
   - **Privacy:** "Everything stays on this iPhone", Learn how I type (what it
     learned below the switch), and under **Advanced**, Record typing logs (off
     by default) with its Typing logs viewer while it's on.
-  - **Experiments:** Hinglish (Hindi in Latin letters), Clean up with Apple
-    Intelligence, Adaptive touch (its status and Reset touch learning below the switch),
-    German spatial autocorrect, ABC under the emoji key, Two-thumb selection, Hide word
-    suggestions, and Multilingual model (Parakeet).
+  - **Experiments:** Hinglish (Hindi in Latin letters), Two-language dictation,
+    Clean up with Apple Intelligence, Adaptive touch (its status and Reset touch learning
+    below the switch), German spatial autocorrect, Korean keyboard (두벌식), ABC under the
+    emoji key, Two-thumb selection, Delete swiped words letter by letter, Hide word
+    suggestions, Join the keyboard when unfolded, and Multilingual model (Parakeet).
 
   Simulator scenes: `--snap-state settings-home` (ready), `setup` (keyboard
   added, Full Access not confirmed yet), `setup-sheet`, `setup-sheet-microphone`
@@ -741,7 +759,7 @@ never at a launch by itself.
   iPhone yet. Using English."); a language picked by hand says so and offers that
   one ("Try English", with **Use English** in the app). With nothing else to move
   to (an English-only iPhone), Automatic tries the set-aside language again
-  rather than none, so "Apple Speech doesn't have your language" means neither
+  rather than none, so "Apple's speech recognition can't dictate this language" means neither
   module lists any of the iPhone's languages. Offline or stalled, it
   says the download failed and tries again next time. In the keyboard, a model it
   can't get itself (each process holds its own reservation, and one released or
@@ -763,6 +781,40 @@ never at a launch by itself.
   Spanish, German ones (äh, ähm, öhm) in German, and none elsewhere (Norwegian
   "er" is "is", Portuguese "um" is "a"); translation's source is the dictation
   language rather than a guess. Custom vocabulary works in any language.
+- **Two-language dictation (Settings › Experiments › Two-language dictation, iOS 26+):**
+  Off by default (`experiments.twoLanguageDictation`, App Group). While on, and while
+  dictation uses Apple Speech's `SpeechTranscriber`, one recording is read twice: in the
+  language dictation resolved (unchanged) and in the first other language in Settings ›
+  Keyboard › Languages whose base language differs from it, mapped by the same rule the
+  keyboard-follow language uses (`LanguageSettings.dictationLanguage(for:)`). Both must
+  resolve to `SpeechTranscriber`, and the second language's model must already be installed
+  (`AssetInventory.status`): dictation never downloads for it, and a language whose
+  `SpeechTranscriber` model was set aside as failing is skipped. Two `SpeechAnalyzer`s
+  read the same WAV, each with its own `AVAudioFile`, prepared with
+  `prepareToAnalyze(in: nil)` before starting, and a `SpeechTranscriber(locale:`,
+  `transcriptionOptions: [], reportingOptions: [],`
+  `attributeOptions: [.audioTimeRange, .transcriptionConfidence])`; both get custom
+  vocabulary's contextual strings. Each final result's timed runs give the merge its words
+  (the run's own characters, leading whitespace included, start, end, confidence), and a
+  run without letters or without a time range keeps its characters on the word before it.
+  `TwoLanguageMerger` cuts both readings at the earlier of two word ends within 150 ms,
+  scores each reading in a segment by its confidence-weighted seconds clipped to the
+  segment, and picks a reading per segment with a two-state Viterbi that charges 0.35 s of
+  confident audio for each language change, ties going to the primary. A word the new
+  reading starts with is dropped only when it repeats the last word kept, case and
+  punctuation aside, and the two spans overlap by at least half of the shorter one. The
+  winning runs are joined with their own characters, inserting one space at a language
+  change only when neither side has whitespace there. Whenever the second language wins no
+  piece, the primary's original text is used unchanged, so Chinese, Thai, punctuation and
+  untimed runs are exactly as Apple gave them. The text then runs through the same pipeline
+  with the primary language. No second installed language, a second analyzer that throws,
+  or no timed words in either reading dictates exactly as before; a primary reading that
+  finished without hearing anything reports empty so its caller throws its own no-speech
+  error without transcribing again; with the switch off no two-language work starts.
+  `TwoLanguageMergeTests` cover the merge and the run extraction. The app, keyboard,
+  widgets, and tests built on a macOS 26 GitHub runner with 33 tests passing (run
+  45005571072, the latest observed verification); nothing here has been measured on an
+  iPhone, and the simulator can't transcribe.
 - **Switching the dictation language in the keyboard (iOS 26+, Full Access):**
   the dictation bar shows the language beside the style ("Norsk ⌄") and opens a
   tray of chips; the full keyboard's Hex key menu has a Language row with its
@@ -931,17 +983,43 @@ never at a launch by itself.
   Keyboard". There it fixed "I dont know" and "Dont do it" to "don't", kept "est" and
   "merci" after English words, and wrote "Im" as "I m"; the simulator's French word data is
   thin ("je pense" became "he pence"), so how it weighs French there is unverified.
+  **한국어 (두벌식):** Settings › Experiments › Korean keyboard (off by
+  default, `experiments.koreanKeyboard`) adds 한국어 to the list: the standard Dubeolsik rows
+  with shift's ㅃㅉㄸㄲㅆ and ㅒㅖ, and no qwerty/azerty choice. `HangulComposer` composes each
+  syllable in the field (한, then delete to 하, ㅎ, nothing; ㅘ splits to ㅗ; 닭 + ㅗ → 달고,
+  한 + ㅏ → 하나), the keyboard replacing only the run's changed characters through
+  `deleteBackward`/`insertText` (no marked text). Space, return, punctuation, a page or
+  language switch, emoji, dictation, paste, undo, a selection action, the delete-word swipe, a
+  cursor move or hiding the keyboard commits the run. The cursor check records the last 32
+  characters before the run, the text after the cursor and the field, plus the host's selected
+  text, so a move to another place whose text before it ends alike commits too while a host
+  that trims the front of its window still matches if the window holds at least those 32
+  characters plus the run; a host that trims more than the tail or reports no selection is
+  best-effort, and a host that reports no text before the cursor joins syllables only while
+  jamo come within about half a second (a cursor move followed by a jamo inside that window
+  can't be detected). A field whose text after the cursor changes while you type (inline
+  autocomplete) commits each jamo, so syllables don't join there. Korean has no accent
+  holds, spelling dictionary, autocorrect, word suggestions or typing model, and with
+  the experiment off the language isn't listed, Automatic never picks it, and a stored "ko" is
+  ignored. Unit tests only (`HangulComposerTests`, `HangulKeyboardTests`,
+  `KoreanKeyboardGatingTests`): no CI compiles the iOS targets and no device run checks it.
 - **Layout per language (Settings › Keyboard › Languages › Layout):** each language the keys
   show (every chosen one, Automatic's while none is, and only the first of English and
   Español together) gets a menu of the layouts Apple's Keyboard Layout list offers for it
   (iOS 27.0 simulator, black box), its own (today's) first: English QWERTY, AZERTY, QWERTZ,
   Dvorak; Deutsch "QWERTZ – Deutsch" (with ü ö ä), QWERTZ, QWERTY, AZERTY; Español
   "QWERTY – Español" (with ñ), QWERTY, AZERTY, QWERTZ; Français (France) AZERTY, QWERTY,
-  QWERTZ, (Canada) QWERTY, AZERTY, QWERTZ, (Suisse) QWERTZ, AZERTY, QWERTY (Apple's
-  "– French" variants add only the ´ key Hex leaves out); Italiano and Português QWERTY,
+  QWERTZ, (Canada) QWERTY, AZERTY, QWERTZ, (Suisse) QWERTZ, AZERTY, QWERTY (Français (France)'s
+  AZERTY is Apple's "AZERTY – French", the first layout Apple lists for France and Belgium, with
+  the apostrophe key; Canada's QWERTY and Switzerland's QWERTZ are Apple's "QWERTY – French" and
+  "QWERTZ – French", the first each lists, with the key ending row 2; every other French layout
+  is the plain one); Italiano and Português QWERTY,
   AZERTY, QWERTZ; Polski and Română QWERTY, QWERTZ, AZERTY; Čeština "QWERTZ – Čeština" and
   "QWERTY – Čeština", Apple's "QWERTZ – Czech/Slovak" and "QWERTY – Czech/Slovak" (iOS 27.2
-  simulator), both its own rows with the ´ and ˇ keys, Z and Y swapped on the second; Srpski
+  simulator), both its own rows with the ´ and ˇ keys, Z and Y swapped on the second; Magyar
+  "QWERTZ – Magyar" and "QWERTY – Magyar", the standard Hungarian QWERTZ with every accented
+  vowel on a held key, Z and Y swapped on the second (Apple's own Hungarian layout list wasn't
+  read on a simulator for this change); Srpski
   QWERTZ (Hex's, though Apple now adds it as QWERTY), QWERTY, AZERTY. Norsk, Русский, Українська and Ελληνικά keep their
   one layout (Apple also offers a phonetic "Russian – QWERTY", not built). The plain
   layouts are the same 26 letters in every language, with the language's bottom row and
@@ -963,18 +1041,30 @@ never at a launch by itself.
   Norsk (`å` ending row 1, `ø æ` row 2), Español (`ñ` ending row 2; beside English, the
   first of the two's keys, above),
   Deutsch (QWERTZ with `ü`, `ö ä`), Italiano and Português on the English letters
-  (Apple's keyboards for them are QWERTY), Français (France) on Apple's AZERTY (rows of
-  10, 10 and 6 letters, W to N under E to I with a gap beside shift and delete, as on
-  Apple's French and English keyboard; Apple's French-only one adds a ´ dead key that Hex
-  leaves out), Français (Canada) on QWERTY and Français (Suisse) on QWERTZ, as on Apple's
+  (Apple's keyboards for them are QWERTY), Français (France) on Apple's "AZERTY – French" (rows of
+  10, 10 and 7 keys: W to N and the apostrophe key, a letter wide and centred between shift
+  and delete at their English size, as on Apple's; Hex's keycaps fall on Apple's to the pixel on
+  an iPhone 17 Pro and SE, upright and turned, iOS 27.2 simulator). The apostrophe key
+  (`FrenchTyping`) shows ’ right after a letter and types the apostrophe, curled as the field
+  curls quotes (l’homme, qu’il), and holds ' ’ ‘ `; anywhere else it shows and types ´ (never a
+  dead key) and holds ´ ˋ ˆ ¨, as Apple's does. It is no letter, so the decoder, Adaptive touch,
+  next-letter odds and swipe typing never read it, and French autocorrect fixes a slip on either
+  side of an elision's apostrophe as a word of its own ("l'hpmme" → "l'homme", "k'homme" →
+  "l'homme", `frenchElisionFix`). The iPad keeps its own ' and : key instead; Français (Canada) on QWERTY and Français (Suisse) on QWERTZ, as on Apple's
+  "QWERTY – French" and "QWERTZ – French": the same apostrophe key ends row 2, ten keys a
+  letter wide edge to edge under row 1's, its rules and holds France's (keycaps on Apple's to the
+  pixel on an iPhone 17 Pro and SE, upright and turned)
   (automatic picks them for `fr-CA` and `fr-CH`, AZERTY for any other French, Belgium
   included), Русский (Apple's ЙЦУКЕН: 11, 11 and 9 letters, ё on a
   held е, ъ on a held ь), Українська (the standard Ukrainian ЙЦУКЕН, ДСТУ 4862:2007, in the
-  rows the iOS 27.2 simulator's own Ukrainian keyboard shows: 12, 12 and 10 keys,
+  rows the iPhone's own Ukrainian keyboard shows on the iOS it runs on, because Apple changed
+  them in iOS 27: from iOS 27 (27.0 and 27.2 simulators) 12, 12 and 10 keys,
   `йцукенгшщзхї`, `фівапролджєʼ`, `ячсмитьбюґ`, with ʼ the U+02BC apostrophe Ukrainian
-  spells with; as the system keyboard's long-press options were observed, only ʼ offers
-  anything, the other apostrophes (' ’ ‘ and the backtick), and ₴, which the system keyboard
-  offers on its held currency key, is held on $; no ы, э, ъ or ё), Polski (QWERTY, as the
+  spells with, and only ʼ offers anything when held, the other apostrophes (' ’ ‘ and the
+  backtick); before iOS 27 (26.2 to 26.5 simulators) Russian's 11, 11 and 9, `йцукенгшщзх`,
+  `фівапролджє`, `ячсмитьбю`, every letter the two share on Russian's key, ї on a held і and
+  ґ on a held г. On both the 123 and #+= pages' apostrophe key is ʼ, held like the letter, and
+  ₴, which the system keyboard offers on its held currency key, is held on $; no ы, э, ъ or ё), Polski (QWERTY, as the
   standard Polish layout is, on the English letters; it matches the system keyboard's
   observed long-press options: Polish's own letter right after the base on A, C, E, L, N, O,
   S and Z, so ą ć ę ł ń ó ś ż, with ź after ż, and nothing on U, I or Y; its currency key
@@ -1007,7 +1097,11 @@ never at a launch by itself.
   ì į ī, O ó ô ö ò õ œ ø ō, A á à ą â ä æ ã å ā, S š ß ś, D ď, L ł ľ ĺ, Y ý ÿ, C č ç ć, N ň ñ ń
   and the ˇ key the ring ˚ (which makes ů and å), each callout laid out as the system's
   (`AccentCatalog.arrangement`), and every other key, ´ included, nothing; its 123 and #+=
-  pages and their held keys are English's) and Srpski (Latin: Apple's QWERTZ option for it; Apple's iPhone
+  pages and their held keys are English's), Magyar (the standard Hungarian QWERTZ, so
+  `qwertzuiop`, `asdfghjkl`, `yxcvbnm`, on the English keys' QWERTZ; its nine accented vowels
+  are all held, á on A, é on E, í on I, ó ö ő on O and ú ü ű on U, the base first and then the
+  neighbouring Latin accents, ő and ű the double-acute letters U+0151 and U+0171, and every
+  consonant holds nothing; QWERTY is offered too) and Srpski (Latin: Apple's QWERTZ option for it; Apple's iPhone
   Serbian Latin keyboard has no keys of its own for č ć đ š ž, they are held on c, d, s
   and z), as Apple's iOS keyboards
   lay them out (`KeyboardLanguage`: letter rows, long-press accents, spelling dictionary).
@@ -1019,7 +1113,7 @@ never at a launch by itself.
   only the letters: shift, delete and the bottom row keep their English sizes,
   and row 3's letters sit centred between shift and delete. Russian's nine-letter row 3
   wouldn't fit beside them, so there shift and delete narrow instead, as on Apple's;
-  Ukrainian's twelve-key rows leave them one letter wide, as on Apple's. Long-press options
+  Ukrainian's rows (twelve keys from iOS 27, Russian's before it) leave them one letter wide, as on Apple's. Long-press options
   match each language's system keyboard and its observed long-press options (iOS 27.2
   simulator: every letter, 123 and #+= key held for about 3 s with a real touch, the
   callout read from the accessibility tree; `KeyboardLanguage.letterHolds` and
@@ -1030,7 +1124,7 @@ never at a launch by itself.
   letter at the end under the thumb, in one row where the system wraps a long list
   (English A) into two. Autocorrect and suggestions use the layout's
   `UITextChecker` dictionary (`nb`, `es`, `de`, `it`, `fr`, `pt_BR` then
-  `pt_PT`, `pl`, `cs`, `ro`, `ru`, `uk`, `el`; Serbian would use `sr_Latn`, which iOS 27.2 doesn't have, nor a
+  `pt_PT`, `pl`, `cs`, `hu`, `ro`, `ru`, `uk`, `el`; Serbian would use `sr_Latn`, which iOS 27.2 doesn't have, nor a
   Croatian one); where the iPhone has none
   they stay off except your own text replacements, and the English contractions
   and typo list (`i` → `I`) apply only to English. Neighbouring-key costs follow
@@ -1049,10 +1143,12 @@ never at a launch by itself.
   counts as one such fix, and so does σ where the word ends in ς ("καλημερα" → "καλημέρα",
   "λογοσ" → "λόγος"); Greek fixes are checked against a stub dictionary too. Czech likewise:
   every háček or čárka left out counts as one such fix ("cesky" → "český", "prilis" →
-  "příliš"), checked against a stub dictionary. A two-letter non-word one
+  "příliš"), checked against a stub dictionary, and Hungarian too ("koszonom" → "köszönöm",
+  "kesobb" → "később"), while a word of its own keeps its spelling ("meg" and "kor" stay
+  though "még" and "kör" exist). A two-letter non-word one
   neighbouring key (or one swap) from a very common two-letter word is fixed too
-  ("tk" → "to", Spanish "nl" → "no"; `KeyboardLanguage.commonTwoLetterWords`, English,
-  Spanish and Italian only). Auto-capitalization is unchanged.
+  ("tk" → "to", Spanish "nl" → "no", Hungarian "es" → "és"; `KeyboardLanguage.commonTwoLetterWords`,
+  English, Spanish, Italian and Hungarian). Auto-capitalization is unchanged.
   The 123 and #+= pages are English's in every language but Greek (above); their held keys follow each
   language's system keyboard where it differs (# holds № in Russian and Ukrainian, the
   digits º and ª in Spanish and Italian, . holds · in French, $ holds ₴ in Ukrainian and
@@ -1063,7 +1159,13 @@ never at a launch by itself.
   panel's top row, the Logging mark), with Apple's 8 pt under it, so row 1's keycaps
   start 46 pt down and the keys stay on Apple's rows (Apple's keys overlaid on Hex's,
   iPhone 17 Pro, iOS 27.2 simulator): 247 pt on an iPhone 17 or 17 Pro, 254 pt on an SE,
-  266 pt on an Air or Pro Max. The words are on Apple's line, 26 pt above the keys and
+  266 pt on an Air or Pro Max. Apple's keyboard draws other rows before iOS 27 (iOS 26.2 and
+  26.5 simulators, iPhone 12, 16, 17 Pro, Air and 17 Pro Max, beside Hex in the same field):
+  the same keycaps, but upright its panel is 7 pt taller under the keys on an 844 to 874 pt
+  iPhone and 2 pt shorter on a 900 pt or taller one, so on iOS 26 Hex's rows sit 7 pt higher
+  (row 4 whole, 254 pt) or 2 pt lower (264 pt) to stay on Apple's (`KeyboardMetrics.appleRowsAreIOS26`);
+  the SE is the same on both. iOS 18 is unmeasured (the Studio has no iOS 18 simulator) and
+  keeps the iOS 27 rows Hex drew there before. The words are on Apple's line, 26 pt above the keys and
   20 pt below the keyboard's top edge; an autocorrection is a small 18 pt chip around
   its word, and the pills (the Hex key, the recording bar) are 28 pt, 6 pt down, so
   nothing touches the top edge. iOS draws about 17 pt of its own panel above a
@@ -1071,7 +1173,10 @@ never at a launch by itself.
   27.2: Notes has it, a Safari form's first focus doesn't; Gboard and SwiftKey get the
   same), and a keyboard can't tell which, so the strip carries its own room: the 27 pt
   strip it replaces left the words 9 pt under the edge whenever iOS added nothing.
-  Turned, the strip is 42 pt and the keyboard 204 pt.
+  Turned, the strip is 42 pt and the keyboard 204 pt (32 pt keycaps on a 40 pt pitch); on iOS
+  26 Apple's turned keycaps are 27.33 pt on a 35.33 pt pitch ending 4 pt above the bottom, and
+  Hex's are too, 187.33 pt in all (iOS 18, unmeasured, keeps 204 pt) (the SE keeps iOS 27's turned keys for now: Apple's turned SE
+  on iOS 26 is its upright keyboard across the whole screen).
   Where iOS gives the keyboard a shorter view than it asks for (Spotlight on an iPhone
   17 Pro Max, iOS 27.3, TestFlight: about 20 pt short), the rows fit the height it has:
   the strip keeps its size and the keycaps and the gaps between rows shrink alike
@@ -1080,8 +1185,32 @@ never at a launch by itself.
   model `iPhone19,4`) iOS sets third-party keyboards in an inset platter with a band
   of its own above them, so the strip has no gap there, and the keys follow Apple's
   for each screen: 56 pt rows folded, 59.7 pt unfolded and turned, 51.7 pt unfolded
-  upright, starting as far in from the screen's side as Apple's. Measured in the
-  simulator; unverified on a Duo.
+  upright, starting as far in from the screen's side as Apple's. Folded, the cover
+  screen was measured beside Apple's keyboard on a Duo: its keycaps start 18.5 pt in
+  (54.5 px of 1375 at 2.95 px per point), and row 4 stands on row 3's columns: 123
+  from the edge to a gap before z, the globe on z (without it, space starts there),
+  space up to return, and return from a gap after m to the edge. A Hex key right of
+  space takes m's column, where Apple's dictation key is; left of space it follows the
+  globe and emoji. Its labels are 0.875 of the iPhone's there, as Apple's are: its 123
+  is 70 px wide folded against Hex's 80 at 2.95 px per point. The unfolded postures are
+  measured in the simulator.
+- **Number row (full keyboard, iPhone):** Settings › Keyboard › Number row (off by default,
+  `settings.keyboardNumberRow`, App Group) puts 1 to 0 in a row of their own above row 1, in
+  every language and posture, upright and turned. Off, nothing changes. On, the keyboard
+  grows upward by the row and every row below stays on Apple's lines (iOS keeps a keyboard
+  on the screen's bottom): Apple's iPhone keyboard has no number row, so it follows
+  SwiftKey's (0.85 of a letter row's pitch, the same row gap; Gboard on iPhone has no row,
+  only digits held on row 1): 34.9 pt keycaps and 45.9 pt more keyboard on a 17 Pro (293 pt,
+  granted in a text view, a Safari form and Spotlight on the iOS 27.2 simulator), 47.6 pt on
+  a Pro Max, 34 pt turned. The digits sit on the 123 page's columns, take the gap under the
+  strip as row 1 did, and hold what the 123 page's digits hold (0 holds °). On the 123 page
+  the row hides, since its row 1 is the same digits, but its band stays so nothing jumps, and
+  that row 1 reaches up through it; the #+= page keeps the row. The digits never reach
+  Spatial autocorrect, next-letter touch help or Swipe typing (a drag from a digit is no
+  swipe), and a word holding digits is never corrected. Where iOS gives less height, the
+  number row shrinks with the others (`KeyboardMetrics.fitted`). The iPad keeps Apple's rows
+  for now: its docked keyboards would need Apple's own number row on the 13-inch and room
+  above the strip on the others.
 - **Word suggestions (full keyboard):** The strip above the keys shows the words the engine
   offers as you type, and after a space the finished word's emoji. Settings › Experiments ›
   Hide word suggestions (off by default, `experiments.hideWordSuggestions`, App Group) stops
@@ -1120,15 +1249,40 @@ never at a launch by itself.
   recording bar still spans the top. Every layout splits by the same rule (measured
   against Apple's English split only; AZERTY, QWERTZ, Russian and the rest follow the
   rule unchecked), and every page (123, #+=). Spatial autocorrect reads taps as on the
-  unsplit keyboard (`KeyboardLayout.unsplitX`), so either G is one key. There's no
-  setting: Apple's split follows its own Split Keyboard preference, which a keyboard
-  extension can't read, so Hex splits whenever the Duo is in that posture (the iOS
-  27.2 simulator has Apple's off until `KeyboardShouldSplitInDefaultContext` is set).
+  unsplit keyboard (`KeyboardLayout.unsplitX`), so either G is one key. Apple's split
+  follows its own Split Keyboard preference, which a keyboard extension can't read, so
+  Hex splits whenever the Duo is in that posture (the iOS 27.2 simulator has Apple's off
+  until `KeyboardShouldSplitInDefaultContext` is set). Settings › Experiments › Join the
+  keyboard when unfolded (off by default, `experiments.joinKeyboardWhenUnfolded`, App
+  Group) draws one joined keyboard there instead: unfoldedWide's own 39 pt rows on a
+  51.7 pt row pitch, 19 pt in from the keyboard's own side as unfoldedTall's keys sit
+  from its screen's, with the iPhone's portrait bottom row (123 and the globe to z's
+  right edge, the emoji key on x's column when the globe shows, space after them,
+  return from m). Off, nothing changes.
 - **iPad:** The app is iPhone-only (`TARGETED_DEVICE_FAMILY` 1), but iPadOS runs its keyboard
   extension as an iPad keyboard across the screen, so the full keyboard shows there too
-  (Settings › Keyboard picks it or the dictation bar, as on an iPhone). It keeps the
-  iPhone's rows and takes Apple's iPad key sizes (`KeyboardPadSize`, `KeyboardPadPlacement`,
-  `KeyboardMetrics.pad`), measured beside Apple's keyboard in the iPadOS 27.2 simulator:
+  (Settings › Keyboard picks it or the dictation bar, as on an iPhone). Docked, it has
+  Apple's iPad mini rows on every iPad (`KeyboardPadRows.swift`; the 11- and 13-inch's own,
+  with tab, caps lock and the 13-inch's number row, are a later step): delete ends row 1 and
+  return row 2, a shift key opens and closes row 3, after the letters Apple's two-symbol keys
+  (, and ! then . and ?; AZERTY , and ?, . and !, ' and :), the shifted symbol drawn over the
+  one a tap types and typed with shift (`KeyboardKey.shifted`), and the bottom row the globe,
+  123, the Hex key where Apple's dictation key is (whatever Settings › Hex key says: the strip
+  is all suggestions), the space bar, emoji (or 123 when Emoji is off) where Apple's second
+  123 is, and the hide-keyboard key. The letter keys are as wide as the longest row allows
+  with its delete or return at least 1.236 and 1.24 letters wide (English 54.5 pt, French
+  53.25 pt on the mini upright), row 2 is set in 0.4 of a key pitch (0.2 where it holds as
+  many letters as row 1, as AZERTY's does), the left shift is a letter wide (1.061 on AZERTY),
+  and delete, return and the right shift take what's left; the bottom row's keys are the same
+  in every language. The 123 and #+= pages follow Apple's: digits and delete, @ # $ & * ( ) '
+  " (€ £ ¥ _ ^ [ ] { } on #+=) and return, a page key either side of % - + = / ; : and the two
+  two-symbol keys (§ | ~ … \ < > ! ? on #+=), and row 4 as the letters' with ABC; Hex has no
+  undo or redo key there, so ABC takes the room of Apple's undo and second ABC.
+  German is QWERTZ without ü, ö and ä as Apple's iPad German is, holding them on u, o and a.
+  Measured against Apple's iPad mini in English, German and French (every key within a point);
+  the other languages' rows follow the same rule unmeasured. Docked, a held key's accents open
+  in Apple's iPad cells (below). The sizes are Apple's iPad key sizes (`KeyboardPadSize`,
+  `KeyboardPadPlacement`, `KeyboardMetrics.pad`), measured beside Apple's keyboard in the iPadOS 27.2 simulator:
   docked, Apple's key heights, row pitch, gaps and side inset for the iPad mini (under 800 pt
   across), 11-inch and 13-inch (1,000 pt and up), upright or turned, so its four rows sit
   exactly on Apple's bottom four (letters and the bottom row; the 13-inch's number row and
@@ -1140,14 +1294,27 @@ never at a launch by itself.
   iPadOS always adds its own 55 pt bar above a docked keyboard (undo, redo, paste; empty in
   Windowed Apps), and in some apps it draws that bar over the keyboard's top instead (Notes on
   an iPad mini, iPadOS 26.6, TestFlight). So Hex is taller than Apple's (353 against 282 pt
-  on the mini and 11-inch upright). Docked, the bottom row ends in Apple's hide-keyboard key,
-  the labels keep their upright sizes turned, and keys show no balloons, as Apple's don't.
+  on the mini and 11-inch upright). Docked, the labels keep their upright sizes turned, and
+  keys show no balloons, as Apple's don't.
   Floating (iPadOS makes every keyboard 320 pt wide, with no bar above and its own globe and
   dictation band below), Hex is Apple's floating keyboard: 26 × 38.25 pt keys on a 54.3 pt
   pitch, 35.5 pt shift and delete, 123, space and return on row 3's columns, and the strip
   where Apple's bar is, 271 pt in all as Apple's; it shows no globe of its own there.
   iPadOS grants a custom keyboard any height it asks for (up to 900 pt tried); one that asks
-  for none gets 258 pt (343 turned) on the 11-inch.
+  for none gets 258 pt (343 turned) on the 11-inch. It always lays a third-party keyboard out
+  at that default first and switches to the height asked for about 15 to 20 ms after
+  `viewDidAppear`, even when the height was set before the view had a window (iPhone: 216 to
+  247 pt), and a tap while the keyboard still moves lands where the key was a frame earlier.
+  Measured with a scratch build logging every touch and layout (iPadOS 27.2 simulators, three
+  at once): taps 100, 200, 400 and 800 ms after the keyboard appeared, 100 launches each, all
+  went in on an 11-inch docked (400 of 400) and floating (399; one second tap never reached the
+  keyboard), as on an iPhone 17 Pro (399; one first tap at 100 ms typed the key above). Launched
+  into a turn, at the same moment after launch Hex takes taps sooner than Apple's keyboard
+  (1.4 s: 75 of 80 against 2 of 80; from 1.6 s both every one); earlier the keyboard is still
+  sliding in. Docked, a held key's accents show in Apple's iPad cells, half a key wide and
+  53 pt tall, two rows once there are more than five (`AccentMenu.padArrangement`,
+  `KeyboardMetrics.accentCellWidth`); floating, as on an iPhone. In the floating keyboard's
+  emoji panel the category icons shrink to fit its 18.6 pt slots (17 pt in 22 pt and wider).
 - **Touch targets (full keyboard):** Every point of the key area types a key: gaps
   split down the middle, the outer keys reach the screen's edges, and row 1 also
   takes the 8 pt gap under the strip (on the Duo, the strip's bottom 4 pt below its
@@ -1611,11 +1778,16 @@ dataset's download and its `convert.py` command.
 - **Keyboard languages:** `KeyboardLayoutTests` cover the list (resolution, switching,
   space-bar label, pairing, migration, the dictation pick, English & Spanish's keys,
   dictation following the keyboard, Spanish's Americas variants and the iPhone's Region),
+  `HangulComposerTests` the two-set composer and the keyboard typing through it,
   `FullKeyboardEngineTests` the swipe against the
   hold-then-slide trackpad and switching in a `FullKeyboardView` (English & Spanish too,
   and a picked Spanish variant surviving the swipe away and back), and
   `AutocorrectEngineTests` bilingual autocorrect on stub dictionaries and iOS's own
-  (`testABilingualKeyboardKeepsBothLanguagesWords` prints the break counts). Checked live in
+  (`testABilingualKeyboardKeepsBothLanguagesWords` prints the break counts). Hungarian's
+  QWERTZ rows and held vowels, typing through them in a `FullKeyboardView`, and its accent
+  fixes are unit tests too (`testHungariansRowsAndHoldMatchItsLayout`,
+  `testHungarianTypesAndSwitches`, `testHungarianRestoresMissingDiacritics`); no
+  simulator or iPhone typed on its keys for this change. Checked live in
   Messages in the simulator (English, Français, Русский). Memory (Release, iPhone 17 Pro
   simulator, iOS 27.2, Full Access, three runs, `footprint` after typing a sentence): Français
   alone 28.7–28.8 MB, with English beside it 29.7–29.9 MB; English alone 28.9–29.9 MB, with

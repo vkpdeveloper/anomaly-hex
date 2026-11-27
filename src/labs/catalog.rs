@@ -87,8 +87,12 @@ impl Feature {
             | Self::HoldThroughKeys
             | Self::ModesEditor
             | Self::VocabularyFiles
+            | Self::Hinglish
             | Self::AnnotateAgentTools
-            | Self::AnnotateAgentInstall => Audience::Everyone,
+            | Self::AnnotateAgentInstall
+            | Self::PhoneDictation
+            | Self::Signature
+            | Self::DictationStyle => Audience::Everyone,
         }
     }
 
@@ -129,7 +133,10 @@ impl Feature {
             | Self::KeepRecordings
             | Self::HideMenuBarIcon => 20261102,
             Self::GnomeClipboardRestore | Self::NotchIndicator => 20261103,
-            Self::GnomeMeetingCapsules | Self::Screenshots | Self::AnnotateReplay => 20261104,
+            Self::GnomeMeetingCapsules
+            | Self::Screenshots
+            | Self::AnnotateReplay
+            | Self::PhoneDictation => 20261104,
             Self::MeetingImport => 20261106,
             Self::LiveTyping | Self::CapsLockDictation | Self::FailureNotices | Self::TypedText => {
                 20261107
@@ -156,9 +163,11 @@ impl Feature {
             | Self::AnnotatePointerScreen
             | Self::FasterLiveText
             | Self::VocabularyFiles => 20261120,
-            Self::LearnFromCorrections | Self::AnnotateAgentTools | Self::AnnotateAgentInstall => {
-                20261121
-            }
+            Self::LearnFromCorrections
+            | Self::AnnotateAgentTools
+            | Self::AnnotateAgentInstall
+            | Self::Signature => 20261121,
+            Self::Hinglish | Self::DictationStyle => 20261122,
         }
     }
 
@@ -179,6 +188,9 @@ impl Feature {
         if key == "labs.unload_idle_minutes" {
             return Some(Self::UnloadIdle);
         }
+        if key == "labs.phone_dictation_port" {
+            return Some(Self::PhoneDictation);
+        }
         if key == "labs.keep_microphone_open_seconds" {
             return Some(Self::KeepMicrophoneOpen);
         }
@@ -190,6 +202,12 @@ impl Feature {
         }
         if key == "labs.stop_phrase_text" {
             return Some(Self::StopPhrase);
+        }
+        if key == "labs.signature_text" {
+            return Some(Self::Signature);
+        }
+        if key == "labs.dictation_style_choice" {
+            return Some(Self::DictationStyle);
         }
         if key == "labs.caps_lock_light" {
             return Some(Self::CapsLockDictation);
@@ -276,6 +294,7 @@ impl Feature {
             // Only builds with the capture build option have it.
             Self::AnnotateReplay => MACOS,
             Self::Playground
+            | Self::PhoneDictation
             | Self::KeyboardModelSwitching
             | Self::LiveText
             | Self::FasterLiveText
@@ -307,8 +326,11 @@ impl Feature {
             | Self::StopPhrase
             | Self::ModesEditor
             | Self::VocabularyFiles
+            | Self::Hinglish
             | Self::AnnotateAgentTools
-            | Self::AnnotateAgentInstall => EVERY,
+            | Self::AnnotateAgentInstall
+            | Self::Signature
+            | Self::DictationStyle => EVERY,
         }
     }
 
@@ -370,6 +392,7 @@ impl Feature {
             Self::AnnotatePointerScreen => "annotate-pointer-screen",
             Self::Screenshots => "screenshots",
             Self::AnnotateReplay => "annotate-replay",
+            Self::PhoneDictation => "phone-dictation",
             Self::MeetingImport => "meeting-import",
             Self::CapsLockDictation => "caps-lock-dictation",
             Self::OpenCodeInWsl => "opencode-in-wsl",
@@ -391,8 +414,11 @@ impl Feature {
             Self::ModesEditor => "modes-editor",
             Self::PasteLastPicker => "paste-last-picker",
             Self::VocabularyFiles => "vocabulary-files",
+            Self::Hinglish => "hinglish",
             Self::AnnotateAgentTools => "annotate-agent-tools",
             Self::AnnotateAgentInstall => "annotate-agent-install",
+            Self::Signature => "signature",
+            Self::DictationStyle => "dictation-style",
         }
     }
 
@@ -454,6 +480,7 @@ impl Feature {
             Self::AnnotatePointerScreen => "labs.annotate_pointer_screen",
             Self::Screenshots => "labs.screenshots",
             Self::AnnotateReplay => "labs.annotate_replay",
+            Self::PhoneDictation => "labs.phone_dictation",
             Self::MeetingImport => "labs.meeting_import",
             Self::CapsLockDictation => "labs.caps_lock_dictation",
             Self::OpenCodeInWsl => "labs.opencode_in_wsl",
@@ -475,8 +502,11 @@ impl Feature {
             Self::HoldThroughKeys => "labs.hold_through_keys",
             Self::ModesEditor => "labs.modes_editor",
             Self::VocabularyFiles => "labs.vocabulary_files",
+            Self::Hinglish => "labs.hinglish",
             Self::AnnotateAgentTools => "labs.annotate_agent_tools",
             Self::AnnotateAgentInstall => "labs.annotate_agent_install",
+            Self::Signature => "labs.signature",
+            Self::DictationStyle => "labs.dictation_style",
         }
     }
 

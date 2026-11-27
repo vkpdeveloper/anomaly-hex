@@ -60,6 +60,7 @@ pub enum Feature {
     AnnotatePointerScreen,
     Screenshots,
     AnnotateReplay,
+    PhoneDictation,
     MeetingImport,
     CapsLockDictation,
     OpenCodeInWsl,
@@ -81,12 +82,15 @@ pub enum Feature {
     DropTranscribe,
     PasteLastPicker,
     VocabularyFiles,
+    Hinglish,
     AnnotateAgentTools,
     AnnotateAgentInstall,
+    Signature,
+    DictationStyle,
 }
 
 impl Feature {
-    pub const ALL: [Self; 78] = [
+    pub const ALL: [Self; 82] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -142,6 +146,7 @@ impl Feature {
         Self::AnnotatePointerScreen,
         Self::Screenshots,
         Self::AnnotateReplay,
+        Self::PhoneDictation,
         Self::MeetingImport,
         Self::CapsLockDictation,
         Self::OpenCodeInWsl,
@@ -163,7 +168,10 @@ impl Feature {
         Self::DropTranscribe,
         Self::PasteLastPicker,
         Self::VocabularyFiles,
+        Self::Hinglish,
         Self::AnnotateAgentTools,
         Self::AnnotateAgentInstall,
+        Self::Signature,
+        Self::DictationStyle,
     ];
 }

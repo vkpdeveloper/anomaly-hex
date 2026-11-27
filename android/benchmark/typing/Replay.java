@@ -165,7 +165,12 @@ public final class Replay {
         boolean hasIos=false;
         TypingModel model=TypingModel.Companion.file(new File(args[0]),lang);
         // `MODEL SET LANG OUT [GEOMETRY]`: with a measured geometry, any number of sentences.
-        KeyGrid grid=args.length>4 ? geometry(args[4]) : originalGeometry(lang); TypingWord state=new TypingWord(new SpatialDecoder(model), true);
+        KeyGrid base=args.length>4 ? geometry(args[4]) : originalGeometry(lang); KeyGrid grid=base; TypingWord state=new TypingWord(new SpatialDecoder(model), true);
+        // TOUCH_BIAS=dx,dy: a thumb that lands that many key pitches off every key. TOUCH_LEARN=1: the keyboard learns
+        // it from the words it finishes (TouchOffsets), as it does for you; the grid then aims at what it learned.
+        String biasText=System.getenv("TOUCH_BIAS"); String[] bias=biasText==null ? null : biasText.split(",");
+        TouchOffsets touch="1".equals(System.getenv("TOUCH_LEARN")) ? new TouchOffsets() : null;
+        if(touch!=null) grid=touch.personalised(base);
         apostropheKey=lang.equals("fr")&&cells==null ? new KeyPoint(201+3*39.5,66.5+56*2) : null;
         boolean apostropheOnLetters=lang.equals("fr");
         kept.add(state);
@@ -199,6 +204,7 @@ public final class Replay {
                 boolean tracked=true;
                 for(int i=0;i<typed.length();i++) {
                     char key=typed.charAt(i); double x=taps.getJSONArray(i).getDouble(0), y=taps.getJSONArray(i).getDouble(1);
+                    if(bias!=null) { x+=Double.parseDouble(bias[0])*base.getPitchX(); y+=Double.parseDouble(bias[1])*base.getPitchY(); }
                     long start=System.nanoTime();
                     // As the keyboard: a touch on a letter key, or on French's apostrophe key among them, types
                     // the likelier neighbour when it is near enough (the engine leaves a word it isn't reading alone).
@@ -216,6 +222,11 @@ public final class Replay {
                             out.replace(out.length()-fix.getOriginal().length(),out.length(),fix.getReplacement());
                         }
                         out.append(' '); String before=out.toString(); state.reset(before); shown=predictions(state,before);
+                        TypingWord.Touched t=state.takeTouched();
+                        if(touch!=null&&t!=null) {
+                            String[] done=before.trim().split("\\s+"); String committed=done[done.length-1].replaceAll("[^\\p{L}]","");
+                            if(TouchOffsets.Companion.alike(t.getTyped(),committed)&&touch.learn(committed,t.getPoints(),t.getGrid())) grid=touch.personalised(base);
+                        }
                     } else {
                         tracked=true;
                         state.letter(String.valueOf(key),x,y,grid); out.append(key); shown=strip(state);

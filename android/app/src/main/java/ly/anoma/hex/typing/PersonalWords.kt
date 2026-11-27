@@ -15,19 +15,24 @@ internal interface Lexicon {
 /** Your own words and text shortcuts from Android's personal dictionary (`UserDictionary.Words`),
  * as iOS reads `UILexicon`: the decoder reads taps as them (a word you added is a word, scored as a
  * moderately common one), the strip completes them, a word typed in lowercase takes the capitals you
- * gave it ("github" -> "GitHub") unless it is also an ordinary word ("will"), and a shortcut is
- * replaced by its phrase (`replacement`). Words in the model's alphabet only; nothing is written. */
-internal class PersonalWords(private val model: TypingModel, words: Collection<String>, shortcuts: Map<String, String>) : Lexicon {
+ * gave it ("github" -> "GitHub") unless it is also an ordinary word ("will"), and a shortcut typed
+ * offers its phrase ([shortcut]). [learned] are those of [words] that are yours only because you
+ * wrote them ([LearnedWords.yours]): read as words like the rest, but not [added], so the strip ranks
+ * them by how much you use them. Words in the model's alphabet only; nothing is written. */
+internal class PersonalWords(private val model: TypingModel, words: Collection<String>, shortcuts: Map<String, String>,
+                             hidden: (String) -> Boolean = { false }, learned: Collection<String> = emptyList()) : Lexicon {
     private val codes: Array<ByteArray>
     private val texts: Array<String>
     private val lookup = HashMap<String, Int>()
     // Lowercase shortcut -> phrase as stored.
     private val shortcuts = shortcuts.mapKeys { it.key.lowercase() }
+    private val learned = learned.mapTo(HashSet()) { it.lowercase() }
 
     init {
         val byCodes = LinkedHashMap<String, Pair<ByteArray, String>>()
         for (word in words) {
             val lower = word.lowercase()
+            if (hidden(lower)) continue
             if (lower.length !in 2..TypingWord.MAX_LENGTH || lower.any { !it.isLetter() && it != '\'' }) continue
             val encoded = ByteArray(lower.length)
             var ok = true
@@ -61,9 +66,23 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
 
     /** Your words that start with `prefix` and are longer, in your spelling. */
     fun completions(prefix: String): List<String> {
-        val lower = prefix.lowercase()
-        return texts.filter { it.length > prefix.length && it.lowercase().startsWith(lower) }.sortedBy { it.length }
+        last?.let { if (it.first == prefix) return it.second }
+        // The words sharing the prefix's letters are one run of the sorted list.
+        var lo = 0; var hi = codes.size
+        for ((depth, c) in prefix.lowercase().withIndex()) {
+            val code = model.code(c)
+            val run = if (code == 0 || lo >= hi) 0L else child(lo, hi, depth, code)
+            if (run == 0L) { lo = 0; hi = 0; break }
+            lo = (run ushr 32).toInt(); hi = run.toInt()
+        }
+        val found = ArrayList<String>()
+        for (i in lo until hi) if (texts[i].length > prefix.length) found.add(texts[i])
+        // The strip asks twice per keystroke and again at its pause for the same prefix.
+        return found.sortedBy { it.length }.also { last = prefix to it }
     }
+    @Volatile private var last: Pair<String, List<String>>? = null
+    /** The [completions] you added yourself (the personal dictionary, a contact, the computer's words), not [learned] ones. */
+    fun added(prefix: String) = completions(prefix).let { all -> if (learned.isEmpty()) all else all.filter { it.lowercase() !in learned } }
 
     /** Your phrase for a shortcut typed as [typed], cased as Apple's keyboard writes it (#2153, #2173):
      * a shortcut typed with a leading capital, but not all capitals, capitalises the phrase's first
@@ -73,22 +92,6 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         val letters = typed.filter { it.isLetter() }
         val leading = typed.first().isUpperCase() && (letters.length < 2 || letters != letters.uppercase())
         return if (leading && stored.first().isLowerCase()) stored.replaceFirstChar { it.uppercase() } else stored
-    }
-
-    /** The text replacement whose shortcut ends `before` (the text before the cursor), as space, a
-     * closing mark or return finds it (iOS AutocorrectEngine.textReplacement): the longest one at a word
-     * boundary, digits and dots allowed ("ad2", "s.o"), after a bracket or comma ("(myem", "hi,myem"),
-     * never the end of a longer word ("xmyem"). Null when none ends the text. */
-    fun replacement(before: String): Correction? {
-        if (shortcuts.isEmpty() || before.lastOrNull()?.isWhitespace() != false) return null
-        val chunk = before.takeLast(64).takeLastWhile { !it.isWhitespace() }
-        fun joins(c: Char) = c.isLetterOrDigit() || c == '\'' || c == '\u2019'
-        for (start in chunk.indices) {
-            if (start > 0 && joins(chunk[start - 1]) && joins(chunk[start])) continue
-            val typed = chunk.substring(start)
-            shortcut(typed)?.let { return Correction(typed, it) }
-        }
-        return null
     }
 
     companion object {
@@ -102,33 +105,54 @@ internal class PersonalWords(private val model: TypingModel, words: Collection<S
         private const val LIMIT = 5_000
 
         /** Whether a personal dictionary entry's locale ("en_US", "nb_NO", none for every language)
-         * applies to the model's language; Bokmål also takes "no". */
+         * applies to the model's language; Bokmål also takes "no", and Hinglish English's and Hindi's. */
         fun applies(locale: String?, language: String) = locale.isNullOrEmpty() ||
-            locale.substringBefore('_').lowercase().let { it == language || (language == "nb" && it == "no") }
+            locale.substringBefore('_').lowercase().let {
+                it == language || (language == "nb" && it == "no") || (language == "hien" && (it == "en" || it == "hi"))
+            }
 
-        /** The personal dictionary's words and shortcuts for the model's language (or every language).
+        /** The personal dictionary's words and shortcuts for the model's language (or every language),
+         * with the words you've written that the model lacks ([learned], `LearnedWords.yours`) and the
+         * paired computer's [replacements] and your [contactNames] ([of]).
          * Android lets only an enabled input method or spell checker read it, with no permission, and
          * answers anyone else with nothing; any failure reads as nothing. Read it off the main thread. */
-        fun read(resolver: ContentResolver, model: TypingModel): PersonalWords {
-            val words = ArrayList<String>()
-            val shortcuts = HashMap<String, String>()
+        fun read(resolver: ContentResolver, model: TypingModel, learned: Collection<String> = emptyList(),
+                 replacements: Replacements = Replacements.None, contactNames: Collection<String> = emptyList(),
+                 forgotten: Forgotten? = null): PersonalWords {
+            val dictionary = ArrayList<Pair<String, String>>()
             try {
                 resolver.query(UserDictionary.Words.CONTENT_URI,
                     arrayOf(UserDictionary.Words.WORD, UserDictionary.Words.SHORTCUT, UserDictionary.Words.LOCALE),
                     null, null, null)?.use { cursor ->
-                    while (cursor.moveToNext() && words.size + shortcuts.size < LIMIT) {
+                    while (dictionary.size < LIMIT && cursor.moveToNext()) {
                         if (!applies(cursor.getString(2), model.language)) continue
                         val word = cursor.getString(0)?.trim().orEmpty()
-                        if (word.isEmpty()) continue
-                        val shortcut = cursor.getString(1)?.trim().orEmpty()
-                        if (shortcut.isNotEmpty() && !shortcut.equals(word, ignoreCase = true)) shortcuts[shortcut] = word
-                        else words.add(word)
+                        if (word.isNotEmpty()) dictionary.add(word to cursor.getString(1)?.trim().orEmpty())
                     }
                 }
             } catch (_: RuntimeException) {
-                return PersonalWords(model, emptyList(), emptyMap())
+                dictionary.clear()
             }
-            return PersonalWords(model, words, shortcuts)
+            return of(model, dictionary, learned, replacements, contactNames, forgotten)
+        }
+
+        /** Your words from every source: the personal dictionary's entries (a word and its shortcut, or ""
+         * for none), at most [LIMIT] of them however many words you've written, then [learned], your
+         * [contactNames] and the paired computer's [replacements]. A word in several keeps the first one's
+         * capitals, and your own shortcut wins one the computer also has. A [forgotten] word is left out. */
+        fun of(model: TypingModel, dictionary: List<Pair<String, String>>, learned: Collection<String> = emptyList(),
+               replacements: Replacements = Replacements.None, contactNames: Collection<String> = emptyList(),
+               forgotten: Forgotten? = null): PersonalWords {
+            val words = ArrayList<String>()
+            val shortcuts = HashMap<String, String>()
+            for ((word, shortcut) in dictionary.take(LIMIT)) {
+                if (shortcut.isNotEmpty() && !shortcut.equals(word, ignoreCase = true)) shortcuts[shortcut] = word
+                else words.add(word)
+            }
+            val mine = shortcuts.keys.mapTo(HashSet()) { it.lowercase() }
+            val added = (words + contactNames + replacements.words + shortcuts.values).mapTo(HashSet()) { it.lowercase() }
+            return PersonalWords(model, words + learned + contactNames + replacements.words, replacements.shortcuts.filterKeys { it !in mine } + shortcuts,
+                { forgotten?.contains(it) == true }, learned.filter { it.lowercase() !in added })
         }
     }
 }

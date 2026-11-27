@@ -267,6 +267,10 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
             crate::local_api::processing::dictation_processor(processing.clone()),
         )),
     );
+    // Labs › Phone dictation: idle until its setting asks for it.
+    let phone_dictation = crate::local_api::phone::PhoneDictation::start(
+        crate::local_api::processing::dictation_processor(processing.clone()),
+    );
     let quit = window.clone();
     let runtime_tray = tray.clone();
     let runtime_shared = shared.clone();
@@ -327,6 +331,7 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
     if let Some(meetings) = meetings {
         meetings.join();
     }
+    drop(phone_dictation);
     drop(requests);
     let _ = runtime.join();
     drop(local_api);

@@ -1,0 +1,14 @@
+<!-- Hex's spell checker. It checks against the keyboard's layout, whatever the subtype; the subtypes
+     only let the phone pick it for its own language (the label is that language's name). They name
+     subtypeLocale, not languageTag: Android matches a session's locale on it, and with no match it
+     opens no session. -->
+<spell-checker xmlns:android="http://schemas.android.com/apk/res/android"
+    android:label="@string/app_name">
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="en" />
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="hi" />
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="es" />
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="de" />
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="nb" />
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="fr" />
+    <subtype android:label="@string/spell_checker_subtype" android:subtypeLocale="it" />
+</spell-checker>

@@ -1,141 +1,480 @@
 package ly.anoma.hex.keyboard
 
 import android.Manifest
-import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.inputmethodservice.InputMethodService
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.provider.ContactsContract
 import android.provider.UserDictionary
-import java.util.concurrent.Executors
-import android.inputmethodservice.InputMethodService
 import android.view.View
 import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.InlineSuggestionsResponse
+import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import ly.anoma.hex.R
-import ly.anoma.hex.speech.LocalSpeech
-import ly.anoma.hex.speech.MicCapture
-import ly.anoma.hex.speech.SpeechPhase
-import ly.anoma.hex.speech.SpeechOptions
-import ly.anoma.hex.speech.SpeechPreferences
+import ly.anoma.hex.fix.Fix
+import ly.anoma.hex.fix.TinyfixFiles
+import ly.anoma.hex.relay.HexClient
+import ly.anoma.hex.relay.HexError
 import ly.anoma.hex.speech.Spoken
+import ly.anoma.hex.typing.ContactNames
+import ly.anoma.hex.typing.EmailAddresses
+import ly.anoma.hex.typing.EmojiWords
+import ly.anoma.hex.typing.NextWordModel
+import ly.anoma.hex.typing.NextWords
+import ly.anoma.hex.typing.Forgotten
+import ly.anoma.hex.typing.LearnedPhrases
+import ly.anoma.hex.typing.LearnedWords
 import ly.anoma.hex.typing.PersonalWords
+import ly.anoma.hex.typing.Replacements
 import ly.anoma.hex.typing.SpatialDecoder
+import ly.anoma.hex.typing.TouchOffsets
+import ly.anoma.hex.typing.TypoMemory
 import ly.anoma.hex.typing.TypingModel
 import ly.anoma.hex.typing.TypingPreferences
+import ly.anoma.hex.typing.TypingStats
 
-/** The input method: the editor's lifecycle, the views and dictation. Typing lives in [KeyboardEngine]. */
-/** Dictation's notes arrive from MicCapture as English sentences: the ones a person sees, in the phone's
- * language (one not listed here shows as it is). */
-internal fun Context.speechNote(note: String?) = when (note) {
-    "Allow the microphone in Hex" -> getString(R.string.keyboard_hint_microphone)
-    "Microphone unavailable. Try again." -> getString(R.string.keyboard_note_microphone)
-    "Couldn’t transcribe. Try again." -> getString(R.string.keyboard_note_transcribe)
-    "No speech heard" -> getString(R.string.keyboard_note_no_speech)
-    "Speech model unavailable" -> getString(R.string.keyboard_note_model)
-    else -> note
-}
-
+/** The input method: the editor's lifecycle, the views and dictation. Typing lives in [KeyboardEngine];
+ * dictation records here and is transcribed by Hex on the paired computer ([Dictation]). */
 class HexKeyboard : InputMethodService() {
     private var view: KeyboardView? = null
-    private lateinit var capture: MicCapture
-    internal val preferences by lazy { SpeechPreferences(this) }
-    internal var nextEnglish: Boolean? = null
-    /** The options the dictation in flight started with: its language decides mid-sentence case. */
     internal val feedback by lazy { TypingPreferences(this) }
-    internal val layoutLanguage get() = feedback.layout ?: preferences.spoken.layout ?: Spoken.English
-    // Android's personal dictionary is read off the main thread, and again whenever it changes.
-    private val words = Executors.newSingleThreadExecutor { Thread(it, "Hex personal words") }
+    internal val layoutLanguage get() = feedback.layout ?: Spoken.system()
+    // Android's personal dictionary is read off the main thread, and again whenever it changes. Work
+    // that arrives once the keyboard is destroyed (a save posted late) is dropped, never a crash.
+    private val words = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue(),
+        { Thread(it, "Hex personal words") }, ThreadPoolExecutor.DiscardPolicy())
+    // The next-word model works on its own thread, so reading the dictionary never delays the strip.
+    private val nextWork = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue(),
+        { Thread(it, "Hex next words") }, ThreadPoolExecutor.DiscardPolicy())
+    private val nextWords by lazy { NextWords({ NextWordModel.asset(assets) }, nextWork) }
     private val dictionaryChanged = object : ContentObserver(Handler(Looper.getMainLooper())) {
         override fun onChange(selfChange: Boolean) = engine.personalWordsChanged()
     }
+    // What you write, learned by the engine, saved a few seconds after it changes and topped up from the
+    // paired computer's Hex History. Nothing is saved before the file has been read, so a save never loses it.
+    private val learned = LearnedWords()
+    // The runs of words you write, offered as one chip; saved and forgotten with [learned].
+    private val phrases = LearnedPhrases()
+    // Where your taps land on the keys, learned and saved with [learned] and forgotten with it.
+    private val touch = TouchOffsets()
+    private val touchFile by lazy { File(filesDir, TouchOffsets.FILE) }
+    // The slips you fix the same way often, saved with [learned] and forgotten with it.
+    private val typos = TypoMemory()
+    // How much the strip and autocorrect help, counted by the engine and saved with [learned].
+    private val stats = TypingStats()
+    private val learnedFile by lazy { File(filesDir, LearnedWords.FILE) }
+    @Volatile private var learnedLoaded = false
+    private val main = Handler(Looper.getMainLooper())
+    private val saveLearned = Runnable { saveWords() }
+    /** Both stores lock themselves, so they are written out on [words] too: serializing a full store
+     * costs tens of milliseconds, which a main-thread turn must not spend. */
+    private fun saveWords() {
+        words.execute { writeLearned(learned.write(), LearnedWords.FILE); writeLearned(touch.write(), TouchOffsets.FILE); writeLearned(typos.write(), TypoMemory.FILE); writeLearned(stats.write(), TypingStats.FILE) }
+        words.execute { writeLearned(phrases.write(), LearnedPhrases.FILE) }
+    }
+    private fun learnedChanged() {
+        if (!learnedLoaded) return
+        main.removeCallbacks(saveLearned); main.postDelayed(saveLearned, SAVE_DELAY_MS)
+    }
+    private fun writeLearned(text: String, name: String) {
+        val partial = File(filesDir, "$name.partial")
+        runCatching { partial.writeText(text); partial.renameTo(File(filesDir, name)) }
+    }
+    // The words you forgot from the strip, saved at once (a user action, rare) and read with the learned ones.
+    private val forgotten = Forgotten()
+    private fun forgottenChanged() {
+        val text = forgotten.write()
+        words.execute {
+            val partial = File(filesDir, Forgotten.FILE + ".partial")
+            runCatching { partial.writeText(text); partial.renameTo(File(filesDir, Forgotten.FILE)) }
+        }
+    }
+    // The emoji you pick for words, kept beside the emoji panel's recent ones, and each layout's emoji
+    // words, read on first use. The strip offers its layout's lists (English's with slang, Hinglish's
+    // with slang and English's); search looks through every list and Unicode's names, the layout's first.
+    private val emojiPrefs by lazy { getSharedPreferences("emoji", MODE_PRIVATE) }
+    private val emojiPicks by lazy { EmojiWords.Picks.read(emojiPrefs.getString(EMOJI_PICKS, "").orEmpty()) }
+    internal val emojiRecent by lazy { EmojiRecent(emojiPrefs) }
+    internal val emojiTones by lazy { EmojiTones(emojiPrefs) }
+    private val emojiLists = HashMap<String, EmojiWords>()
+    private val emojiFiles = HashMap<String, Map<String, List<String>>>()
+    private val emojiNames by lazy { EmojiWords.Named.parse(asset("typing/emoji.names")) }
+    private fun asset(name: String) = assets.open(name).bufferedReader().use { it.readText() }
+    private fun emojiFile(name: String) = emojiFiles.getOrPut(name) { EmojiWords.parse(asset("typing/$name.emoji")) }
+    private fun emojiLists(language: String): EmojiWords {
+        emojiLists[language]?.let { return it }
+        val strip = when (language) {
+            Spoken.English.code -> listOf("en", "slang")
+            Spoken.Hinglish.code -> listOf("hien", "slang", "en")
+            else -> emptyList()
+        }
+        val searched = strip + listOf("en", "hien", "slang").filter { it !in strip }
+        val paint = android.graphics.Paint()
+        return EmojiWords(strip.map(::emojiFile), emojiNames, searched.map(::emojiFile), suggests = strip.isNotEmpty(),
+            shows = paint::hasGlyph).also { emojiLists[language] = it }
+    }
+    // The email addresses the strip offers: the phone's accounts, read once, and the signed-in accounts
+    // and your contacts' while
+    // Settings › Keyboard's switch and the Contacts permission are both on, read again a little after
+    // they change (a sync changes many at once).
+    private val emails = EmailAddresses()
+    // Your contacts' names are words too: typed or swiped right, completed with their capitals. In memory only.
+    @Volatile private var contactNames: List<String> = emptyList()
+    private val readContacts = Runnable {
+        words.execute {
+            val allowed = contactsAllowed()
+            emails.contacts = if (allowed) EmailAddresses.contacts(contentResolver) else emptyList()
+            emails.signedIn = if (allowed) EmailAddresses.signedIn(contentResolver) else emptyList()
+            contactNames = if (allowed) ContactNames.read(contentResolver) else emptyList()
+            main.post { engine.personalWordsChanged() }
+        }
+    }
+    private val contactsChanged = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) { main.removeCallbacks(readContacts); main.postDelayed(readContacts, CONTACTS_DELAY_MS) }
+    }
+    private var watchingContacts = false
+    private fun contactsAllowed() = feedback.contactEmails && checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+    private fun contactsSettingChanged() {
+        val wanted = contactsAllowed()
+        if (wanted != watchingContacts) {
+            watchingContacts = wanted
+            try {
+                if (wanted) contentResolver.registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, contactsChanged)
+                else contentResolver.unregisterContentObserver(contactsChanged)
+            } catch (_: SecurityException) { watchingContacts = false }
+        }
+        main.removeCallbacks(readContacts); readContacts.run()
+    }
+    private val io = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var fetching = false
+    /** The computer's words, at most every few hours, while Learn from Hex history is on and a computer is paired. */
+    private fun fetchHistoryWords(force: Boolean = false) {
+        if (!learnedLoaded || fetching || !feedback.learnFromHistory) return
+        if (!force && System.currentTimeMillis() - feedback.historyWordsAt < HISTORY_WORDS_MS) return
+        fetching = true
+        io.launch {
+            try {
+                val got = dictation.router.send { host, computer -> HexClient.words(host, computer.port, computer.code) }
+                if (!feedback.learnFromHistory) return@launch
+                // The computer's Vocabulary names are words you use there, so they are words here.
+                learned.seed(got.words + Corrections.termWords(got.vocabulary).map { it.first to VOCABULARY_COUNT }, got.pairs)
+                forgotten.all().forEach(learned::forgetWord)
+                feedback.historyWordsAt = System.currentTimeMillis()
+                engine.learnedWordsChanged(); learnedChanged()
+                sendCorrections()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not paired, unreachable, or a computer without the words route: try again next time.
+            } finally { fetching = false }
+        }
+    }
+    // Fixes to dictated text the computer hasn't taken yet: a few, kept on the phone until the next contact.
+    private val pendingCorrections = PendingCorrections()
+    private var sendingCorrections = false
+    private fun correctionFound(fix: DictationFix) { pendingCorrections.add(fix); pendingChanged(); sendCorrections() }
+    private fun pendingChanged() {
+        if (!learnedLoaded) return
+        val text = pendingCorrections.write()
+        words.execute { writeLearned(text, PendingCorrections.FILE) }
+    }
+    /** Sends the waiting corrections, oldest first, and learns the terms the computer took from them. A
+     * computer that can't be reached keeps them; one that refuses a correction (an older Hex) drops it. */
+    private fun sendCorrections() {
+        if (sendingCorrections || pendingCorrections.size == 0) return
+        sendingCorrections = true
+        io.launch {
+            try {
+                while (feedback.learnFromCorrections) {
+                    val fix = pendingCorrections.first() ?: break
+                    try {
+                        val terms = dictation.router.send { host, computer -> HexClient.correct(host, computer.port, computer.code, fix.baseline, fix.inserted, fix.edited) }
+                        pendingCorrections.remove(fix); pendingChanged()
+                        if (Corrections.learn(learned, Corrections.termWords(terms))) engine.learnedWordsChanged()
+                        if (terms.isNotEmpty()) learnedChanged()
+                    } catch (_: HexError.Failed) {
+                        pendingCorrections.remove(fix); pendingChanged()
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not paired or unreachable: they wait for the next contact.
+            } finally { sendingCorrections = false }
+        }
+    }
+    private var fetchingReplacements = false
+    /** The computer's text replacements, as shortcuts on the strip, at most hourly while a computer is paired. */
+    private fun fetchReplacements() {
+        if (fetchingReplacements || System.currentTimeMillis() - feedback.replacementsAt < REPLACEMENTS_MS) return
+        fetchingReplacements = true
+        io.launch {
+            try {
+                val got = dictation.router.send { host, computer -> HexClient.replacements(host, computer.port, computer.code) }
+                val stored = Replacements.write(got)
+                if (stored != feedback.replacements) feedback.replacements = stored
+                feedback.replacementsAt = System.currentTimeMillis()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not paired, unreachable, or a computer without the replacements route: try again next time.
+            } finally { fetchingReplacements = false }
+        }
+    }
+    // The editor's text, read from a copy kept here while it holds: a read through the InputConnection waits on the app.
+    private val text by lazy { CachedText(InputConnectionTarget(this), SystemClock::uptimeMillis) }
     internal val engine by lazy {
-        KeyboardEngine(InputConnectionTarget(this), feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
-            readPersonal = { PersonalWords.read(contentResolver, it) }, background = words)
+        KeyboardEngine(text, feedback, { layoutLanguage }, { SpatialDecoder(TypingModel.asset(assets, it)) },
+            readPersonal = { model, mine -> PersonalWords.read(contentResolver, model, mine, Replacements.read(feedback.replacements), contactNames, forgotten) },
+            learned = learned, phrases = phrases, touch = touch, typos = typos, stats = stats, learnedChanged = ::learnedChanged, forgotten = forgotten, forgottenChanged = ::forgottenChanged,
+            emails = emails, emojiLists = ::emojiLists, emojiPicks = emojiPicks,
+            emojiPicked = { emojiPrefs.edit().putString(EMOJI_PICKS, emojiPicks.write()).apply() },
+            emojiRecent = { emojiRecent.list() }, emojiUsed = { emojiRecent.add(it) }, emojiTone = { emojiTones.tone(it) },
+            freeTimes = { before ->
+                if (!feedback.freeTimes || !FreeTimes.allowed(this)) emptyList()
+                else FreeTimes.offer(before, java.time.LocalDateTime.now(), android.text.format.DateFormat.is24HourFormat(this)) {
+                    FreeTimes.busy(contentResolver, it)
+                }
+            }, corrected = ::correctionFound, background = words, nextWords = nextWords, deferStrip = true,
+            fixFinder = ::findFixes, fixOn = { fixShown }, typingLog = typingLog)
+    }
+    internal val dictation by lazy {
+        Dictation(this,
+            show = { phase ->
+                if (phase == DictationPhase.Listening) { engine.clearForDictation(); dictatedFor = field }
+                view?.dictation(phase)
+            },
+            level = { view?.level(it) },
+            note = { view?.note(it) },
+            insert = ::commitSpeech,
+            blocked = { if (engine.secure) getString(R.string.keyboard_hint_password) else null },
+            origin = { HexClient.Origin.of(this, currentInputEditorInfo?.packageName, HexClient.Origin.language(layoutLanguage)) })
+    }
+    internal val clips by lazy { ClipKeeper(this, changed = { view?.clipsChanged() }, note = { view?.note(it) }) }
+    private val clipsChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == ClipKeeper.RECENT_PHOTOS) clips.syncPhotos()
     }
     private val typingChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == TypingPreferences.SUGGEST_SWEAR_WORDS) engine.swearWordsChanged()
+        when (key) {
+            TypingPreferences.SUGGEST_SWEAR_WORDS -> engine.swearWordsChanged()
+            // Settings deleted the file; this copy goes too.
+            TypingPreferences.FIX_BUTTON -> {
+                if (!feedback.fixButton) fixWork.execute { TinyfixFiles.drop() }
+                engine.fixesStale()
+                view?.fixChanged()
+            }
+            TypingPreferences.FORGET_LEARNED -> {
+                main.removeCallbacks(saveLearned); learned.clear(); phrases.clear(); touch.clear(); typos.clear(); stats.clear(); engine.learnedWordsChanged()
+                forgotten.clear(); engine.hiddenChanged()
+                engine.dropWatch(); pendingCorrections.clear(); pendingChanged()
+                emojiPicks.clear(); emojiPrefs.edit().remove(EMOJI_PICKS).apply()
+            }
+            TypingPreferences.LEARN_FROM_HISTORY ->
+                if (feedback.learnFromHistory) fetchHistoryWords(force = true)
+                else { learned.seed(emptyList(), emptyList()); engine.learnedWordsChanged(); learnedChanged() }
+            TypingPreferences.LEARN_FROM_CORRECTIONS -> if (!feedback.learnFromCorrections) { pendingCorrections.clear(); pendingChanged() }
+            TypingPreferences.CONTACT_EMAILS -> contactsSettingChanged()
+            TypingPreferences.REPLACEMENTS -> engine.personalWordsChanged()
+            TypingPreferences.NUMBER_ROW -> view?.numberRowChanged()
+        }
     }
     internal val previewAllowed get() = !engine.secure
 
-    override fun onCreate() {
+    // The fix button: its checker ([TinyfixFiles.withFixer], shared with the spell checker) is read from
+    // the downloaded files on first use, on its own thread, and dropped when the button goes off.
+    private val fixWork = Executors.newSingleThreadExecutor { Thread(it, "Hex fix") }
+    // Keep a typing log: written to Download/Hex on its own thread whenever the keyboard goes away.
+    private val logWork = Executors.newSingleThreadExecutor { Thread(it, "Hex typing log") }
+    private val typingLog by lazy {
+        TypingLog({ feedback.typingLog }, { lines ->
+            logWork.execute {
+                try { TypingLog.append(contentResolver, lines) }
+                catch (e: Exception) { android.util.Log.w("Hex", "typing log not written", e) }
+            }
+        })
+    }
+    // Hinglish's Hindi words, those its typing model has and English's lacks: tinyfix knows only English
+    // and would "fix" them ("nahi" into "nazi"). Read on first use, on fixWork.
+    private val hindiWords: (String) -> Boolean by lazy {
+        val hinglish = TypingModel.asset(assets, Spoken.Hinglish.code)
+        val english = TypingModel.asset(assets, Spoken.English.code)
+        fun hindi(word: String) = word.lowercase().let { hinglish.index(it) >= 0 && english.index(it) < 0 }
+        ::hindi
+    }
+    /** A check is running; another tap waits until it's done. */
+    internal var fixing = false
+        private set(value) { field = value; view?.fixChanged() }
+    // tinyfix knows only English: on another layout it would "fix" every word it doesn't know.
+    internal val fixShown: Boolean get() = feedback.fixButton && !engine.secure &&
+        (layoutLanguage == Spoken.English || layoutLanguage == Spoken.Hinglish)
+    internal fun fix() {
+        if (fixing || !fixShown) return
+        val field = engine.fieldText() ?: return
+        if (field.text.isBlank()) { view?.note(getString(R.string.keyboard_nothing_to_fix)); return }
+        fixing = true
+        val dir = TinyfixFiles.dir(this)
+        val hinglish = layoutLanguage == Spoken.Hinglish
+        fixWork.execute {
+            val fixes = try {
+                fixesFor(field, dir, hinglish)
+            } catch (_: Exception) { null } // The files are gone or damaged: Settings downloads them again.
+            main.post {
+                fixing = false
+                if (fixes != null && !engine.applyFixes(field, fixes) && fixes.isEmpty())
+                    view?.note(getString(R.string.keyboard_nothing_to_fix))
+            }
+        }
+    }
+    // The fixes the fix button makes to [field]; [cancelled] stops the check at its next word. Never on the main thread.
+    private fun fixesFor(field: FieldText, dir: java.io.File, hinglish: Boolean, cancelled: () -> Boolean = { false }) =
+        TinyfixFiles.withFixer(dir) { fixer ->
+            fixer.check(field.text) { word ->
+                if (cancelled()) throw java.util.concurrent.CancellationException()
+                hinglish && hindiWords(word)
+            }
+        }
+    // The engine's check for the fix chip: the same fixes a tap would make, on the fix thread.
+    private fun findFixes(field: FieldText, cancelled: () -> Boolean, done: (List<Fix>) -> Unit) {
+        val dir = TinyfixFiles.dir(this)
+        val hinglish = layoutLanguage == Spoken.Hinglish
+        fixWork.execute {
+            if (cancelled() || !TinyfixFiles.ready(dir)) return@execute
+            val fixes = try {
+                fixesFor(field, dir, hinglish, cancelled)
+            } catch (_: Exception) { return@execute } // Cancelled, or the files are gone or damaged.
+            main.post { done(fixes) }
+        }
+    }
+    /** The toolbar's undo chip. Words a fix changed and you put back are left alone from then on. */
+    internal fun undo() {
+        val restored = engine.undo()
+        if (restored.isNotEmpty()) fixWork.execute { TinyfixFiles.ifLoaded { fixer -> restored.forEach(fixer::ignore) } }
+    }
+
+    override fun onCreate() = traced("hex:onCreate") {
         setTheme(R.style.HexIme)
         super.onCreate()
         getSharedPreferences("typing", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(typingChanged)
+        getSharedPreferences(ClipKeeper.PREFS, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(clipsChanged)
         contentResolver.registerContentObserver(UserDictionary.Words.CONTENT_URI, true, dictionaryChanged)
-        capture = MicCapture(LocalSpeech(applicationContext),
-            update = { phase, note -> view?.status(phase, speechNote(note) ?: idleHint()) },
-            meter = { view?.setLevel(it) }, insert = ::commitSpeech)
+        clips.start()
+        words.execute {
+            runCatching { if (learnedFile.exists()) learned.read(learnedFile.readText()) }
+            runCatching { if (touchFile.exists()) touch.read(touchFile.readText()) }
+            runCatching { File(filesDir, TypoMemory.FILE).takeIf { it.exists() }?.let { typos.read(it.readText()) } }
+            runCatching { File(filesDir, LearnedPhrases.FILE).takeIf { it.exists() }?.let { phrases.read(it.readText()) } }
+            runCatching { File(filesDir, TypingStats.FILE).takeIf { it.exists() }?.let { stats.read(it.readText()) } }
+            runCatching { File(filesDir, Forgotten.FILE).takeIf { it.exists() }?.let { forgotten.read(it.readText()) } }
+            val pending = runCatching { File(filesDir, PendingCorrections.FILE).takeIf { it.exists() }?.readText() }.getOrNull()
+            learnedLoaded = true
+            main.post {
+                // Corrections found before the file was read go after the ones it kept.
+                pending?.let { val found = pendingCorrections.write(); pendingCorrections.clear(); pendingCorrections.read(it); pendingCorrections.read(found); pendingChanged() }
+                engine.hiddenChanged(); engine.learnedWordsChanged(); learnedChanged(); fetchHistoryWords(); sendCorrections()
+            }
+        }
+        words.execute { emails.accounts = EmailAddresses.accounts(this) }
+        contactsSettingChanged()
+        engine.preload()
     }
     override fun onEvaluateFullscreenMode() = false
-    override fun onCreateInputView(): View = KeyboardView(this, this).also { view = it; engine.surface = it }
+    override fun onCreateInputView(): View = traced("hex:onCreateInputView") { KeyboardView(this, this).also { view = it; engine.surface = it } }
 
-    /** The field's type as Hex last started in it: an app can change it in place (restarting the same box). */
-    private var fieldType = 0 to 0
-    private var typeChanged = false
-    override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+    // Each field gets a number as it starts; an app restarting the same field (chat apps do) keeps it.
+    // A transcript comes back to the field it was spoken for, or is copied ([commitSpeech]).
+    private var field = 0
+    private var dictatedFor = -1
+
+    override fun onStartInput(attribute: EditorInfo, restarting: Boolean) = traced("hex:onStartInput") {
         super.onStartInput(attribute, restarting)
-        typeChanged = restarting && fieldType != attribute.inputType to attribute.imeOptions
-        fieldType = attribute.inputType to attribute.imeOptions
-        nextEnglish = null
-        capture.cancel() // Even a different field in the same app must not receive an old result.
+        if (!restarting) { field++; dictation.leave(); autofill.clear() }
+        text.started(attribute.initialSelStart, attribute.initialSelEnd,
+            attribute.getInitialTextBeforeCursor(CachedText.INITIAL, 0), attribute.getInitialTextAfterCursor(CachedText.INITIAL, 0))
         engine.startInput(attribute)
     }
-    override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
+    override fun onStartInputView(info: EditorInfo, restarting: Boolean) = traced("hex:onStartInputView") {
         super.onStartInputView(info, restarting)
         view?.cancelGestures()
-        // Another type in the same box: back to its keys, as a new field opens (configureTyping draws them).
-        if (typeChanged) view?.closeMenu(configure = false)
+        clips.shown()
+        view?.shown()
+        engine.opened()
         engine.configureTyping()
-        view?.status(capture.phase, idleHint())
+        if (!engine.secure) dictation.prewarm()
+        fetchHistoryWords()
+        fetchReplacements()
+        sendCorrections()
     }
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
                                    candidatesStart: Int, candidatesEnd: Int) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        text.selectionChanged(newSelStart, newSelEnd)
         engine.updateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd)
     }
 
-    internal fun nextIme() {
-        capture.cancel()
-        if (!switchToNextInputMethod(false)) getSystemService(InputMethodManager::class.java).showInputMethodPicker()
-    }
-    private fun idleHint() = getString(when {
-        engine.secure -> R.string.keyboard_hint_password
-        checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED -> R.string.keyboard_hint_microphone
-        else -> R.string.keyboard_hint_hold
-    })
-    internal fun beginSpeech(): Boolean {
-        if (engine.secure || currentInputConnection == null || !capture.canStart ||
-            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            view?.status(capture.phase, idleHint())
-            return false
-        }
-        engine.clearForDictation()
-        capture.start(preferences.options(nextEnglish))
-        nextEnglish = null
+    // The autofill service's saved passwords, usernames and codes for the field, in the strip. Android asks
+    // for the request as a field starts and sends a response (empty for none) whenever its offer changes.
+    private val autofill by lazy { InlineAutofill(this) { unpinned, pinned -> view?.autofill(unpinned, pinned) } }
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle) = autofill.request()
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        autofill.offer(response.inlineSuggestions)
         return true
     }
-    internal fun toggleSpeech() = when (capture.phase) {
-        // A dictation may start while the one before still transcribes; texts go in in order.
-        SpeechPhase.Idle, SpeechPhase.Transcribing -> { beginSpeech(); Unit }
-        SpeechPhase.Opening, SpeechPhase.Listening -> finishSpeech()
+
+    /** Types the transcript where it was spoken. If that field has gone (another field, or the keyboard
+     * hidden), it's copied instead, so the strip's chip offers it, rather than typed somewhere else or lost. */
+    private fun commitSpeech(heard: HexClient.Heard) {
+        if (dictatedFor == field && currentInputConnection != null && !engine.secure && isInputViewShown) {
+            engine.insertDictation(heard.text, heard.language)
+            return
+        }
+        runCatching {
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(getString(R.string.keyboard_dictation), heard.text))
+        }
+        view?.note(getString(R.string.keyboard_dictation_copied))
     }
-    internal fun finishSpeech() {
-        if (capture.phase == SpeechPhase.Listening || capture.phase == SpeechPhase.Opening) capture.finish()
-    }
-    internal fun cancelSpeech() = capture.cancelLatest()
-    private fun commitSpeech(text: String, options: SpeechOptions) {
-        if (currentInputConnection == null || engine.secure || !isInputViewShown) return
-        engine.insertDictation(text, if (options.translate) "en" else options.spoken.code)
-    }
-    private fun leaveEditor() { view?.reset(); view?.cancelGestures(); engine.leave(); nextEnglish = null; capture.cancel() }
+    private fun leaveEditor() { view?.cancelGestures(); engine.leave(); dictation.leave(); typingLog.flush() }
     override fun onFinishInputView(finishingInput: Boolean) { leaveEditor(); super.onFinishInputView(finishingInput) }
     override fun onFinishInput() { leaveEditor(); super.onFinishInput() }
     override fun onWindowHidden() { leaveEditor(); super.onWindowHidden() }
     override fun onDestroy() {
         getSharedPreferences("typing", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(typingChanged)
-        contentResolver.unregisterContentObserver(dictionaryChanged); words.shutdownNow()
-        view?.cancelGestures(); view = null; engine.surface = null; capture.close(); super.onDestroy()
+        getSharedPreferences(ClipKeeper.PREFS, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(clipsChanged)
+        contentResolver.unregisterContentObserver(dictionaryChanged); io.cancel(); clips.close()
+        if (watchingContacts) contentResolver.unregisterContentObserver(contactsChanged)
+        main.removeCallbacks(readContacts)
+        // The last changes are written before the worker stops.
+        main.removeCallbacks(saveLearned)
+        if (learnedLoaded) saveWords()
+        words.shutdown(); nextWork.shutdown(); fixWork.shutdown()
+        view?.cancelGestures(); view = null; engine.surface = null; dictation.close(); super.onDestroy()
+        // super.onDestroy finishes the input, which logs the keyboard leaving and flushes the log, so its
+        // thread stops only after that.
+        typingLog.flush(); logWork.shutdown()
+    }
+    private companion object {
+        const val SAVE_DELAY_MS = 3_000L
+        const val EMOJI_PICKS = "picks"
+        const val CONTACTS_DELAY_MS = 2_000L
+        /** What the computer's Vocabulary terms count as, so they are words at once. */
+        const val VOCABULARY_COUNT = 3
+        const val HISTORY_WORDS_MS = 6 * 60 * 60_000L
+        const val REPLACEMENTS_MS = 60 * 60_000L
     }
 }

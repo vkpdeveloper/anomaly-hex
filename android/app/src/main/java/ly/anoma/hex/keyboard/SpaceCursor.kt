@@ -41,7 +41,8 @@ internal class SpaceGesture(private val start: Float, private val step: Float, p
 /** Moves the cursor whole characters (grapheme clusters, so 👍🏽 is one) from where a slide began: left
  * from the selection's start, right from its end. Without a known position, or in a password field
  * whose text it shouldn't read, it steps with arrow keys instead. */
-internal class CursorSlide(private val target: KeyboardTextTarget, private val start: Int, private val end: Int, readable: Boolean) {
+internal class CursorSlide(private val target: KeyboardTextTarget, private val start: Int, private val end: Int, readable: Boolean,
+                           private val selecting: Boolean = false) {
     private val window = 2000
     private val left: IntArray
     private val right: IntArray
@@ -65,9 +66,11 @@ internal class CursorSlide(private val target: KeyboardTextTarget, private val s
         val position = when {
             next < 0 -> start - left[-next - 1]
             next > 0 -> end + right[next - 1]
-            else -> if (start == end) start else return
+            else -> if (selecting) { target.setSelection(start, end); return } else if (start == end) start else return
         }
-        target.setSelection(position, position)
+        // Selecting, the slide grows the selection from its other end: left from its end, right from its start.
+        if (selecting) target.setSelection(if (next < 0) position else start, if (next < 0) end else position)
+        else target.setSelection(position, position)
     }
 
     private companion object {
